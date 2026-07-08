@@ -409,6 +409,139 @@ class TestProducerGuards:
             wb.save(str(tmp_path / "o.xlsx"))
 
 
+
+# (region tag, self-closing original element, model edit, expected byte)
+# every satellite region whose original can legally carry the self-closing
+# form, both matrix arms exercised: no-op passthrough and model edit
+_SELF_CLOSING_CASES = [
+    ("sheetFormatPr", b'<sheetFormatPr defaultRowHeight="15"/>',
+     lambda ws: setattr(ws.sheet_format, "defaultRowHeight", 22.5),
+     b'defaultRowHeight="22.5"'),
+    ("autoFilter", b'<autoFilter ref="A1:D5"/>',
+     lambda ws: setattr(ws.auto_filter, "ref", "A1:D4"),
+     b'ref="A1:D4"'),
+    ("printOptions", b'<printOptions gridLines="1"/>',
+     lambda ws: setattr(ws.print_options, "headings", True),
+     b'headings="1"'),
+    ("pageMargins", b'<pageMargins left="0.75" right="0.75" top="1" '
+                    b'bottom="1" header="0.5" footer="0.5"/>',
+     lambda ws: setattr(ws.page_margins, "left", 1.25),
+     b'left="1.25"'),
+    ("pageSetup", b'<pageSetup orientation="portrait"/>',
+     lambda ws: setattr(ws.page_setup, "orientation", "landscape"),
+     b'orientation="landscape"'),
+    ("sheetProtection", b'<sheetProtection sheet="1" objects="1"/>',
+     lambda ws: setattr(ws.protection, "formatCells", False),
+     b'formatCells="0"'),
+]
+
+_REGION_INSERT_POINT = {
+    # schema position: before which existing minimal_clean marker each
+    # region element must be injected (CT_Worksheet sequence); None means
+    # the fixture already carries the element in self-closing form
+    "sheetFormatPr": None,
+    "autoFilter": b"<pageMargins",
+    "printOptions": b"<pageMargins",
+    "pageMargins": None,
+    "pageSetup": b"</worksheet>",
+    "sheetProtection": b"<pageMargins",
+}
+
+
+class TestRegionSelfClosingMatrix:
+    """PLAN-v0.1 §0.2: the region x self-closing matrix. The v0 scanner
+    never set RegionSpan.end for self-closing top-level elements, so any
+    splice touching one emitted malformed XML — silently."""
+
+    def _build(self, fixture_copy, tmp_path, tag, element):
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        out = str(tmp_path / "{0}_sc.xlsx".format(tag))
+        marker = _REGION_INSERT_POINT[tag]
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/sheet") \
+                        and marker is not None:
+                    assert marker in payload
+                    payload = payload.replace(marker, element + marker, 1)
+                zout.writestr(name, payload)
+        return out
+
+    @pytest.mark.parametrize(
+        "tag,element,edit,expect",
+        _SELF_CLOSING_CASES, ids=[c[0] for c in _SELF_CLOSING_CASES])
+    def test_edit_of_self_closing_original(
+            self, fixture_copy, tmp_path, tag, element, edit, expect):
+        import xml.etree.ElementTree as ET
+
+        src = self._build(fixture_copy, tmp_path, tag, element)
+        wb = load_workbook(src, preserve=True)
+        edit(wb["Sheet1"])
+        out = str(tmp_path / "{0}_out.xlsx".format(tag))
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        ET.fromstring(sheet)                                  # well-formed
+        assert sheet.count(b"<" + tag.encode()) == 1
+        assert expect in sheet
+        load_workbook(out)                                    # reloadable
+
+    @pytest.mark.parametrize(
+        "tag,element,edit,expect",
+        _SELF_CLOSING_CASES, ids=[c[0] for c in _SELF_CLOSING_CASES])
+    def test_noop_save_of_self_closing_original_is_byte_identical(
+            self, fixture_copy, tmp_path, tag, element, edit, expect):
+        src = self._build(fixture_copy, tmp_path, tag, element)
+        wb = load_workbook(src, preserve=True)
+        out = str(tmp_path / "{0}_noop.xlsx".format(tag))
+        wb.save(out)
+        assert part_payloads(src) == part_payloads(out)
+
+
+class TestImpureSerializerPinning:
+    """PLAN-v0.1 §0.3: a region whose serializer disagrees with itself at
+    arm time is PINNED — no-op saves keep the original bytes (never false
+    dirty), and USER edits to it refuse rather than splice an
+    untrustworthy render."""
+
+    def test_cols_sheet_pins_sheetformatpr(self, fixture_copy):
+        from openpyxl.preserve.ledger import DirtyLedger
+
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Visible"]
+        pinned = wb._paper_ledger.pinned_regions[ws]
+        # upstream DimensionHolder.to_tree() mutates max_outline during the
+        # cols render, perturbing the NEXT sheetFormatPr render
+        assert "sheetFormatPr" in pinned
+        assert "cols" not in pinned          # cols itself renders stably
+
+    def test_edit_to_pinned_region_refuses_atomically(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("features/hidden.xlsx")
+        with open(src, "rb") as f:
+            before = f.read()
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].sheet_format.defaultRowHeight = 22.5
+        with pytest.raises(UnsupportedStructureError, match="impure"):
+            wb.save(str(tmp_path / "pinned.xlsx"))
+        with open(src, "rb") as f:
+            assert f.read() == before
+
+    def test_col_width_edit_still_works_alongside_pin(
+            self, fixture_copy, tmp_path):
+        # the pin isolates the impure region; the stable cols region on the
+        # same sheet stays fully editable
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].column_dimensions["B"].width = 30
+        out = str(tmp_path / "width.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Visible"].column_dimensions["B"].width == 30
+        assert wb2["Visible"].column_dimensions["C"].hidden is True
+
+
 class TestSaveTargets:
 
     def test_save_to_file_like_target(self, fixture_copy):
