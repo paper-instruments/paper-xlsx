@@ -50,10 +50,13 @@ class TestPreserveLoad:
             load_workbook(src, read_only=True, preserve=True)
 
     def test_preserve_keeps_extension_refusals(self, fixture_copy):
-        # the .xls/.xlsb extension check must not be bypassed by retention
+        # the .xls/.xlsb check is not bypassed by retention; under preserve
+        # it is the typed refusal (Phase 3), on the stock path unchanged
         src = fixture_copy("legacy/legacy.xls")
-        with pytest.raises(InvalidFileException, match="xls"):
+        with pytest.raises(UnsupportedStructureError, match="xls"):
             load_workbook(src, preserve=True)
+        with pytest.raises(InvalidFileException, match="xls"):
+            load_workbook(src)
 
     def test_preserve_with_data_only_loads(self, fixture_copy):
         wb = load_workbook(fixture_copy("features/schedule_calc.xlsx"),

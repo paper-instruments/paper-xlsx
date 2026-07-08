@@ -321,10 +321,13 @@ def _escape_text(value):
             .encode("utf-8"))
 
 
-def plan_workbook_xml(wb, led, original, new_sheet_entries):
+def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
     """New workbook.xml bytes, or None if nothing changes.
 
     ``new_sheet_entries``: [(title, sheet_id, rid, state)] for added sheets.
+    ``force_tags``: spliceable elements re-rendered even when the arm-vs-save
+    diff sees no change (the recalc-on-load flag: the model defaults it, so
+    only a forced re-render can write it into files that lack it).
     Raises for changes outside the v0-spliceable set.
     """
     current = render_workbook_elements(wb)
@@ -332,6 +335,9 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries):
     changed = {}
     for tag in set(current) | set(snapshot):
         if current.get(tag) != snapshot.get(tag):
+            changed[tag] = current.get(tag)
+    for tag in force_tags:
+        if tag in WB_SPLICEABLE and tag not in changed:
             changed[tag] = current.get(tag)
 
     unsupported = set(changed) - WB_SPLICEABLE
@@ -470,14 +476,16 @@ def _append_with_count(data, node, blob, added_count):
     return edits
 
 
-def plan_styles_xml(wb, led, original):
+def plan_styles_xml(wb, led, original, translator):
     """New styles.xml bytes appending the styles created since arming, or
-    None when nothing was added. Never rewrites existing entries."""
-    from openpyxl.styles.cell_style import CellStyle
-    from openpyxl.styles.numbers import BUILTIN_FORMATS_MAX_SIZE, NumberFormat
+    None when nothing was added. Never rewrites existing entries.
 
+    Fonts/fills/borders/dxfs come from the MODEL tails (their numbering is
+    file-stable at load: seeded in file order, never renumbered). Cell xfs
+    and custom number formats come from the :class:`StyleTranslator`, which
+    owns the model-to-file numbering translation (PR-0 D2)."""
     (n_fonts, n_fills, n_borders, _n_align, _n_prot,
-     n_numfmts) = led._style_lengths
+     _n_numfmts) = led._style_lengths
     additions = {}
 
     new_fonts = list(wb._fonts)[n_fonts:]
@@ -489,28 +497,18 @@ def plan_styles_xml(wb, led, original):
     new_borders = list(wb._borders)[n_borders:]
     if new_borders:
         additions["borders"] = [tostring(b.to_tree()) for b in new_borders]
-    new_fmts = list(wb._number_formats)[n_numfmts:]
-    if new_fmts:
-        additions["numFmts"] = [
-            tostring(NumberFormat(idx, code).to_tree(tagname="numFmt"))
-            for idx, code in enumerate(new_fmts,
-                                       BUILTIN_FORMATS_MAX_SIZE + n_numfmts)]
     new_dxfs = list(wb._differential_styles.styles)[led.dxfs_len:]
     if new_dxfs:
         additions["dxfs"] = [tostring(d.to_tree(tagname="dxf"))
                              for d in new_dxfs]
 
-    new_xfs = list(wb._cell_styles)[led.orig_cell_styles_len:]
+    # order matters: xf rendering allocates any missing file numFmt ids
+    new_xfs = translator.render_new_xfs()
     if new_xfs:
-        rendered = []
-        for style in new_xfs:
-            xf = CellStyle.from_array(style)
-            if style.alignmentId:
-                xf.alignment = wb._alignments[style.alignmentId]
-            if style.protectionId:
-                xf.protection = wb._protections[style.protectionId]
-            rendered.append(tostring(xf.to_tree()))
-        additions["cellXfs"] = rendered
+        additions["cellXfs"] = new_xfs
+    new_fmts = translator.render_new_numfmts()
+    if new_fmts:
+        additions["numFmts"] = new_fmts
 
     if len(wb._named_styles) > led.named_styles_len:
         raise UnsupportedStructureError(

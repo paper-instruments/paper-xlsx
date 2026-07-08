@@ -278,7 +278,7 @@ class ExcelWriter:
         self._archive.close()
 
 
-def save_workbook(workbook, filename):
+def save_workbook(workbook, filename, *, allow_formula_loss=False):
     """Save the given workbook on the filesystem under the name filename.
 
     :param workbook: the workbook to save
@@ -294,7 +294,21 @@ def save_workbook(workbook, filename):
         # preserve mode: the retained package is the source of truth; the
         # stock regenerate-everything path below must never run for it
         from openpyxl.preserve.saver import save_preserved
-        return save_preserved(workbook, filename)
+        return save_preserved(workbook, filename,
+                              allow_formula_loss=allow_formula_loss)
+
+    if workbook.data_only and not allow_formula_loss:
+        # the data_only self-destruct (PLAN Phase 3): the model holds cached
+        # values, not formulas — this save flattens the whole formula graph
+        warnings.warn(LossySaveWarning(
+            "This workbook was loaded with data_only=True: it holds cached "
+            "values instead of formulas, and this save PERMANENTLY replaces "
+            "every formula with its last cached value. Reload without "
+            "data_only=True to keep formulas, or pass "
+            "allow_formula_loss=True to silence this warning.",
+            [{"kind": "formulas", "location": "workbook",
+              "detail": "all formulas replaced by cached values"}]),
+            stacklevel=2)
 
     inventory = getattr(workbook, "_paper_loss_inventory", None)
     if inventory:

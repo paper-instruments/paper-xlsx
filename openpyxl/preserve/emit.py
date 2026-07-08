@@ -1,48 +1,98 @@
-# paper-xlsx: model-to-bytes emission for the splice (CONVENTIONS §3.6)
+# paper-xlsx: model-to-bytes emission for the splice (CONVENTIONS §3.6; PR-0 D2)
 
-"""Serialize single cells and rows from the model, through upstream's own
-cell-writing machinery (never string-formatted XML), as bare fragments ready
-to splice into a default-namespace worksheet stream.
+"""Serialize single cells and rows from the model as bare fragments ready to
+splice into a default-namespace worksheet stream.
 
-The upstream ``write_cell`` path has two side effects the splice must own
-(PR-0 D2): it appends the cell's hyperlink to ``ws._hyperlinks`` (guarded
-here by save/restore) and ``cell.style_id`` interns new StyleArrays into
-``wb._cell_styles`` (wanted: that allocation is exactly how new xf indices
-are assigned for the styles.xml append in Phase 2d).
+Per PR-0 D2 this is a THIN VARIANT of upstream's cell writer
+(openpyxl/cell/_writer.py), not a direct call: the style index is an
+explicit parameter — the file's xf numbering, from the StyleTranslator —
+never ``cell.style_id`` (which interns into the MODEL's numbering; model and
+file numbering drift on non-openpyxl producers, measured), and the
+hyperlink-registration side effect is owned by the hyperlinks planner
+instead. The value/formula/date/rich-text emission logic mirrors
+``_set_attributes``/``etree_write_cell`` line for line.
 """
 
-from openpyxl.cell._writer import etree_write_cell
-from openpyxl.xml.functions import tostring
+from datetime import timedelta
+
+from openpyxl.cell.rich_text import CellRichText
+from openpyxl.utils.datetime import to_excel, to_ISO8601
+from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+from openpyxl.xml.functions import Element, SubElement, tostring, whitespace
+from openpyxl.compat import safe_string
 
 
-class _ElementCapture:
-    """Minimal xf stand-in: captures the Element write_cell produces."""
+def _cell_attributes(cell, style_index):
+    """Mirror of cell/_writer._set_attributes with the style index explicit
+    and no hyperlink side effect."""
+    attrs = {"r": cell.coordinate}
+    if style_index:
+        attrs["s"] = "{0}".format(style_index)
 
-    __slots__ = ("element",)
+    if cell.data_type == "s":
+        attrs["t"] = "inlineStr"
+    elif cell.data_type != "f":
+        attrs["t"] = cell.data_type
 
-    def __init__(self):
-        self.element = None
+    value = cell._value
 
-    def write(self, element):
-        self.element = element
-
-
-def emit_cell(ws, cell):
-    """Bytes of one ``<c>`` element for ``cell``, or ``None`` when the model
-    holds nothing worth serializing (mirrors the stock writer's skip rule)."""
-    if cell._value is None and not cell.has_style:
-        return None
-    capture = _ElementCapture()
-    saved_links = getattr(ws, "_hyperlinks", None)
-    ws._hyperlinks = []
-    try:
-        etree_write_cell(capture, ws, cell, cell.has_style)
-    finally:
-        if saved_links is None:
-            del ws._hyperlinks
+    if cell.data_type == "d":
+        if hasattr(value, "tzinfo") and value.tzinfo is not None:
+            raise TypeError("Excel does not support timezones in datetimes. "
+                            "The tzinfo in the datetime/time object must be "
+                            "set to None.")
+        if cell.parent.parent.iso_dates and not isinstance(value, timedelta):
+            value = to_ISO8601(value)
         else:
-            ws._hyperlinks = saved_links
-    return tostring(capture.element)
+            attrs["t"] = "n"
+            value = to_excel(value, cell.parent.parent.epoch)
+
+    return value, attrs
+
+
+def emit_cell(ws, cell, style_index):
+    """Bytes of one ``<c>`` element, or ``None`` when the model holds
+    nothing worth serializing (mirrors the stock writer's skip rule).
+
+    ``style_index`` is the FILE xf index (StyleTranslator.resolve), or None.
+    """
+    if cell._value is None and style_index is None:
+        return None
+    value, attributes = _cell_attributes(cell, style_index)
+
+    el = Element("c", attributes)
+    if value is None or value == "":
+        return tostring(el)
+
+    if cell.data_type == "f":
+        attrib = {}
+        if isinstance(value, ArrayFormula):
+            attrib = dict(value)
+            value = value.text
+        elif isinstance(value, DataTableFormula):
+            attrib = dict(value)
+            value = None
+        formula = SubElement(el, "f", attrib)
+        if value is not None and not attrib.get("t") == "dataTable":
+            formula.text = value[1:]
+            value = None
+
+    if cell.data_type == "s":
+        if isinstance(value, CellRichText):
+            el.append(value.to_tree())
+        else:
+            inline_string = Element("is")
+            text = Element("t")
+            text.text = value
+            whitespace(text)
+            inline_string.append(text)
+            el.append(inline_string)
+    else:
+        cell_content = SubElement(el, "v")
+        if value is not None:
+            cell_content.text = safe_string(value)
+
+    return tostring(el)
 
 
 def carry_attributes(new_cell_bytes, original_attrs):
@@ -53,7 +103,6 @@ def carry_attributes(new_cell_bytes, original_attrs):
                if k not in ("r", "s", "t")}
     if not carried:
         return new_cell_bytes
-    # inject into the start tag, before its terminating '>' or '/>'
     head_end = new_cell_bytes.index(b">")
     self_closing = new_cell_bytes[head_end - 1:head_end] == b"/"
     insert_at = head_end - 1 if self_closing else head_end

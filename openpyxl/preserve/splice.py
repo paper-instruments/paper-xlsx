@@ -101,7 +101,8 @@ def _col_letter(col):
 
 
 def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
-                 scan=None, cf_replacement=None, hyperlinks_replacement=None):
+                 scan=None, cf_replacement=None, hyperlinks_replacement=None,
+                 style_resolver=None):
     """Return the new part payload for one worksheet.
 
     ``dirty_cells``: resolved coordinate set (see resolve_dirty_cells).
@@ -113,16 +114,20 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     ``cf_replacement``: bytes replacing ALL conditionalFormatting elements
     (gated by the caller; may be b"" to remove them).
     ``hyperlinks_replacement``: bytes replacing the hyperlinks element.
+    ``style_resolver``: cell -> FILE xf index (StyleTranslator; PR-0 D2) —
+    model style indices must never reach the spliced bytes.
     """
     if scan is None:
         scan = scan_sheet(original)
+    if style_resolver is None:
+        style_resolver = lambda cell: None  # noqa: E731 — styleless contexts only
 
     for tag in region_changes:
         if tag in DETECT_ONLY_REGIONS:
             raise SpliceRefusal(
-                "changes to {0} on sheet {1!r} are not writable at this "
-                "build stage (cross-part coordination lands in Phase 2d); "
-                "nothing was written.".format(tag, ws.title))
+                "changes to {0} on sheet {1!r} are not writable in v0 "
+                "(table-part lifecycle); nothing was "
+                "written.".format(tag, ws.title))
         if tag not in REGION_BY_TAG:
             raise SpliceRefusal(
                 "internal: unexpected region change {0!r}".format(tag))
@@ -207,7 +212,8 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
             edits.append((offset, offset, hyperlinks_replacement))
 
     # 2. cell and row edits inside sheetData
-    edits.extend(_sheetdata_edits(ws, scan, dirty_cells, row_attr_changes))
+    edits.extend(_sheetdata_edits(ws, scan, dirty_cells, row_attr_changes,
+                                  style_resolver))
 
     # ------- apply (sorted, non-overlapping by construction) -------------
     edits.sort(key=lambda e: (e[0], e[1]))
@@ -240,7 +246,7 @@ def _region_insert_offset(scan, tag):
     return scan.root_end_offset
 
 
-def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes):
+def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve):
     edits = []
     by_row = {}
     for (row, col) in dirty_cells:
@@ -256,7 +262,8 @@ def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes):
         if needs_content:
             span = scan.sheetdata
             new_rows_bytes = _emit_rows_block(
-                ws, sorted(r for r in touched_rows), by_row, row_attr_changes)
+                ws, sorted(r for r in touched_rows), by_row, row_attr_changes,
+                resolve)
             edits.append((span.start, span.end,
                           b"<sheetData>" + new_rows_bytes + b"</sheetData>"))
             return edits
@@ -267,7 +274,7 @@ def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes):
     for row_index in sorted(r for r in touched_rows if r in scan.rows):
         row_span = scan.rows[row_index]
         row_edits = _row_edits(ws, row_span, by_row.get(row_index, set()),
-                               row_attr_changes.get(row_index))
+                               row_attr_changes.get(row_index), resolve)
         edits.extend(row_edits)
 
     # new rows: insert each before the first existing row with a larger index
@@ -279,7 +286,8 @@ def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes):
                 insert_before = scan.rows[existing]
                 break
         cells_bytes = _emit_row_cells(ws, new_index,
-                                      sorted(by_row.get(new_index, set())))
+                                      sorted(by_row.get(new_index, set())),
+                                      resolve)
         attrs = row_attr_changes.get(new_index, {})
         row_bytes = emit.emit_new_row(ws, new_index, cells_bytes, attrs)
         if not cells_bytes and not attrs:
@@ -297,30 +305,31 @@ def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes):
     return edits
 
 
-def _emit_row_cells(ws, row_index, columns):
+def _emit_row_cells(ws, row_index, columns, resolve):
     cells_bytes = []
     for col in columns:
         cell = ws._cells.get((row_index, col))
         if cell is None:
             continue
-        rendered = emit.emit_cell(ws, cell)
+        rendered = emit.emit_cell(ws, cell, resolve(cell))
         if rendered is not None:
             cells_bytes.append(rendered)
     return cells_bytes
 
 
-def _emit_rows_block(ws, row_indices, by_row, row_attr_changes):
+def _emit_rows_block(ws, row_indices, by_row, row_attr_changes, resolve):
     parts = []
     for row_index in row_indices:
         cells_bytes = _emit_row_cells(ws, row_index,
-                                      sorted(by_row.get(row_index, set())))
+                                      sorted(by_row.get(row_index, set())),
+                                      resolve)
         attrs = row_attr_changes.get(row_index, {})
         if cells_bytes or attrs:
             parts.append(emit.emit_new_row(ws, row_index, cells_bytes, attrs))
     return b"".join(parts)
 
 
-def _row_edits(ws, row_span, dirty_cols, new_attrs):
+def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve):
     """Edits inside one existing row: replace/insert/delete cells, sync the
     row start tag's attributes when they changed."""
     edits = []
@@ -347,7 +356,8 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs):
 
     if row_span.self_closing:
         # row exists but holds no cells: rebuild it whole
-        cells_bytes = _emit_row_cells(ws, row_span.index, sorted(dirty_cols))
+        cells_bytes = _emit_row_cells(ws, row_span.index, sorted(dirty_cols),
+                                      resolve)
         attrs = dict(new_attrs) if new_attrs is not None else \
             {k: v for k, v in row_span.attrs.items() if k != "r"}
         edits = [(row_span.start, row_span.end,
@@ -369,7 +379,8 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs):
     for col in sorted(dirty_cols):
         cell_span = row_span.cells.get(col)
         cell = ws._cells.get((row_span.index, col))
-        rendered = emit.emit_cell(ws, cell) if cell is not None else None
+        rendered = emit.emit_cell(ws, cell, resolve(cell)) \
+            if cell is not None else None
         if rendered is not None and cell_span is not None:
             rendered = emit.carry_attributes(rendered, cell_span.attrs)
 

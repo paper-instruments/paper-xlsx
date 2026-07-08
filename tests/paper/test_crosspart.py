@@ -381,3 +381,48 @@ class TestV0CrosspartRefusals:
         wb.mark_dirty("xl/media/image1.png")
         with pytest.raises(UnsupportedStructureError, match="mark_dirty"):
             wb.save(str(tmp_path / "o.xlsx"))
+
+
+class TestStyleTranslation:
+    """Model style numbering drifts from the file's on non-openpyxl
+    producers (numFmt normalization, Normal-style bootstrap at load) —
+    every emitted s attribute goes through the StyleTranslator (PR-0 D2).
+    Regression tests for a measured corruption on LO-authored files."""
+
+    def test_edit_on_lo_authored_file_keeps_valid_style_indices(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("features/lo_authored.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.active
+        ws["A2"] = "edited"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)          # reload must not IndexError
+        assert wb2.active["A2"].value == "edited"
+
+    def test_data_only_edit_on_lo_authored_reuses_file_xf(
+            self, fixture_copy, tmp_path):
+        # the original failure: model interned a drifted array and wrote an
+        # out-of-range s index; the translator must map back to file xf 0
+        src = fixture_copy("features/schedule_calc.xlsx")
+        wb = load_workbook(src, preserve=True, data_only=True)
+        wb["Schedule"]["B12"] = 9999
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out, allow_formula_loss=True)
+        parts = part_payloads(out)
+        # no styles.xml change: the edited cell reuses an existing file xf
+        assert parts["xl/styles.xml"] == part_payloads(src)["xl/styles.xml"]
+        wb2 = load_workbook(out)
+        assert wb2["Schedule"]["B12"].value == 9999
+
+    @pytest.mark.lo_smoke
+    def test_lo_authored_style_edit_loads_in_libreoffice(
+            self, fixture_copy, tmp_path, lo):
+        src = fixture_copy("features/lo_authored.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb.active["A2"].font = Font(bold=True, size=15)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        assert lo.lo_loads(out)
+        wb2 = load_workbook(out)
+        assert wb2.active["A2"].font.bold is True

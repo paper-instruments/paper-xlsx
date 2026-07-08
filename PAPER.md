@@ -218,6 +218,37 @@ stable release tag.
   custom-props part creation, non-worksheet mark_dirty parts.
 - Full suite: 2754 passed, 6 skipped, 7 xfailed (only upstream xfails remain).
 
+## Phase 3 — Honesty organs (2026-07-08)
+
+- data_only trap (PLAN Phase 3): preserve-mode save refuses with the typed
+  error naming `wb.save(path, allow_formula_loss=True)`; with the override,
+  ONLY edited cells lose formulas (untouched cells keep them in the preserved
+  bytes — the trap is defused, not just fenced). Stock path warns loudly
+  (`LossySaveWarning`, "PERMANENTLY replaces every formula"); the override
+  silences it. `Workbook.save`/`save_workbook` gain the keyword-only flag.
+- Recalc-on-load: any formula-affecting edit under preserve forces the calcPr
+  splice with `fullCalcOnLoad="1"` (the model defaults the flag, so it is
+  forced into the plan rather than snapshot-diffed) — a human opener's Excel
+  always computes fresh numbers. Value-only edits leave workbook.xml
+  byte-identical.
+- `.xls`/`.xlsb` under preserve raise `UnsupportedStructureError` naming the
+  format and the LibreOffice conversion command; the stock path keeps
+  upstream's `InvalidFileException` unchanged.
+- LossySaveWarning enumeration is now deterministically ordered.
+- **Correctness fix uncovered by the honesty tests** (and the reason
+  PR-0 D2 pinned explicit style indices): model style numbering drifts from
+  the file's on non-openpyxl producers (`_normalise_numbers` rewrites
+  numFmtIds in place; the Normal-style bootstrap appends arrays), so emitting
+  `cell.style_id` corrupts s indices on LO-authored files (measured
+  IndexError on reload). New `openpyxl/preserve/styletrans.py`: parses the
+  ORIGINAL styles.xml through upstream's own Stylesheet machinery and
+  translates every emitted style to FILE xf numbering, allocating appended
+  xfs/numFmts in file numbering; added-sheet parts get their s attributes
+  rewritten through the same table; `emit.py` is now the PR-0-D2 thin variant
+  of the upstream cell writer with the style index explicit. Regression
+  tests on the LO-authored fixtures.
+- Full suite: 2769 passed, 6 skipped, 7 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

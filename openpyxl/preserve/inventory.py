@@ -54,7 +54,8 @@ class LossInventory:
             "This workbook contains content that will be REBUILT LOSSILY or "
             "DROPPED by this save:"
         ]
-        for loss in self.losses:
+        for loss in sorted(self.losses,
+                           key=lambda l: (l["kind"], l["location"])):
             lines.append("  - [{0}] {1}: {2}".format(
                 loss["kind"], loss["location"], loss["detail"]))
         lines.append(

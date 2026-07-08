@@ -409,9 +409,16 @@ class Workbook:
         return ct
 
 
-    def save(self, filename):
+    def save(self, filename, *, allow_formula_loss=False):
         """Save the current workbook under the given `filename`.
         Use this function instead of using an `ExcelWriter`.
+
+        :param allow_formula_loss: a workbook loaded with ``data_only=True``
+            holds cached values instead of formulas, so saving destroys
+            formulas. Under preserve mode such a save refuses unless this
+            flag is set (and even then only cells you actually edited lose
+            their formulas — untouched cells keep them in the original
+            bytes). On the stock path the flag silences the loud warning.
 
         .. warning::
             When creating your workbook using `write_only` set to True,
@@ -422,7 +429,7 @@ class Workbook:
             raise TypeError("""Workbook is read-only""")
         if self.write_only and not self.worksheets:
             self.create_sheet()
-        save_workbook(self, filename)
+        save_workbook(self, filename, allow_formula_loss=allow_formula_loss)
 
 
     @property

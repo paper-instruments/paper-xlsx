@@ -44,7 +44,7 @@ def _refuse(msg):
     raise UnsupportedStructureError(msg + " Nothing was written.")
 
 
-def save_preserved(workbook, target):
+def save_preserved(workbook, target, *, allow_formula_loss=False):
     """Save a preserve-mode workbook to ``target`` (path or binary
     file-like). Validates fully, then writes atomically."""
     led = workbook._paper_ledger
@@ -53,13 +53,28 @@ def save_preserved(workbook, target):
         _refuse("preserve-mode save requires a workbook loaded with "
                 "preserve=True.")
 
-    if workbook.data_only:
+    if workbook.data_only and not allow_formula_loss:
         _refuse(
-            "saving a workbook loaded with data_only=True would write "
-            "cached values over formulas for every edited cell (formulas "
-            "were never loaded). Reload without data_only=True to edit.")
+            "this workbook was loaded with data_only=True: its cells hold "
+            "cached values, not formulas, so every cell you edited would "
+            "have its formula replaced by a literal (untouched cells keep "
+            "their formulas in the preserved bytes). Reload without "
+            "data_only=True to edit formulas safely, or pass "
+            "wb.save(path, allow_formula_loss=True) to accept the loss for "
+            "the edited cells.")
 
     led.check_style_registry(workbook)
+
+    force_calcpr = False
+    if led.formulas_changed:
+        # honesty organ (PLAN Phase 3): a human opener's Excel must always
+        # compute fresh numbers — stale cached values can never masquerade
+        # as current. The model's CalcProperties defaults the flag to True,
+        # so the arm-vs-save diff cannot see this change: calcPr is forced
+        # into the workbook.xml plan (sanctioned collateral for formula
+        # edits, PR-0 D2) and re-rendered from the fully-modeled object.
+        workbook.calculation.fullCalcOnLoad = True
+        force_calcpr = True
 
     if led.parts:
         for part in led.parts:
@@ -81,6 +96,14 @@ def save_preserved(workbook, target):
 
     wb_part, sheet_parts = _package_info(zin)
     wb_rels_part = _rels_path(wb_part)
+
+    # model style indices drift from the file's on non-openpyxl producers
+    # (numFmt normalization, Normal-style bootstrap): every emitted s
+    # attribute goes through the translator (PR-0 D2)
+    translator = None
+    if ARC_STYLE in names:
+        from .styletrans import StyleTranslator
+        translator = StyleTranslator(workbook, zin.read(ARC_STYLE))
 
     # ---- added sheets ----------------------------------------------------
     added = [ws for ws in workbook._sheets if ws in led.added_sheets]
@@ -105,6 +128,8 @@ def save_preserved(workbook, target):
             part_name = "xl/worksheets/sheet{0}.xml".format(next_part_num + i)
             ws._id = next_part_num + i    # keeps ws.path consistent
             payload, sheet_rels = _generate_sheet_part(ws)
+            payload = _rewrite_added_sheet_styles(payload, workbook,
+                                                  translator)
             new_sheet_parts.append((part_name, payload))
             if sheet_rels is not None:
                 new_rels_parts.append((_rels_path(part_name), sheet_rels))
@@ -164,20 +189,28 @@ def save_preserved(workbook, target):
                 or cf_replacement is not None
                 or hyperlinks_replacement is not None):
             continue
+        if translator is None and any(
+                ws._cells[(r, c)]._style is not None
+                for (r, c) in dirty if (r, c) in ws._cells):
+            _refuse("styled cells cannot be written: the package has no "
+                    "xl/styles.xml part and part creation is not supported "
+                    "in v0.")
         plan[part] = splice_sheet(
             ws, original, dirty, region_changes, row_changes, scan=scan,
             cf_replacement=cf_replacement,
-            hyperlinks_replacement=hyperlinks_replacement)
+            hyperlinks_replacement=hyperlinks_replacement,
+            style_resolver=translator.resolver() if translator else None)
         dirty_by_part[part] = dirty
 
     # ---- calcChain cascade (D13) ------------------------------------------
     drop_calcchain = led.formulas_changed and _CALC_CHAIN in names
 
-    # ---- styles append (runs AFTER splices: emission interns new styles) --
+    # ---- styles append (runs AFTER splices: resolution allocates new xfs) --
     styles_plan = None
-    if ARC_STYLE in names:
+    if translator is not None:
         styles_plan = crosspart.plan_styles_xml(workbook, led,
-                                                zin.read(ARC_STYLE))
+                                                zin.read(ARC_STYLE),
+                                                translator)
     else:
         # a package without styles.xml cannot take style appends
         from .ledger import _style_fingerprint
@@ -189,7 +222,8 @@ def save_preserved(workbook, target):
 
     # ---- workbook.xml plan -------------------------------------------------
     wb_xml_plan = crosspart.plan_workbook_xml(
-        workbook, led, zin.read(wb_part), new_sheet_entries)
+        workbook, led, zin.read(wb_part), new_sheet_entries,
+        force_tags=("calcPr",) if force_calcpr else ())
 
     # ---- workbook rels + content types -------------------------------------
     wb_rels_plan = None
@@ -343,6 +377,35 @@ def _generate_sheet_part(ws):
                     rel.TargetMode or None) for rel in writer._rels]
         rels_payload = crosspart.render_rels_document(entries)
     return payload, rels_payload
+
+
+def _rewrite_added_sheet_styles(payload, workbook, translator):
+    """A freshly generated (added) sheet part carries MODEL style indices in
+    its s attributes; rewrite them into FILE xf indices via the translator
+    (PR-0 D2). Cells without an s attribute keep the implicit 0 — file xf 0
+    by construction, since loaded entries keep their positions."""
+    if translator is None or b' s="' not in payload:
+        return payload
+    table = translator.model_to_file_table()
+    scan = scan_sheet(payload)
+    edits = []
+    for row in scan.rows.values():
+        for cell in row.cells.values():
+            s = cell.attrs.get("s")
+            if s is None:
+                continue
+            file_idx = table.get(int(s))
+            if file_idx is None or str(file_idx) == s:
+                continue
+            head_end = payload.index(b">", cell.start) + 1
+            head = payload[cell.start:head_end]
+            new_head = head.replace(
+                b' s="%s"' % s.encode("ascii"),
+                b' s="%d"' % file_idx, 1)
+            edits.append((cell.start, head_end, new_head))
+    if not edits:
+        return payload
+    return crosspart.apply_edits(payload, edits)
 
 
 def _plan_hyperlinks(workbook, ws, led, zin, sheet_part, names):

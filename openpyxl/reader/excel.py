@@ -159,7 +159,21 @@ class ExcelReader:
             # truncated in place, or overwritten through the same handle
             # before save (CONVENTIONS §3.2; PR-0 §3)
             if not hasattr(fn, "read"):
-                _check_extension(fn)
+                try:
+                    _check_extension(fn)
+                except InvalidFileException as exc:
+                    file_format = os.path.splitext(fn)[-1].lower()
+                    if file_format in (".xls", ".xlsb"):
+                        # preserve mode gets the typed refusal (PLAN Phase 3)
+                        from openpyxl.errors import UnsupportedStructureError
+                        raise UnsupportedStructureError(
+                            "preserve mode does not support the {0} format. "
+                            "Convert the file to .xlsx first — e.g. with "
+                            "LibreOffice: soffice --headless --convert-to "
+                            "xlsx <file> — and note the conversion itself "
+                            "is done by LibreOffice, not by this "
+                            "library.".format(file_format)) from exc
+                    raise
             self._source_blob = _read_source_bytes(fn)
             fn = BytesIO(self._source_blob)
         self.archive = _validate_archive(fn)
