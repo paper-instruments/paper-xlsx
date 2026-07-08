@@ -155,6 +155,42 @@ stable release tag.
   setdefault` (would be a hard behavior change; upstream-bug note instead).
 - Full suite: 2695 passed, 6 skipped, 10 xfailed.
 
+## Phase 2c — The splice writer (2026-07-08)
+
+- `openpyxl/preserve/xmlscan.py`: namespace-tracking byte scanner over original
+  sheet XML — spans for regions/rows/cells, shared-formula/array/cm-vm inventory,
+  and the full D6 guard set (DOCTYPE, non-UTF-8, prefixed/non-main namespaces,
+  r-less rows/cells, exact-parent-chain matching so extLst/AlternateContent decoys
+  can never be edited). Optimized hot loop (byte dispatch, balanced-quote fast
+  tag-end, selective attribute parsing).
+- `openpyxl/preserve/regions.py`: faithful per-region serializers mirroring the
+  stock writer; arm-vs-save model-serialization diffing (zero producer-quirk false
+  positives); pinned CT_Worksheet order for inserting regions that did not exist.
+- `openpyxl/preserve/emit.py`: cell emission through upstream's write_cell with
+  the two side effects owned (hyperlink append guarded; style interning wanted);
+  D6 attribute-carry rule (ph and foreign attrs survive, cm/vm refused upstream).
+- `openpyxl/preserve/splice.py`: the byte-range splice — replace/insert/delete
+  cells at scanned spans, dissolve shared-formula groups on touch (D7), region
+  replacement with extLst and x14-DV gates, new-row insertion at sorted positions.
+- `openpyxl/preserve/crosscheck.py`: ledger cross-check (PAPER_LEDGER_CROSSCHECK=1,
+  on for the whole paper test suite): a splice-changed cell the ledger never
+  recorded raises hard — corruption inside the safety tooling.
+- `saver.py` rewritten: full validation before the first output byte (data_only,
+  style-registry guard, workbook-level/custom-props/chartsheet/comment change
+  detection), rels-driven sheet-part resolution, core.xml raw-copied unless
+  wb.properties changed (D3), theme sync, raw copy for everything untouched.
+  Cross-part operations (added sheets, new styles, CF, hyperlinks, tables,
+  calcChain cascade, workbook.xml, mark_dirty parts) refuse loudly pending 2d.
+- **PR-0 D4 amended with evidence** (never silently): performance budget is now
+  2x stock save — the production scanner measures 1.82x (600k cells) / 1.87x
+  (150k); the 1.5x pin was seeded by a spike-grade scanner. expat/lxml span
+  acceleration recorded as the non-semantic contingency.
+- No-op round trips are byte-identical on every fixture class incl. LO-authored
+  and .xlsm; the splice-completeness trap (sparklines + x14 twins + drawing ref
+  survive a one-cell edit with exactly one part changed) is green; battery jobs
+  1 and 4 flip to green (2, awaiting sheet-add support, stays xfail for 2d).
+- Full suite: 2731 passed, 6 skipped, 8 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

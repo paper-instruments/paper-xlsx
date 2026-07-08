@@ -75,26 +75,6 @@ class TestPreserveLoad:
                 if "extension is not supported" in str(w.message)]
 
 
-class TestPreserveSaveStage2a:
-    """Transient 2a behavior: preserve-mode save refuses until the splice
-    writer (2c) lands. These tests are REPLACED in Phase 2c."""
-
-    def test_preserve_save_refuses_atomically(self, fixture_copy, tmp_path):
-        src = fixture_copy("gauntlet/gauntlet.xlsx")
-        with open(src, "rb") as f:
-            before = f.read()
-        wb = load_workbook(src, preserve=True)
-        out = str(tmp_path / "out.xlsx")
-        with pytest.raises(UnsupportedStructureError, match="Phase 2c"):
-            wb.save(out)
-        assert not os.path.exists(out)
-        with open(src, "rb") as f:
-            assert f.read() == before
-        # the refusal is typed and catchable as PaperRefusal
-        with pytest.raises(PaperRefusal):
-            wb.save(out)
-
-
 class TestLossySaveWarning:
 
     def test_rich_file_stock_save_warns_with_structured_losses(

@@ -175,7 +175,7 @@ class TestBatterySafety:
     """The forever criterion: correct or loudly refused — never silently
     wrong. Strict xfails; each names the phase that must flip it."""
 
-    @pytest.mark.xfail(reason="preserve mode splice lands in Phase 2c/2d", strict=True)
+    # GREEN since Phase 2c: the splice preserves sheet-internal extensions
     def test_job1_assumption_flip_preserves_everything(self, fixture_copy, tmp_path):
         src = fixture_copy("gauntlet/gauntlet.xlsx")
         wb = load_workbook(src, preserve=True)
@@ -228,7 +228,7 @@ class TestBatterySafety:
             assert wb2.defined_names["Growth"].value == "Schedule!$B$16"
             assert wb2["Summary"]["B1"].value == "=Schedule!B13"
 
-    @pytest.mark.xfail(reason="preserve-mode save (raw copy) lands in Phase 2c", strict=True)
+    # GREEN since Phase 2c: untouched parts raw-copy byte-identically
     def test_job4_xlsm_roundtrip_preserves_vba(self, fixture_copy, tmp_path):
         src = fixture_copy("features/macro_stub.xlsm")
         vba_before = part_payloads(src)["xl/vbaProject.bin"]

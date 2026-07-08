@@ -6,10 +6,10 @@ exactly those edits to the retained package and nothing else.
 The ledger is load-bearing, not an optimization: a compare-based patch-save
 is impossible here because stock serialization of a whole sheet is the lossy
 act — there is nothing faithful to compare. (Fully-modeled satellite
-*elements* are the sanctioned exception: for those, the save path compares a
-faithful re-serialization against the original element — that comparison
-lives in the splice writer, keyed off the retained bytes, and needs no
-load-time state.)
+*elements* are the sanctioned exception: their arm-time model serializations
+are snapshotted below and compared against save-time re-serializations —
+self-consistent, so USER changes are detected with zero producer-quirk
+noise.)
 
 What the ledger holds:
 
@@ -41,7 +41,10 @@ class DirtyLedger:
 
     __slots__ = ("armed", "cells", "parts", "formulas_changed",
                  "added_sheets", "loaded_sheet_titles", "_style_lengths",
-                 "_style_fingerprint")
+                 "_style_fingerprint", "region_snapshots", "row_attr_snapshots",
+                 "comment_snapshots", "workbook_snapshot", "core_snapshot",
+                 "custom_snapshot", "chartsheet_snapshots",
+                 "orig_cell_styles_len", "rich_text_mode")
 
     def __init__(self):
         self.armed = False
@@ -52,14 +55,39 @@ class DirtyLedger:
         self.loaded_sheet_titles = frozenset()
         self._style_lengths = ()
         self._style_fingerprint = ()
+        # arm-time model serializations: comparing them against save-time
+        # re-serializations detects USER changes with no producer-quirk
+        # noise (PR-0 D5 Tier 2 realized as snapshot-vs-snapshot)
+        self.region_snapshots = {}     # ws -> {tag: rendered}
+        self.row_attr_snapshots = {}   # ws -> {row: attr tuple}
+        self.comment_snapshots = {}    # ws -> {(row, col): (text, author)}
+        self.workbook_snapshot = None  # workbook.xml rendered from the model
+        self.core_snapshot = None
+        self.custom_snapshot = None
+        self.chartsheet_snapshots = {} # chartsheet -> rendered
+        self.orig_cell_styles_len = 0
+        self.rich_text_mode = False
 
     # -- arming --------------------------------------------------------
 
     @classmethod
-    def arm(cls, wb):
+    def arm(cls, wb, rich_text=False):
+        from .regions import snapshot_regions, snapshot_row_attrs
+
         led = cls()
         led.loaded_sheet_titles = frozenset(wb.sheetnames)
         led._style_lengths, led._style_fingerprint = _style_fingerprint(wb)
+        for ws in wb.worksheets:
+            led.region_snapshots[ws] = snapshot_regions(ws)
+            led.row_attr_snapshots[ws] = snapshot_row_attrs(ws)
+            led.comment_snapshots[ws] = _comment_snapshot(ws)
+        for cs in wb.chartsheets:
+            led.chartsheet_snapshots[cs] = _render_chartsheet(cs)
+        led.workbook_snapshot = render_workbook_model(wb)
+        led.core_snapshot = render_core_model(wb)
+        led.custom_snapshot = render_custom_model(wb)
+        led.orig_cell_styles_len = len(wb._cell_styles)
+        led.rich_text_mode = rich_text
         led.armed = True
         return led
 
@@ -112,6 +140,45 @@ def _style_fingerprint(wb, limits=None):
             else:
                 rendered.append(repr(obj).encode())
     return lengths, tuple(rendered)
+
+
+def _comment_snapshot(ws):
+    snap = {}
+    for (row, col), cell in ws._cells.items():
+        comment = getattr(cell, "_comment", None)
+        if comment is not None:
+            snap[(row, col)] = (comment.text, comment.author)
+    return snap
+
+
+def render_workbook_model(wb):
+    """workbook.xml as the model would serialize it (self-consistent between
+    arm and save: detects user changes to sheets/state/order, defined names,
+    calcPr, book views, protection, code name)."""
+    from openpyxl.workbook._writer import WorkbookWriter
+
+    return WorkbookWriter(wb).write()
+
+
+def render_core_model(wb):
+    from openpyxl.xml.functions import tostring
+
+    return tostring(wb.properties.to_tree())
+
+
+def render_custom_model(wb):
+    from openpyxl.xml.functions import tostring
+
+    props = wb.custom_doc_props
+    if not len(props):
+        return None
+    return tostring(props.to_tree())
+
+
+def _render_chartsheet(cs):
+    from openpyxl.xml.functions import tostring
+
+    return tostring(cs.to_tree())
 
 
 # ---------------------------------------------------------------------

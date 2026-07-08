@@ -6,6 +6,10 @@ import shutil
 
 import pytest
 
+# every preserve-mode save in this suite runs the ledger cross-check: a
+# splice-changed cell the ledger never recorded fails the test run hard
+os.environ.setdefault("PAPER_LEDGER_CROSSCHECK", "1")
+
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 

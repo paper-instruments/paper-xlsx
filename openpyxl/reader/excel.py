@@ -363,7 +363,7 @@ class ExcelReader:
                     # fired (create_sheet, cell binds, style writes) is the
                     # file's own state, not user dirt (PR-0 D5)
                     action = "arm the dirty ledger"
-                    self.wb._paper_ledger = DirtyLedger.arm(self.wb)
+                    self.wb._paper_ledger = DirtyLedger.arm(self.wb, rich_text=self.rich_text)
         except ValueError as e:
             raise ValueError(
                 f"Unable to read workbook: could not {action} from {self.archive.filename}.\n"
