@@ -22,6 +22,14 @@ class SpliceRefusal(UnsupportedStructureError):
     pass
 
 
+# row attributes the model owns (dict(RowDimension) keys + spans/r); anything
+# else found on an original row is unmodeled and carried verbatim
+_MODEL_ROW_ATTRS = frozenset((
+    "ht", "customFormat", "customHeight", "s", "hidden", "outlineLevel",
+    "collapsed", "thickTop", "thickBot", "spans",
+))
+
+
 def _cells_in_ref(ref):
     min_col, min_row, max_col, max_row = range_boundaries(ref)
     return {(r, c) for r in range(min_row, max_row + 1)
@@ -58,11 +66,18 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
                 "supported in v0; nothing was written.".format(
                     sorted(hit), ws.title, ref))
 
-    # shared-formula groups: dissolve on touch
+    # shared-formula groups: dissolve on touch. Membership comes from the
+    # OBSERVED member cells (every member carries si); the host's ref
+    # attribute can be stale after a shift and is used only as a widener
+    # when it still parses
     for si, ref in scan.shared_groups.items():
-        members = _cells_in_ref(ref) | scan.shared_members.get(si, set())
+        members = set(scan.shared_members.get(si, set()))
+        try:
+            members |= _cells_in_ref(ref)
+        except Exception:
+            pass
         if dirty & members:
-            dirty |= members
+            dirty |= scan.shared_members.get(si, set()) | (dirty & members)
     # a follower whose host/ref we never saw cannot be dissolved safely
     for si, members in scan.shared_members.items():
         if si not in scan.shared_groups and (dirty & members):
@@ -162,7 +177,10 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                 "cannot insert rows into sheet {0!r}: its rows are not in "
                 "ascending order. Nothing was written.".format(ws.title))
 
-    # ------- assemble the edit list: (start, end, replacement) -----------
+    # ------- assemble the edit list: (start, end, replacement, rank) -----
+    # rank breaks ties between insertions landing at the same offset: they
+    # must come out in CT_Worksheet child order (measured: DV added together
+    # with CF previously emitted in schema-invalid order)
     edits = []
 
     # 1. region replacements / removals / insertions
@@ -170,10 +188,12 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
         spans = scan.regions.get(tag, [])
         if spans:
             span = spans[0]
-            edits.append((span.start, span.end, rendered or b""))
+            edits.append((span.start, span.end, rendered or b"",
+                          CT_ORDER_INDEX.get(tag, 0)))
         elif rendered:
             insert_at = _region_insert_offset(scan, tag)
-            edits.append((insert_at, insert_at, rendered))
+            edits.append((insert_at, insert_at, rendered,
+                          CT_ORDER_INDEX.get(tag, 0)))
 
     # 1b. conditional formatting: replace the whole (possibly multi-element)
     # run with the freshly rendered blocks (dxf handling done by the caller)
@@ -193,32 +213,38 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                     "the sheet carries x14 conditional formatting in its "
                     "extLst; editing the classic element alone would desync "
                     "the twins. Nothing was written.".format(ws.title))
+        cf_rank = CT_ORDER_INDEX["conditionalFormatting"]
         if spans:
-            edits.append((spans[0].start, spans[0].end, cf_replacement))
+            edits.append((spans[0].start, spans[0].end, cf_replacement,
+                          cf_rank))
             for extra in spans[1:]:
-                edits.append((extra.start, extra.end, b""))
+                edits.append((extra.start, extra.end, b"", cf_rank))
         elif cf_replacement:
             offset = _region_insert_offset(scan, "conditionalFormatting")
-            edits.append((offset, offset, cf_replacement))
+            edits.append((offset, offset, cf_replacement, cf_rank))
 
     # 1c. hyperlinks element
     if hyperlinks_replacement is not None:
         spans = scan.regions.get("hyperlinks", [])
+        link_rank = CT_ORDER_INDEX["hyperlinks"]
         if spans:
             edits.append((spans[0].start, spans[0].end,
-                          hyperlinks_replacement))
+                          hyperlinks_replacement, link_rank))
         elif hyperlinks_replacement:
             offset = _region_insert_offset(scan, "hyperlinks")
-            edits.append((offset, offset, hyperlinks_replacement))
+            edits.append((offset, offset, hyperlinks_replacement, link_rank))
 
-    # 2. cell and row edits inside sheetData
-    edits.extend(_sheetdata_edits(ws, scan, dirty_cells, row_attr_changes,
-                                  style_resolver))
+    # 2. cell and row edits inside sheetData (rank 0: sheetData precedes
+    # every insertable region, so offsets never collide with them)
+    edits.extend((s, e, r, 0) for (s, e, r)
+                 in _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes,
+                                     style_resolver))
 
     # ------- apply (sorted, non-overlapping by construction) -------------
-    edits.sort(key=lambda e: (e[0], e[1]))
+    edits.sort(key=lambda e: (e[0], e[1], e[3]))
     for (s1, e1), (s2, e2) in zip(
-            [(s, e) for s, e, _ in edits], [(s, e) for s, e, _ in edits][1:]):
+            [(s, e) for s, e, _r, _k in edits],
+            [(s, e) for s, e, _r, _k in edits][1:]):
         if e1 > s2:
             raise SpliceRefusal(
                 "internal: overlapping splice edits ({0},{1}) and "
@@ -226,7 +252,7 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
 
     out = []
     pos = 0
-    for start, end, replacement in edits:
+    for start, end, replacement, _rank in edits:
         out.append(original[pos:start])
         out.append(replacement)
         pos = end
@@ -335,18 +361,26 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve):
     edits = []
 
     if new_attrs is not None:
-        # rewrite the start tag, preserving the row's content
+        # rewrite the start tag, preserving the row's content; original
+        # attributes the model does not know (x14ac:dyDescent, xr:uid, ...)
+        # are carried verbatim — the D6 rule applies to rows too
         attrs = dict(new_attrs)
-        # keep original spans attribute verbatim (tolerated-stale, PR-0 D6)
+        for key, value in row_span.attrs.items():
+            if key not in _MODEL_ROW_ATTRS and key != "r":
+                attrs.setdefault(key, value)
         if "spans" in row_span.attrs:
             attrs.setdefault("spans", row_span.attrs["spans"])
         if row_span.self_closing:
-            edits.append((row_span.start, row_span.end,
-                          emit.row_start_tag(row_span.index, attrs,
-                                             self_closing=True)))
             if dirty_cols:
-                raise SpliceRefusal(
-                    "internal: dirty cells in a self-closing row")
+                cells_bytes = _emit_row_cells(ws, row_span.index,
+                                              sorted(dirty_cols), resolve)
+                edits.append((row_span.start, row_span.end,
+                              emit.emit_new_row(ws, row_span.index,
+                                                cells_bytes, attrs)))
+            else:
+                edits.append((row_span.start, row_span.end,
+                              emit.row_start_tag(row_span.index, attrs,
+                                                 self_closing=True)))
             return edits
         edits.append((row_span.start, row_span.content_start,
                       emit.row_start_tag(row_span.index, attrs)))

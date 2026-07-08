@@ -2,7 +2,11 @@
 
 """``diff_cells(a, b)``: which cells changed between two workbooks, as
 (address, old/new value, old/new formula) — the same machinery family the
-ledger cross-check uses, packaged for agents and tests."""
+ledger cross-check uses, packaged for agents and tests.
+
+SCOPE (by design, PLAN Phase 4): values and formulas only. Style-only
+changes are invisible here — use ``diff_package`` (part-level, semantic)
+to see styling churn."""
 
 from openpyxl.utils.cell import quote_sheetname
 
@@ -60,7 +64,10 @@ def _snapshot(source):
                 formula = value if isinstance(value, str) else str(value)
                 vcell = ws_values._cells.get((row, col))
                 value = vcell._value if vcell is not None else None
-            if value is None and formula is None and not cell.has_style:
+            if value is None and formula is None:
+                # style-only cells are out of scope (see module docstring):
+                # including them one-sidedly made a style-only cell compare
+                # equal to an absent one anyway
                 continue
             cells[(row, col)] = (value, formula)
         out[ws.title] = cells

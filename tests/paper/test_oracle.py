@@ -40,13 +40,13 @@ class TestDriverRules:
 
         src = fixture_copy("features/schedule.xlsx")
         seen = []
-        real_run = sp.run
+        real_popen = sp.Popen
 
         def spy(cmd, **kw):
             seen.append(list(cmd))
-            return real_run(cmd, **kw)
+            return real_popen(cmd, **kw)
 
-        monkeypatch.setattr(oracle.subprocess, "run", spy)
+        monkeypatch.setattr(oracle.subprocess, "Popen", spy)
         with open(src, "rb") as f:
             before = f.read()
         oracle.recalc(src)

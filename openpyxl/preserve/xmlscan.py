@@ -297,6 +297,16 @@ def scan_sheet(data):
                     "supported in v0")
             coord = r_attr.decode("ascii")
             col = _column_index(coord)
+            digits = coord.lstrip(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz$")
+            if digits and int(digits) != current_row.index:
+                # openpyxl's reader places the cell by ITS r while the splice
+                # keys spans by the parent row: a mismatch (off-spec but
+                # loadable) would make an edit insert a duplicate reference
+                raise ScanRefusal(
+                    "cannot splice: cell {0!r} sits inside row {1} (its own "
+                    "reference disagrees with its parent row)".format(
+                        coord, current_row.index))
             cell = CellSpan(current_row.index, col, lt)
             cell.attrs = {k.decode("latin-1"): v.decode("utf-8")
                           for k, v in attrs.items()}

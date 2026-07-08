@@ -45,7 +45,8 @@ class DirtyLedger:
                  "comment_snapshots", "workbook_snapshot", "core_snapshot",
                  "custom_snapshot", "chartsheet_snapshots",
                  "orig_cell_styles_len", "rich_text_mode",
-                 "sheet_states", "dxfs_len", "named_styles_len", "shifts")
+                 "sheet_states", "dxfs_len", "named_styles_len", "shifts",
+                 "template_flag")
 
     def __init__(self):
         self.armed = False
@@ -72,6 +73,7 @@ class DirtyLedger:
         self.dxfs_len = 0
         self.named_styles_len = 0
         self.shifts = {}               # ws -> [(operation, index, amount)]
+        self.template_flag = False
 
     # -- arming --------------------------------------------------------
 
@@ -96,6 +98,7 @@ class DirtyLedger:
         led.orig_cell_styles_len = len(wb._cell_styles)
         led.rich_text_mode = rich_text
         led.sheet_states = {s.title: s.sheet_state for s in wb._sheets}
+        led.template_flag = bool(wb.template)
         led.dxfs_len = len(wb._differential_styles.styles)
         led.named_styles_len = len(wb._named_styles)
         led.armed = True
@@ -204,7 +207,9 @@ def mark_cell_dirty(cell, formula_involved=False):
     """Called from Cell mutation chokepoints (value bind, style set,
     hyperlink/comment/data_type assignment)."""
     ws = cell.parent
-    if ws is None:
+    if ws is None or cell.row is None or cell.column is None:
+        # standalone cells (write-only compatibility) have no coordinates
+        # yet; append() marks them once they are placed
         return
     led = _armed_ledger_for_ws(ws)
     if led is None:
@@ -339,6 +344,23 @@ def refuse_sheet_lifecycle(wb, operation, detail):
     )
 
 
+def refuse_chart_or_image_add(ws, what):
+    """Adding charts/images under preserve refuses in v0 (PR-0 D9 as
+    amended in Phase 2d): drawing-part generation against the preserved
+    package is out of scope, and silently dropping the object at save is
+    the forbidden outcome."""
+    led = _armed_ledger_for_ws(ws)
+    if led is None:
+        return
+    raise UnsupportedStructureError(
+        "add_{0}() is not supported in preserve mode (v0): generating "
+        "drawing parts alongside the preserved package is not implemented, "
+        "and the {0} would otherwise be silently absent from the saved "
+        "file. Build charts in a separate stock-mode workbook. Nothing was "
+        "changed.".format(what)
+    )
+
+
 def refuse_rename(sheet_child):
     """Renaming a LOADED sheet under preserve is refused: every formula,
     defined name and chart series referencing the old name — including
@@ -379,6 +401,12 @@ def mark_dirty_target(wb, target):
         for ws in wb.worksheets:
             if ws.title == title:
                 min_col, min_row, max_col, max_row = bounds
+                # open-ended (whole-row/column) bounds clamp to the model's
+                # populated extent — those are the only splice-able cells
+                if min_row is None:
+                    min_row, max_row = ws.min_row or 1, ws.max_row or 1
+                if min_col is None:
+                    min_col, max_col = ws.min_column or 1, ws.max_column or 1
                 for row in range(min_row, max_row + 1):
                     for col in range(min_col, max_col + 1):
                         led.mark_cell(ws, row, col)

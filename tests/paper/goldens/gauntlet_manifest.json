@@ -23,6 +23,7 @@
     "drawing_parts": 1,
     "pivot_parts": 0,
     "printer_settings": false,
+    "source": "package",
     "vba_present": false,
     "worksheet_extensions": [
       "Conditional Formatting",

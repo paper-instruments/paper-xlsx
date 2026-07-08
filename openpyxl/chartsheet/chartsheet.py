@@ -92,6 +92,8 @@ class Chartsheet(_WorkbookChild, Serialisable):
 
 
     def add_chart(self, chart):
+        from openpyxl.preserve.ledger import refuse_chart_or_image_add
+        refuse_chart_or_image_add(self, "chart")
         chart.anchor = AbsoluteAnchor()
         self._charts.append(chart)
 

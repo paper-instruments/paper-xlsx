@@ -54,7 +54,9 @@ from .cell_range import MultiCellRange, CellRange
 from .merge import MergedCellRange
 from openpyxl.preserve.ledger import (
     finish_structural_edit as _finish_structural_edit,
+    mark_cell_dirty as _mark_cell_dirty,
     mark_deleted_cell as _mark_deleted_cell,
+    refuse_chart_or_image_add as _refuse_chart_or_image_add,
     refuse_structural_edit as _refuse_structural_edit,
 )
 
@@ -586,6 +588,7 @@ class Worksheet(_WorkbookChild):
         Add a chart to the sheet
         Optionally provide a cell for the top-left anchor
         """
+        _refuse_chart_or_image_add(self, "chart")
         if anchor is not None:
             chart.anchor = anchor
         self._charts.append(chart)
@@ -596,6 +599,7 @@ class Worksheet(_WorkbookChild):
         Add an image to the sheet.
         Optionally provide a cell for the top-left anchor
         """
+        _refuse_chart_or_image_add(self, "image")
         if anchor is not None:
             img.anchor = anchor
         self._images.append(img)
@@ -701,6 +705,9 @@ class Worksheet(_WorkbookChild):
                     cell.parent = self
                     cell.column = col_idx
                     cell.row = row_idx
+                    # pre-built cells bypass the value-setter chokepoint:
+                    # mark them here or the ledger misses the whole row
+                    _mark_cell_dirty(cell)
                 else:
                     cell = Cell(self, row=row_idx, column=col_idx, value=content)
                 self._cells[(row_idx, col_idx)] = cell

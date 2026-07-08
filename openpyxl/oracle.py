@@ -167,14 +167,27 @@ def _recalculate_bytes(data, timeout, suffix=".xlsx"):
             "--outdir", outdir,
             tmp_input,
         ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                start_new_session=True)
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
-                                  start_new_session=True)
+            stdout, _stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            # kill the whole process group: soffice spawns children
+            # (oosplash -> soffice.bin) that a child-only kill orphans
+            import signal
+
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+            proc.wait()
             raise OracleTimeoutError(
                 "LibreOffice did not finish within {0:g}s. The process "
                 "group was killed; no caller file was touched.".format(
                     timeout))
+        proc = type("_Result", (), {"returncode": proc.returncode,
+                                    "stdout": stdout})()
         out_path = os.path.join(outdir, "input.xlsx")
         # rc==0 alone lies: soffice exits 0 on unloadable input
         if proc.returncode != 0 or not os.path.exists(out_path):
@@ -235,6 +248,20 @@ def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
         raise ValueError("in_place=True requires a filesystem path source")
 
     data = _read_source(source)
+
+    if output_path is not None or in_place:
+        # LibreOffice converts to plain xlsx: writing that output over a
+        # macro workbook would strip the entire VBA project silently
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            if "xl/vbaProject.bin" in z.namelist():
+                from openpyxl.errors import UnsupportedStructureError
+
+                raise UnsupportedStructureError(
+                    "recalc output for a macro-enabled workbook would strip "
+                    "its VBA project (LibreOffice converts to plain .xlsx). "
+                    "Run recalc() without output_path/in_place for the "
+                    "error scan, or use certify() for value checking. "
+                    "Nothing was written.")
     recalculated = _recalculate_bytes(data, timeout)
 
     from openpyxl.reader.excel import load_workbook
@@ -301,7 +328,11 @@ class CertificationResult:
 
 def _values_match(cached, computed):
     if isinstance(cached, bool) or isinstance(computed, bool):
-        return cached is computed or cached == computed
+        # a boolean only ever matches a boolean: Python's True == 1 would
+        # otherwise mask real divergences
+        if not (isinstance(cached, bool) and isinstance(computed, bool)):
+            return False
+        return cached is computed
     if isinstance(cached, (int, float)) and isinstance(computed, (int, float)):
         diff = abs(float(cached) - float(computed))
         return diff <= max(ABS_TOL, REL_TOL * max(abs(float(cached)),
@@ -327,15 +358,28 @@ def certify(source, *, timeout=120.0):
 
     # cells downstream of nondeterministic volatiles are excluded (§3.7):
     # seed with the volatile cells, propagate through the dependency sketch
+    from openpyxl.formula import Tokenizer
+
     sketch = dependency_sketch(wb_formulas)
+    volatile_funcs = {name + "(" for name in VOLATILE_NONDETERMINISTIC}
     tainted = set()
     for ws in wb_formulas.worksheets:
         for (row, col), cell in ws._cells.items():
-            if cell.data_type == "f" and isinstance(cell._value, str):
-                upper = cell._value.upper()
-                if any(name + "(" in upper.replace(" ", "")
-                       for name in VOLATILE_NONDETERMINISTIC):
+            if cell.data_type != "f" or not isinstance(cell._value, str):
+                continue
+            # tokenizer-precise seeding: string literals or UDF names that
+            # merely CONTAIN a volatile name must not taint (and must not
+            # silently shrink the divergence check)
+            try:
+                tokens = Tokenizer(cell._value).items
+            except Exception:
+                tainted.add((ws.title, row, col))   # unparseable: exclude
+                continue
+            for token in tokens:
+                if (token.type == "FUNC" and token.subtype == "OPEN"
+                        and token.value.upper() in volatile_funcs):
                     tainted.add((ws.title, row, col))
+                    break
     changed = True
     while changed:
         changed = False

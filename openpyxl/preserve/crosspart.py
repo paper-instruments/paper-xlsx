@@ -102,7 +102,8 @@ def scan_small(data, expected_root, max_depth=3):
             for m in _ATTR_RE.finditer(head[name_end:]):
                 key = m.group(1)
                 value = m.group(3) if m.group(3) is not None else m.group(4)
-                node.attrs[key.decode("latin-1")] = value.decode("utf-8")
+                node.attrs[key.decode("latin-1")] = _unescape_attr(
+                    value.decode("utf-8"))
 
         if root is None:
             if b":" in raw_name:
@@ -134,6 +135,24 @@ def scan_small(data, expected_root, max_depth=3):
 def _escape(value):
     return (value.replace("&", "&amp;").replace("<", "&lt;")
             .replace('"', "&quot;").encode("utf-8"))
+
+
+_CHARREF_RE = re.compile(r"&#(?:x([0-9a-fA-F]+)|([0-9]+));")
+
+
+def _unescape_attr(value):
+    """Attribute values compare against MODEL strings (sheet titles, part
+    names): entity escapes must be expanded or names like 'P&L' never match
+    (measured: sheet-state changes silently dropped)."""
+    if "&" not in value:
+        return value
+    value = _CHARREF_RE.sub(
+        lambda m: chr(int(m.group(1), 16) if m.group(1) else int(m.group(2))),
+        value)
+    for entity, char in (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                         ("&apos;", "'"), ("&amp;", "&")):
+        value = value.replace(entity, char)
+    return value
 
 
 def apply_edits(data, edits):

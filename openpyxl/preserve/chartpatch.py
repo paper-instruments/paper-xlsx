@@ -195,16 +195,19 @@ def patch_drawing_anchors(payload, operation, index, amount):
     return apply_edits(payload, edits), True
 
 
-def plan_chart_updates(wb, sheet_title, operation, index, amount):
+def plan_chart_updates(wb, sheet_title, operation, index, amount,
+                       overrides=None):
     """Plan every chart/drawing part patch for a shift on ``sheet_title``.
 
     Returns ({part_name: new_payload}, blockers). Used twice: as a dry run
     when the edit is attempted (blockers refuse before any mutation) and for
-    real at save time.
+    real at save time. ``overrides`` supplies already-planned payloads so a
+    part touched by an earlier shift is patched incrementally.
     """
     from .structural import _charts_referencing
 
     source = getattr(wb, "_paper_source", None)
+    overrides = overrides or {}
     plans = {}
     blockers = []
     if not source:
@@ -212,7 +215,7 @@ def plan_chart_updates(wb, sheet_title, operation, index, amount):
     chart_parts = _charts_referencing(wb, sheet_title)
     with zipfile.ZipFile(io.BytesIO(source)) as z:
         for part in chart_parts:
-            payload = z.read(part)
+            payload = overrides.get(part) or z.read(part)
             new_payload, changed, part_blockers = patch_chart(
                 payload, sheet_title, operation, index, amount)
             for blocker in part_blockers:
@@ -221,7 +224,7 @@ def plan_chart_updates(wb, sheet_title, operation, index, amount):
                 plans[part] = new_payload
         drawing_part = _sheet_drawing_part(z, sheet_title)
         if drawing_part is not None:
-            payload = z.read(drawing_part)
+            payload = overrides.get(drawing_part) or z.read(drawing_part)
             new_payload, changed = patch_drawing_anchors(
                 payload, operation, index, amount)
             if changed:

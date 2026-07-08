@@ -95,12 +95,34 @@ def emit_cell(ws, cell, style_index):
     return tostring(el)
 
 
+_ENTITIES = (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+             ("&quot;", '"'), ("&apos;", "'"))
+
+
+def _unescape_value(value):
+    """Scanner attribute values keep their raw entity escapes; expand them
+    before re-escaping so carried values stay verbatim (PR-0 D6)."""
+    for entity, char in _ENTITIES:
+        value = value.replace(entity, char)
+    return value
+
+
 def carry_attributes(new_cell_bytes, original_attrs):
     """PR-0 D6 attribute-carry rule: re-attach every original cell attribute
     the replacement does not intentionally rewrite (everything except r, s,
     t). ``cm``/``vm`` never reach here — the splice refuses them earlier."""
-    carried = {k: v for k, v in original_attrs.items()
-               if k not in ("r", "s", "t")}
+    carried = {}
+    for k, v in original_attrs.items():
+        if k in ("r", "s", "t"):
+            continue
+        if "&#" in v:
+            from openpyxl.errors import UnsupportedStructureError
+
+            raise UnsupportedStructureError(
+                "cannot carry cell attribute {0!r}: it uses numeric "
+                "character references the splice cannot round-trip. "
+                "Nothing was written.".format(k))
+        carried[k] = _unescape_value(v)
     if not carried:
         return new_cell_bytes
     head_end = new_cell_bytes.index(b">")

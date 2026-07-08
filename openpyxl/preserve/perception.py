@@ -120,6 +120,7 @@ def _confession(wb):
     }
     source = getattr(wb, "_paper_source", None)
     if source:
+        conf["source"] = "package"
         with zipfile.ZipFile(io.BytesIO(source)) as z:
             names = z.namelist()
         conf["chart_parts"] = sum(
@@ -137,6 +138,11 @@ def _confession(wb):
         conf["printer_settings"] = any(
             n.startswith("xl/printerSettings/") for n in names)
     else:
+        # stock loads retain no archive: only model-visible facts remain,
+        # and the model under-reports exactly the at-risk content — say so
+        conf["source"] = "model (stock load retains no package; " \
+            "part-level counts unavailable — open with preserve=True " \
+            "for a package-accurate confession)"
         conf["chart_parts"] = sum(
             len(getattr(ws, "_charts", []) or []) for ws in wb.worksheets)
         conf["vba_present"] = wb.vba_archive is not None

@@ -40,6 +40,14 @@ class ExcelWriter:
     """Write a workbook object to an Excel file."""
 
     def __init__(self, workbook, archive):
+        if getattr(workbook, "_preserve", False):
+            from openpyxl.errors import UnsupportedStructureError
+
+            raise UnsupportedStructureError(
+                "this workbook was loaded with preserve=True: writing it "
+                "through ExcelWriter would regenerate every part and drop "
+                "everything the model does not represent. Use "
+                "workbook.save(...) (the splice save) instead.")
         self._archive = archive
         self.workbook = workbook
         self.manifest = Manifest()

@@ -33,6 +33,15 @@ class StyleTranslator:
         sheet = Stylesheet.from_tree(fromstring(original_styles_bytes))
         file_arrays = list(sheet.cell_styles)
         self.file_xf_count = len(file_arrays)
+        # xfId translation guard: appended xfs carry the MODEL's named-style
+        # index; that numbering matches the file's cellStyleXfs positions
+        # only when no duplicates were folded at load — otherwise refuse
+        # rather than point an xf at the wrong named style
+        try:
+            self._file_cellstylexfs_count = len(sheet.cellStyleXfs.xf) \
+                if sheet.cellStyleXfs else 0
+        except Exception:
+            self._file_cellstylexfs_count = 0
         self._map = {}
         for idx, arr in enumerate(file_arrays):
             self._map.setdefault(tuple(arr), idx)   # first wins on duplicates
@@ -93,7 +102,17 @@ class StyleTranslator:
         from openpyxl.styles.cell_style import CellStyle
 
         rendered = []
+        model_named_count = len(self._wb._named_styles)
         for style in self._new_xfs:
+            if style.xfId and model_named_count != self._file_cellstylexfs_count:
+                from openpyxl.errors import UnsupportedStructureError
+
+                raise UnsupportedStructureError(
+                    "a new cell style references named style #{0}, but the "
+                    "model's named-style numbering does not align with the "
+                    "original cellStyleXfs (duplicates were folded at "
+                    "load); writing it would attach the wrong named style. "
+                    "Nothing was written.".format(style.xfId))
             xf = CellStyle.from_array(style)
             xf.numFmtId = self._file_numfmt_id(style.numFmtId)
             if style.alignmentId:

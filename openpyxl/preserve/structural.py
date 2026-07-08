@@ -143,20 +143,31 @@ def _ref_hit(ref, bounds):
         return True   # unparseable: assume affected (conservative)
 
 
+def _title_needles(sheet_title):
+    """Byte needles for a sheet title inside preserved XML: raw and
+    XML-escaped forms, quoted variants, all lower-cased for case-insensitive
+    search (Excel resolves sheet names case-insensitively)."""
+    escaped = (sheet_title.replace("&", "&amp;").replace("<", "&lt;")
+               .replace(">", "&gt;"))
+    variants = {sheet_title, escaped,
+                "'{0}'".format(sheet_title.replace("'", "''")),
+                "'{0}'".format(escaped.replace("'", "''")),
+                "'{0}'".format(escaped.replace("'", "&apos;&apos;"))}
+    return [v.encode("utf-8").lower() for v in variants]
+
+
 def _charts_referencing(wb, sheet_title):
     """Names of retained chart parts whose XML mentions the sheet."""
     source = getattr(wb, "_paper_source", None)
     if not source:
         return []
-    needles = [sheet_title.encode("utf-8")]
-    quoted = "'{0}'".format(sheet_title.replace("'", "''")).encode("utf-8")
-    needles.append(quoted)
+    needles = _title_needles(sheet_title)
     hits = []
     with zipfile.ZipFile(io.BytesIO(source)) as z:
         for name in z.namelist():
             if (name.startswith("xl/charts/") and name.endswith(".xml")
                     and "/_rels/" not in name):
-                payload = z.read(name)
+                payload = z.read(name).lower()
                 if any(needle in payload for needle in needles):
                     hits.append(name)
     return hits
@@ -239,13 +250,15 @@ def _pivots_referencing(wb, sheet_title):
     source = getattr(wb, "_paper_source", None)
     if not source:
         return []
-    needle = sheet_title.encode("utf-8")
+    needles = _title_needles(sheet_title)
     hits = []
     with zipfile.ZipFile(io.BytesIO(source)) as z:
         for name in z.namelist():
             if name.startswith(("xl/pivotTables/", "xl/pivotCache/")) \
-                    and name.endswith(".xml") and needle in z.read(name):
-                hits.append(name)
+                    and name.endswith(".xml"):
+                payload = z.read(name).lower()
+                if any(needle in payload for needle in needles):
+                    hits.append(name)
     return hits
 
 
@@ -283,6 +296,12 @@ def apply_model_shift(ws, operation, index, amount):
     axis = "rows" if "rows" in operation else "cols"
     is_delete = operation.startswith("delete")
     mapper = row_mapping(operation, index, amount)
+
+    # 0. rebase positional ledger/arm state FIRST: pre-shift dirty marks and
+    # snapshots move with the cells; everything the fixups below record is
+    # already in post-shift coordinates and must NOT be remapped again
+    if led is not None:
+        _rebase_snapshots(led, ws, mapper, axis)
 
     # 1. formulas everywhere in the workbook that reference this sheet
     for other in wb.worksheets:
@@ -341,39 +360,50 @@ def apply_model_shift(ws, operation, index, amount):
         ws.row_dimensions.clear()
         ws.row_dimensions.update(new_dims)
 
-        # 5. hyperlink anchors track their cells
-        for (_r, _c), cell in ws._cells.items():
-            link = getattr(cell, "_hyperlink", None)
-            if link is not None:
-                link.ref = cell.coordinate
+    # 5. hyperlink anchors track their cells (both axes)
+    for (_r, _c), cell in ws._cells.items():
+        link = getattr(cell, "_hyperlink", None)
+        if link is not None:
+            link.ref = cell.coordinate
 
     if led is not None:
-        _rebase_snapshots(led, ws, mapper, axis)
         led.shifts.setdefault(ws, []).append((operation, index, amount))
         led.formulas_changed = True
 
 
 def _rebase_snapshots(led, ws, mapper, axis):
-    """Positional arm snapshots (row attrs, hyperlink anchors, comments)
-    must follow a pure move, or the save would mis-read the move as user
-    edits (and hyperlink 'removals' would refuse)."""
-    if axis != "rows":
-        return   # column shifts do not renumber rows
-    rows = led.row_attr_snapshots.get(ws)
-    if rows:
-        led.row_attr_snapshots[ws] = {
-            mapper(r): attrs for r, attrs in rows.items()
-            if mapper(r) is not None}
+    """Every POSITIONAL piece of arm/ledger state (dirty cells, row attrs,
+    hyperlink anchors, comments) must follow a pure move, or the save would
+    lose pre-shift edits and mis-read the move as user changes."""
+    if axis == "rows":
+        def map_key(row, col):
+            new_row = mapper(row)
+            return None if new_row is None else (new_row, col)
+    else:
+        def map_key(row, col):
+            new_col = mapper(col)   # the caller passes the column mapper
+            return None if new_col is None else (row, new_col)
+
+    dirty = led.cells.get(ws)
+    if dirty:
+        led.cells[ws] = {mapped for (r, c) in dirty
+                         for mapped in (map_key(r, c),) if mapped is not None}
     links = led.region_snapshots.get(ws, {}).get("hyperlinks")
     if links:
         led.region_snapshots[ws]["hyperlinks"] = {
-            (mapper(r), c): sig for (r, c), sig in links.items()
-            if mapper(r) is not None}
+            mapped: sig for (r, c), sig in links.items()
+            for mapped in (map_key(r, c),) if mapped is not None}
     comments = led.comment_snapshots.get(ws)
     if comments:
         led.comment_snapshots[ws] = {
-            (mapper(r), c): sig for (r, c), sig in comments.items()
-            if mapper(r) is not None}
+            mapped: sig for (r, c), sig in comments.items()
+            for mapped in (map_key(r, c),) if mapped is not None}
+    if axis == "rows":
+        rows = led.row_attr_snapshots.get(ws)
+        if rows:
+            led.row_attr_snapshots[ws] = {
+                mapper(r): attrs for r, attrs in rows.items()
+                if mapper(r) is not None}
 
 
 def apply_shift_to_bytes(original, operation, index, amount):

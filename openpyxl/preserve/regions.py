@@ -41,7 +41,36 @@ def _sheet_format(ws):
 
 
 def _cols(ws):
-    return ws.column_dimensions.to_tree()              # None when trivial
+    # a pure READ (ws.column_dimensions['J']) materializes a default entry
+    # whose render differs from absence — filter those out or the diff
+    # mis-reads a read as a user edit (reads must never dirty)
+    holder = ws.column_dimensions
+    default_attrs = None
+    materialized = []
+    for key, dim in list(holder.items()):
+        attrs = dict(dim)
+        if default_attrs is None:
+            from openpyxl.worksheet.dimensions import ColumnDimension
+
+            probe = ColumnDimension(ws, index=dim.index)
+            probe_attrs = dict(probe)
+            default_attrs = {k: v for k, v in probe_attrs.items()
+                             if k not in ("min", "max")}
+        significant = {k: v for k, v in attrs.items()
+                       if k not in ("min", "max")}
+        if significant == default_attrs:
+            materialized.append(key)
+    if not materialized:
+        return holder.to_tree()
+    import copy as _copy
+
+    filtered = {k: v for k, v in holder.items() if k not in materialized}
+    if not filtered:
+        return None
+    trimmed = type(holder)(worksheet=ws,
+                           default_factory=holder.default_factory)
+    trimmed.update(filtered)
+    return trimmed.to_tree()
 
 
 def _protection(ws):

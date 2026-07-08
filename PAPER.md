@@ -356,6 +356,49 @@ stable release tag.
   charted region; patched output loads in LibreOffice.
 - Full suite: 2839 passed, 6 skipped, 7 xfailed.
 
+## Final adversarial review (2026-07-08)
+
+Before the implementation PR, a 40-agent adversarial review (6 module
+reviewers, every finding independently verified with a runnable repro; 0
+refuted) confirmed 34 defects. ALL are fixed and regression-tested
+(`tests/paper/test_review_regressions.py`); the review artifacts are in
+`scratch/results/final_review/confirmed.json`. Highlights, worst first:
+
+- Row/column style indices reached spliced bytes untranslated (dangling xf,
+  IndexError on reload — the PR-0 D2 rule applied to cells but not
+  dimensions). Row s= and cols style= now route through the StyleTranslator.
+- CF + DV inserted together landed in schema-invalid order (same-offset
+  insertions now tie-break by the CT_Worksheet sequence).
+- A cell whose r disagrees with its parent row (off-spec but loadable)
+  spliced a silent duplicate reference; now a typed refusal.
+- Pre-shift cell edits were double-remapped and silently lost (ledger dirt
+  now rebases BEFORE the shift fixups); split shared-formula groups could
+  re-derive wrong formulas (all groups on shifted sheets dissolve); a
+  hyperlink on a deleted row re-attached to the row that shifted up (the
+  element re-renders whenever the original had hyperlinks); chart patches
+  for multi-sheet shifts overwrote each other (incremental overrides).
+- Sheet names needing XML escapes ('P&L') were invisible to the sheets-state
+  patch and the chart/pivot reference scans (entity-aware compares; sheet
+  matching is case-insensitive like Excel).
+- Silent-drop refusal gaps closed: add_chart/add_image and create_chartsheet
+  under preserve, wb.template toggles, deleting the last custom property
+  (was a crash), the ExcelWriter bypass of the preserve dispatch, the
+  append(Cell) write-only-compat path (now ledgered), full-column
+  mark_dirty ranges (was a TypeError).
+- Reads-never-dirty restored for column dimensions (a pure read materialized
+  a visible <cols> entry into the output).
+- Oracle: volatile taint-seeding is tokenizer-precise (string literals no
+  longer shrink the divergence check); booleans never compare equal to
+  numbers; recalc output for .xlsm refuses (LibreOffice conversion would
+  strip VBA); timeouts kill the whole process group as documented.
+- Contract clarifications: diff_cells scope (values/formulas only) stated;
+  manifest confession carries a "source" field and says loudly when
+  package-level counts are unavailable on stock loads.
+- Stock hot path: the ledger hook cost on fresh-generation writes was cut to
+  noise with an inline bail (200k-cell build 0.197s, pre-fork parity).
+
+Post-review suite: 2857 passed, 7 skipped, 7 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

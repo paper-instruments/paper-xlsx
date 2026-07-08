@@ -83,7 +83,7 @@ class TestStylesAppend:
         ns.font = Font(bold=True)
         wb.add_named_style(ns)
         wb["Model"]["A2"].style = "brand_new"
-        with pytest.raises(UnsupportedStructureError, match="named styles"):
+        with pytest.raises(UnsupportedStructureError, match="named style"):
             wb.save(str(tmp_path / "o.xlsx"))
         with open(src, "rb") as f:
             assert f.read() == before
@@ -137,7 +137,10 @@ class TestAddedSheets:
         wb2 = load_workbook(out)
         assert wb2["Links"]["A1"].hyperlink.target == "https://example.org/doc"
 
-    def test_added_sheet_with_chart_refuses(self, fixture_copy, tmp_path):
+    def test_chart_add_refuses_at_add_time(self, fixture_copy, tmp_path):
+        # since the final review: add_chart/add_image refuse IMMEDIATELY
+        # under preserve (v0, PR-0 D9 as amended) — the alternative was a
+        # chart accepted at add time and silently absent from the save
         from openpyxl.chart import BarChart, Reference
 
         src = fixture_copy(GAUNTLET)
@@ -148,9 +151,16 @@ class TestAddedSheets:
         ws.append([1, 2, 3])
         chart = BarChart()
         chart.add_data(Reference(ws, min_col=1, min_row=1, max_col=3, max_row=1))
-        ws.add_chart(chart, "E1")
-        with pytest.raises(UnsupportedStructureError, match="charts or images"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        with pytest.raises(UnsupportedStructureError, match="add_chart"):
+            ws.add_chart(chart, "E1")
+        # ...and on LOADED sheets too (was: silently dropped at save)
+        with pytest.raises(UnsupportedStructureError, match="add_chart"):
+            wb["Data"].add_chart(chart, "E1")
+        from openpyxl.drawing.image import Image
+        with pytest.raises(UnsupportedStructureError, match="add_image"):
+            wb["Data"].add_image(object(), "E1")
+        wb["Model"]["B8"] = 0.2
+        wb.save(str(tmp_path / "o.xlsx"))     # the rest still saves fine
         with open(src, "rb") as f:
             assert f.read() == before
 

@@ -297,6 +297,11 @@ class Workbook:
     def create_chartsheet(self, title=None, index=None):
         if self.read_only:
             raise ReadOnlyWorkbookException("Cannot create new sheet in a read-only workbook")
+        _ledger.refuse_sheet_lifecycle(
+            self, "create_chartsheet",
+            "generating chartsheet and drawing parts alongside the "
+            "preserved package is not supported in v0; the chartsheet "
+            "would otherwise be silently absent from the saved file.")
         cs = Chartsheet(parent=self, title=title)
 
         self._add_sheet(cs, index)

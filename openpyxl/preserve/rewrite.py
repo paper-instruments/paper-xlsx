@@ -168,7 +168,9 @@ def shift_formula(formula, context_sheet, target_sheet, axis, index, amount,
             sheet = m.group(1).replace("''", "'") if m.group(1) else m.group(2)
             ref = m.group(3)
             prefix = raw[:len(raw) - len(ref)]
-        if sheet != target_sheet:
+        if sheet is None or sheet.casefold() != target_sheet.casefold():
+            # Excel resolves sheet names case-insensitively; an unprefixed
+            # operand with no context sheet (name values) is never ours
             continue
         new_ref = shift_ref(ref, axis, index, amount, is_delete)
         if new_ref == ref:

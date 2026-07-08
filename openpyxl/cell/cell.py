@@ -218,9 +218,16 @@ class Cell(StyleableObject):
 
         self._value = value
         # ledger chokepoint: the mark happens only after validation and
-        # assignment succeeded, so a refused/invalid bind dirties nothing
-        _mark_cell_dirty(
-            self, formula_involved='f' in (old_data_type, self._data_type))
+        # assignment succeeded, so a refused/invalid bind dirties nothing.
+        # Inline fast bail: the helper call costs ~28% on the fresh-
+        # generation hot path, so non-preserve workbooks skip it entirely
+        ws = self.parent
+        if ws is not None:
+            wb = getattr(ws, "parent", None)
+            if wb is not None and getattr(wb, "_paper_ledger", None) is not None:
+                _mark_cell_dirty(
+                    self,
+                    formula_involved='f' in (old_data_type, self._data_type))
 
 
     @property

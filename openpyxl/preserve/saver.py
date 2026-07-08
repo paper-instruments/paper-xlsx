@@ -90,6 +90,9 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         if _render_chartsheet(cs) != snap:
             _refuse("chartsheet {0!r} changed; chartsheet splicing is not "
                     "supported in v0.".format(cs.title))
+    if bool(workbook.template) != led.template_flag:
+        _refuse("wb.template changed; rewriting the workbook content type "
+                "under preserve mode is not supported in v0.")
 
     zin = zipfile.ZipFile(io.BytesIO(source))
     names = set(zin.namelist())
@@ -179,8 +182,13 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             for op, op_idx, op_amount in shift_ops:
                 original = apply_shift_to_bytes(original, op, op_idx,
                                                 op_amount)
+                # overrides: a chart part already patched for another
+                # sheet's shift must be patched incrementally, never
+                # re-planned from the source (the earlier rewrite would be
+                # silently discarded)
                 chart_plans, chart_blockers = plan_chart_updates(
-                    workbook, ws.title, op, op_idx, op_amount)
+                    workbook, ws.title, op, op_idx, op_amount,
+                    overrides=plan)
                 if chart_blockers:
                     _refuse("chart parts referencing sheet {0!r} cannot be "
                             "patched: {1}.".format(
@@ -194,15 +202,36 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                           for tag, rendered in all_region_changes.items()
                           if tag not in _CUSTOM_REGIONS}
 
+        # PR-0 D2 applies to ROW and COLUMN styles too: dict(RowDimension)
+        # and ColumnDimension.to_tree() carry MODEL style indices — every
+        # one must be translated to the FILE's xf numbering (and the xf
+        # appended) before touching the spliced bytes
+        if row_changes:
+            row_changes = _translate_row_styles(ws, row_changes, translator)
+        if "cols" in region_changes and region_changes["cols"]:
+            region_changes["cols"] = _translate_col_styles(
+                ws, region_changes["cols"], translator)
+
         cf_replacement = None
         if "conditionalFormatting" in all_region_changes:
             cf_replacement = render_cf_for_write(ws)
 
+        if shift_ops:
+            # a shift splits/renumbers shared groups whose members would
+            # otherwise re-derive positionally from a stale host: dissolve
+            # every group on the sheet (members re-emit as plain formulas
+            # from the correctly rewritten model)
+            for members in scan.shared_members.values():
+                dirty |= members
+
         hyperlinks_replacement = None
         if shift_ops and "hyperlinks" not in all_region_changes \
-                and hyperlink_signatures(ws):
-            # anchors moved with their cells: re-render the element (the
-            # relationship ids on the link objects are unchanged)
+                and (hyperlink_signatures(ws)
+                     or scan.regions.get("hyperlinks")):
+            # anchors moved with their cells (or the anchored row was
+            # deleted): re-render the element — possibly to nothing — so the
+            # original refs can never reattach to shifted rows. Relationship
+            # ids on surviving link objects are unchanged.
             hyperlinks_replacement = render_hyperlinks_for_write(ws)
         if "hyperlinks" in all_region_changes:
             hyperlinks_replacement, rels_update = _plan_hyperlinks(
@@ -275,8 +304,13 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         _refuse("document properties changed but the package has no "
                 "docProps/core.xml part; part creation is not supported "
                 "in v0.")
-    custom_changed = (render_custom_model(workbook) != led.custom_snapshot
+    custom_render = render_custom_model(workbook)
+    custom_changed = (custom_render != led.custom_snapshot
                       and ARC_CUSTOM in names)
+    if custom_changed and custom_render is None:
+        _refuse("all custom document properties were removed; dropping the "
+                "docProps/custom.xml part (and its registrations) is not "
+                "supported in v0.")
 
     theme_changed = False
     if workbook.loaded_theme is not None and ARC_THEME in names:
@@ -303,7 +337,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             elif name == ARC_CORE and core_changed:
                 zipio.write_entry(zout, name, render_core_model(workbook))
             elif name == ARC_CUSTOM and custom_changed:
-                zipio.write_entry(zout, name, render_custom_model(workbook))
+                zipio.write_entry(zout, name, custom_render)
             elif name == ARC_THEME and theme_changed:
                 zipio.write_entry(zout, name, workbook.loaded_theme)
             else:
@@ -407,6 +441,52 @@ def _generate_sheet_part(ws):
                     rel.TargetMode or None) for rel in writer._rels]
         rels_payload = crosspart.render_rels_document(entries)
     return payload, rels_payload
+
+
+def _translate_row_styles(ws, row_changes, translator):
+    """Row display attrs carry the MODEL style index in 's'; translate to
+    the FILE xf numbering (allocating the appended xf) — PR-0 D2."""
+    out = {}
+    for idx, attrs in row_changes.items():
+        attrs = dict(attrs)
+        if "s" in attrs:
+            dim = ws.row_dimensions.get(idx)
+            style_array = getattr(dim, "_style", None) if dim is not None \
+                else None
+            if translator is None or style_array is None:
+                from openpyxl.errors import UnsupportedStructureError
+
+                raise UnsupportedStructureError(
+                    "row {0} carries a style that cannot be translated to "
+                    "the original stylesheet. Nothing was written.".format(
+                        idx))
+            attrs["s"] = str(translator.resolve(style_array))
+            attrs.setdefault("customFormat", "1")
+        out[idx] = attrs
+    return out
+
+
+def _translate_col_styles(ws, rendered_cols, translator):
+    """The cols element render carries MODEL style indices in style
+    attributes; rewrite each through the translator (PR-0 D2)."""
+    if b"style=" not in rendered_cols:
+        return rendered_cols
+    if translator is None:
+        from openpyxl.errors import UnsupportedStructureError
+
+        raise UnsupportedStructureError(
+            "column styles cannot be written: the package has no "
+            "xl/styles.xml part. Nothing was written.")
+    table = translator.model_to_file_table()
+
+    def _sub(match):
+        model_idx = int(match.group(1))
+        file_idx = table.get(model_idx)
+        if file_idx is None:
+            return match.group(0)
+        return b'style="%d"' % file_idx
+
+    return re.sub(br'style="(\d+)"', _sub, rendered_cols)
 
 
 def _rewrite_added_sheet_styles(payload, workbook, translator):
