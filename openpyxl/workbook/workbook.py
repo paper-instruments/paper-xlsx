@@ -62,6 +62,8 @@ class Workbook:
     # protection awareness (PLAN-v0.1 1.6): True turns writes to locked
     # cells on protected sheets into typed refusals (default: warn once
     # per sheet). Protection is reported, never enforced or bypassed.
+    # PRESERVE-MODE workbooks only in v0.1 (the check rides the armed
+    # ledger); on stock loads the flag is inert.
     strict_protection = False
     template = False
     path = "/xl/workbook.xml"

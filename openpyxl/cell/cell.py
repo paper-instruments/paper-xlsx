@@ -194,15 +194,19 @@ class Cell(StyleableObject):
     def _bind_value(self, value):
         """Given a value, infer the correct data type"""
 
-        # protection awareness (PLAN-v0.1 1.6) runs BEFORE any mutation so
-        # a strict-mode refusal is atomic; same fast bail as the ledger
-        # mark below
+        # single inline fast bail for BOTH paper hooks (the helper call
+        # costs ~28% on the fresh-generation hot path, and doubling the
+        # lookup chain measured +13% — Batch-1 gate): resolved once here,
+        # reused for the pre-bind protection check and the post-bind mark
         ws = self.parent
-        if ws is not None:
-            wb = getattr(ws, "parent", None)
-            if wb is not None \
-                    and getattr(wb, "_paper_ledger", None) is not None:
-                _check_protection(self)
+        paper_armed = (
+            ws is not None
+            and getattr(ws, "parent", None) is not None
+            and getattr(ws.parent, "_paper_ledger", None) is not None)
+        if paper_armed:
+            # protection awareness (PLAN-v0.1 1.6) runs BEFORE any
+            # mutation so a strict-mode refusal is atomic
+            _check_protection(self)
 
         old_data_type = self._data_type
         self._data_type = "n"
@@ -231,16 +235,12 @@ class Cell(StyleableObject):
 
         self._value = value
         # ledger chokepoint: the mark happens only after validation and
-        # assignment succeeded, so a refused/invalid bind dirties nothing.
-        # Inline fast bail: the helper call costs ~28% on the fresh-
-        # generation hot path, so non-preserve workbooks skip it entirely
-        ws = self.parent
-        if ws is not None:
-            wb = getattr(ws, "parent", None)
-            if wb is not None and getattr(wb, "_paper_ledger", None) is not None:
-                _mark_cell_dirty(
-                    self,
-                    formula_involved='f' in (old_data_type, self._data_type))
+        # assignment succeeded, so a refused/invalid bind dirties nothing
+        # (armed state resolved once at the top of this method)
+        if paper_armed:
+            _mark_cell_dirty(
+                self,
+                formula_involved='f' in (old_data_type, self._data_type))
 
 
     @property

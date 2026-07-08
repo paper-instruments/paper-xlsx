@@ -145,16 +145,18 @@ class TestLossInventoryCompleteness:
                     payload = payload.replace(
                         b"<sheets>",
                         b'<fileSharing readOnlyRecommended="1"/><sheets>', 1)
-                    payload = payload.replace(
-                        b"</workbook>",
-                        b'<protectedRanges><protectedRange name="pr1" '
-                        b'sqref="A1:B2"/></protectedRanges></workbook>', 1)
                 if name.startswith("xl/worksheets/sheet"):
                     payload = payload.replace(
                         b'</sheetData>',
                         b'<row r="9"><c r="A9" t="inlineStr"><is><r><rPr>'
                         b'<b/></rPr><t>bold run</t></r></is></c></row>'
                         b'</sheetData>', 1)
+                    # protectedRanges is a WORKSHEET element (the gate
+                    # caught the first cut scanning workbook.xml for it)
+                    payload = payload.replace(
+                        b'</sheetData>',
+                        b'</sheetData><protectedRanges><protectedRange '
+                        b'name="pr1" sqref="A1:B2"/></protectedRanges>', 1)
                 zout.writestr(name, payload)
             zout.writestr("xl/threadedComments/threadedComment1.xml",
                           b'<?xml version="1.0"?><ThreadedComments/>')
@@ -168,7 +170,8 @@ class TestLossInventoryCompleteness:
             wb = load_workbook(src)
         kinds = wb._paper_loss_inventory.kinds()
         assert "rich-text" in kinds
-        assert "workbook-content" in kinds
+        assert "workbook-content" in kinds       # fileSharing
+        assert "worksheet-content" in kinds      # protectedRanges
         assert "threaded-comments" in kinds
         details = " ".join(l["detail"]
                            for l in wb._paper_loss_inventory.losses)

@@ -109,6 +109,9 @@ class DirtyLedger:
         led.external_links_snapshot = _external_links_snapshot(wb)
         for cs in wb.chartsheets:
             led.chartsheet_snapshots[cs] = _render_chartsheet(cs)
+            # chartsheet-anchored charts are the same preserved-part-backed
+            # boundary (Batch-1 gate: they were outside it entirely)
+            led.object_snapshots[cs] = _object_snapshot(cs)
         from .crosspart import render_workbook_elements
 
         led.workbook_snapshot = render_workbook_elements(wb)
@@ -205,8 +208,9 @@ def _object_snapshot(ws):
     snap = {"unstable": set()}
 
     tables = {}
-    for name in ws.tables:
-        tbl = ws.tables[name]
+    ws_tables = getattr(ws, "tables", None) or {}
+    for name in ws_tables:
+        tbl = ws_tables[name]
         rendered, ok = _settled(lambda t=tbl: tostring(t.to_tree()))
         tables[name] = rendered
         if not ok:
@@ -215,8 +219,11 @@ def _object_snapshot(ws):
 
     charts = {}
     for i, chart in enumerate(getattr(ws, "_charts", []) or []):
+        # the anchor is NOT part of chart._write() (it lives in the
+        # preserved drawing part) — snapshot it too, or a chart move
+        # vanishes silently (Batch-1 gate)
         rendered, ok = _settled(lambda c=chart: tostring(c._write()))
-        charts[i] = rendered
+        charts[i] = (rendered, _anchor_fingerprint(chart))
         if not ok:
             snap["unstable"].add(("chart", i))
     snap["chart"] = charts
@@ -228,7 +235,8 @@ def _object_snapshot(ws):
             rendered, ok = _settled(lambda a=anchor: tostring(a.to_tree()))
         else:
             rendered, ok = repr(anchor).encode("utf-8"), True
-        images[i] = (rendered, getattr(image, "path", None))
+        images[i] = (rendered, getattr(image, "path", None),
+                     _image_data_digest(image))
         if not ok:
             snap["unstable"].add(("image", i))
     snap["image"] = images
@@ -254,17 +262,64 @@ _OBJECT_UNLOCKS = {
 }
 
 
+def _anchor_fingerprint(obj):
+    from openpyxl.xml.functions import tostring
+
+    anchor = getattr(obj, "anchor", None)
+    if anchor is None:
+        return None
+    if hasattr(anchor, "to_tree"):
+        try:
+            return tostring(anchor.to_tree())
+        except Exception:
+            pass
+    return repr(anchor).encode("utf-8")
+
+
+def _image_data_digest(image):
+    # a data swap with identical anchor+path must not vanish silently
+    # (Batch-1 gate): fingerprint the backing bytes. NEVER via
+    # image._data() — it closes the ref stream (a destructive read that
+    # would break the second snapshot and mutate the model at arm).
+    import hashlib
+
+    ref = getattr(image, "ref", None)
+    try:
+        if hasattr(ref, "getvalue"):           # BytesIO: non-destructive
+            data = ref.getvalue()
+        elif hasattr(ref, "read"):
+            pos = ref.tell()
+            data = ref.read()
+            ref.seek(pos)
+        elif isinstance(ref, str):
+            with open(ref, "rb") as f:
+                data = f.read()
+        else:
+            return repr(type(ref))
+        return hashlib.sha256(data).hexdigest()
+    except Exception:
+        return None
+
+
 def diff_objects(ws, armed):
     """(kind, key) pairs whose settled serialization drifted since arm —
     in-session mutations of preserved-part-backed objects."""
     if not armed:
         return []
     current = _object_snapshot(ws)
+    unstable = armed.get("unstable", set()) | current.get("unstable", set())
     changed = []
     for kind in ("table", "chart", "image", "pivot"):
         before = armed.get(kind, {})
         after = current.get(kind, {})
         for key in set(before) | set(after):
+            if (kind, key) in unstable:
+                # a serializer that disagrees with itself cannot express
+                # edits: skip the compare (no false refusals on no-ops) —
+                # the 0.3 pin discipline applied to objects. No stable
+                # real-world instance is known; if one appears, its edits
+                # are untrackable and this skip is the documented limit.
+                continue
             if before.get(key) != after.get(key):
                 changed.append((kind, key))
     return sorted(changed)
@@ -439,23 +494,30 @@ def begin_structural_edit(ws, operation, index, amount):
         shift_blockers,
     )
 
-    if operation == "insert_rows" and ws.max_row + amount > EXCEL_MAX_ROW:
-        from openpyxl.errors import BoundaryViolationError
+    if operation == "insert_rows":
+        # occupancy includes row dimensions and merged/CF anchors, not just
+        # cells; and only content AT/AFTER the insert index moves (Batch-1
+        # gate: dimension-only floor rows evaded; inserts beyond content
+        # false-refused)
+        occupied = _max_occupied_row(ws)
+        if index <= occupied and occupied + amount > EXCEL_MAX_ROW:
+            from openpyxl.errors import BoundaryViolationError
 
-        raise BoundaryViolationError(
-            "insert_rows({0}, {1}) would shift occupied cells past row "
-            "{2}, the sheet's hard limit; Excel would refuse this edit "
-            "too. Nothing was changed.".format(index, amount,
-                                               EXCEL_MAX_ROW))
-    if operation == "insert_cols" \
-            and ws.max_column + amount > EXCEL_MAX_COL:
-        from openpyxl.errors import BoundaryViolationError
+            raise BoundaryViolationError(
+                "insert_rows({0}, {1}) would shift occupied content past "
+                "row {2}, the sheet's hard limit. Nothing was "
+                "changed.".format(index, amount, EXCEL_MAX_ROW))
+    if operation == "insert_cols":
+        occupied = _max_occupied_col(ws)
+        if index <= occupied and occupied + amount > EXCEL_MAX_COL:
+            from openpyxl.errors import BoundaryViolationError
 
-        raise BoundaryViolationError(
-            "insert_cols({0}, {1}) would shift occupied cells past column "
-            "{2} (XFD), the sheet's hard limit; Excel would refuse this "
-            "edit too. Nothing was changed.".format(index, amount,
-                                                    EXCEL_MAX_COL))
+            raise BoundaryViolationError(
+                "insert_cols({0}, {1}) would shift occupied content past "
+                "column {2} (XFD), the sheet's hard limit. Nothing was "
+                "changed.".format(index, amount, EXCEL_MAX_COL))
+
+    _check_sheet_protection_for_shift(ws, led, operation)
 
     blockers = shift_blockers(ws, operation, index, amount)
     if blockers:
@@ -472,6 +534,57 @@ def begin_structural_edit(ws, operation, index, amount):
                 victim_lines or "\n  - (no intersecting references found)")
         )
     return True
+
+
+def _max_occupied_row(ws):
+    candidates = [ws.max_row]
+    if ws.row_dimensions:
+        candidates.append(max(ws.row_dimensions))
+    for rng in ws.merged_cells.ranges:
+        candidates.append(rng.max_row)
+    return max(candidates)
+
+
+def _max_occupied_col(ws):
+    candidates = [ws.max_column]
+    if ws.column_dimensions:
+        from openpyxl.utils import column_index_from_string
+
+        candidates.append(max(
+            dim.max or column_index_from_string(dim.index)
+            for dim in ws.column_dimensions.values()))
+    for rng in ws.merged_cells.ranges:
+        candidates.append(rng.max_col)
+    return max(candidates)
+
+
+def _check_sheet_protection_for_shift(ws, led, operation):
+    """Excel blocks row/column structural edits on protected sheets by
+    default: warn (strict: refuse) — same 1.6 discipline as cell writes
+    (Batch-1 gate: shifts evaded the protection check entirely)."""
+    try:
+        protected = bool(ws.protection.sheet)
+    except AttributeError:
+        return
+    if not protected:
+        return
+    wb = ws.parent
+    if getattr(wb, "strict_protection", False):
+        raise UnsupportedStructureError(
+            "{0}() on protected sheet {1!r}: this workbook has "
+            "strict_protection enabled, so the structural edit is "
+            "refused. Nothing was changed.".format(operation, ws.title))
+    if ws not in led.protection_warned:
+        led.protection_warned.add(ws)
+        import warnings
+
+        from openpyxl.errors import ProtectedWriteWarning
+
+        warnings.warn(ProtectedWriteWarning(
+            "{0}() on protected sheet {1!r}: the edit proceeds — "
+            "protection is reported, never enforced — but Excel itself "
+            "would block it. Set wb.strict_protection = True to refuse "
+            "instead.".format(operation, ws.title)), stacklevel=4)
 
 
 def finish_structural_edit(ws, operation, index, amount):

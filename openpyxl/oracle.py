@@ -493,7 +493,12 @@ def _exclusion_seeds(wb_formulas):
                 continue
             for token in tokens:
                 if token.type == "FUNC" and token.subtype == "OPEN":
+                    # Excel serializes post-2007 functions as _xlfn.NAME(
+                    # — the catalog match must see the bare name
+                    # (Batch-1 gate: the prefixed form evaded exclusion)
                     up = token.value.upper()
+                    if up.startswith("_XLFN."):
+                        up = up[6:]
                     if up in volatile_funcs:
                         reasons[key] = "volatile"
                         break                       # volatile outranks all
@@ -501,9 +506,15 @@ def _exclusion_seeds(wb_formulas):
                         reasons[key] = "unsupported:" + up.rstrip("(")
                 elif (token.type == "OPERAND"
                         and token.subtype == "RANGE"
-                        and _EXTERNAL_REF_RE.match(token.value)
                         and key not in reasons):
-                    reasons[key] = "external-link"
+                    if _EXTERNAL_REF_RE.match(token.value):
+                        reasons[key] = "external-link"
+                    else:
+                        # an external ref hiding behind a defined name
+                        # (Batch-1 gate): resolve the name, tag the cell
+                        name = wb_formulas.defined_names.get(token.value)                             or ws.defined_names.get(token.value)
+                        if name is not None and name.value                                 and "[" in name.value:
+                            reasons[key] = "external-link"
     return reasons
 
 
@@ -524,8 +535,9 @@ def _bounds_hit_tainted(sheet, bounds, tainted):
         min_col, max_col = 1, 1 << 20
     if min_row is None:
         min_row, max_row = 1, 1 << 22
+    folded = sheet.casefold()        # Excel: sheet names case-insensitive
     for (t_sheet, t_row, t_col) in tainted:
-        if t_sheet != sheet:
+        if t_sheet.casefold() != folded:
             continue
         if min_row <= t_row <= max_row and min_col <= t_col <= max_col:
             return (t_sheet, t_row, t_col)

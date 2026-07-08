@@ -356,6 +356,14 @@ class Worksheet(_WorkbookChild):
     def __delitem__(self, key):
         row, column = coordinate_to_tuple(key)
         if (row, column) in self._cells:
+            # deleting a locked cell is a value-level change: the same
+            # protection check as a write, BEFORE the deletion (Batch-1
+            # gate: del ws['A1'] evaded what ws['A1']=None refused)
+            wb = getattr(self, "parent", None)
+            if wb is not None \
+                    and getattr(wb, "_paper_ledger", None) is not None:
+                from openpyxl.preserve.ledger import check_protection
+                check_protection(self._cells[(row, column)])
             was_formula = self._cells[(row, column)].data_type == 'f'
             del self._cells[(row, column)]
             _mark_deleted_cell(self, row, column, was_formula)

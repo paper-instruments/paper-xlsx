@@ -18,11 +18,13 @@ from openpyxl.utils.cell import range_boundaries
 
 # CONVENTIONS §3.7 (pinned): nondeterministic volatiles are excluded from
 # certification; INDIRECT/OFFSET are volatile but deterministic given inputs
-VOLATILE_NONDETERMINISTIC = ("NOW", "TODAY", "RAND", "RANDBETWEEN")
+VOLATILE_NONDETERMINISTIC = ("NOW", "TODAY", "RAND", "RANDBETWEEN",
+                             "RANDARRAY")
 VOLATILE_DETERMINISTIC = ("INDIRECT", "OFFSET")
 
 _VOLATILE_RE = re.compile(
-    r"\b(NOW|TODAY|RAND|RANDBETWEEN|INDIRECT|OFFSET)\s*\(", re.IGNORECASE)
+    r"\b(NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY|INDIRECT|OFFSET)\s*\(",
+    re.IGNORECASE)
 
 
 class WorkbookManifest:
@@ -216,10 +218,11 @@ class DependencySketch:
         sheet — plus every cell with an unresolved (structured/table)
         reference, reported conservatively."""
         min_col, min_row, max_col, max_row = bounds
+        title = sheet_title.casefold()   # Excel: sheet names case-insensitive
         hits = []
         for address, refs in self.references.items():
             for ref_sheet, ref_bounds, _raw in refs:
-                if ref_sheet != sheet_title:
+                if ref_sheet.casefold() != title:
                     continue
                 if _intersects(ref_bounds, min_col, min_row, max_col, max_row):
                     hits.append(address)
@@ -266,8 +269,8 @@ def dependency_sketch(wb):
                 continue
             formula = cell._value
             address = "{0}!{1}".format(_quoted(ws.title), cell.coordinate)
-            operands = token_cache.get(formula)
-            if operands is None:
+            cached = token_cache.get(formula)
+            if cached is None:
                 try:
                     tokens = Tokenizer(formula).items
                 except Exception:
@@ -275,7 +278,20 @@ def dependency_sketch(wb):
                     continue
                 operands = [t.value for t in tokens
                             if t.type == "OPERAND" and t.subtype == "RANGE"]
-                token_cache[formula] = operands
+                # INDIRECT/OFFSET with computed-string targets leave no
+                # RANGE operand at all (Batch-1 gate): the formula must
+                # count as unresolved (always-intersecting), never as
+                # invisible
+                indirect = any(
+                    t.type == "FUNC" and t.subtype == "OPEN"
+                    and t.value.upper().lstrip("_XLFN.")
+                    in ("INDIRECT(", "OFFSET(")
+                    for t in tokens)
+                cached = (operands, indirect)
+                token_cache[formula] = cached
+            operands, indirect = cached
+            if indirect:
+                sketch.unresolved.setdefault(address, []).append(formula)
             for raw in operands:
                 _classify(sketch, wb, ws, address, raw)
     return sketch
@@ -295,6 +311,14 @@ def _classify(sketch, wb, ws, address, raw):
         # structured/table or external-workbook reference: not resolvable
         sketch.unresolved.setdefault(address, []).append(raw)
         return
+    if ":" in sheet_title:
+        # a 3-D span (Sheet1:Sheet3!A1) is not one sheet: classify it
+        # conservatively as unresolved (always-intersecting) rather than
+        # recording a phantom sheet name nothing can ever match
+        # (Batch-1 gate: the phantom key silently defeated the recalc
+        # guard and certification taint)
+        sketch.unresolved.setdefault(address, []).append(raw)
+        return
 
     plain = ref.replace("$", "")
     try:
@@ -303,6 +327,11 @@ def _classify(sketch, wb, ws, address, raw):
         # not A1-shaped: a defined name — expand via its destinations
         name = wb.defined_names.get(raw) or ws.defined_names.get(raw)
         if name is None:
+            sketch.unresolved.setdefault(address, []).append(raw)
+            return
+        if name.value and "[" in name.value:
+            # external-workbook reference hiding behind the name: the
+            # expansion would drop the external marker (Batch-1 gate)
             sketch.unresolved.setdefault(address, []).append(raw)
             return
         try:

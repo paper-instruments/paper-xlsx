@@ -114,7 +114,12 @@ _CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 def _refuse_cfb(filename):
     try:
         if hasattr(filename, "read"):
+            # sniff at ABSOLUTE offset 0 (zipfile anchors there too), then
+            # restore the caller's position exactly — a mid-position handle
+            # must neither false-refuse on embedded CFB payloads nor evade
+            # the typed refusal (Batch-1 gate)
             pos = filename.tell()
+            filename.seek(0)
             head = filename.read(8)
             filename.seek(pos)
         else:
@@ -413,7 +418,8 @@ class ExcelReader:
                 # stock path (PR-0 D14)
                 action = "scan for unpreservable content"
                 self.wb._paper_loss_inventory = scan_archive(
-                    self.archive, self.valid_files, keep_vba=self.keep_vba)
+                    self.archive, self.valid_files, keep_vba=self.keep_vba,
+                    rich_text=self.rich_text)
                 self.archive.close()
                 if self.preserve:
                     # the ledger arms only now: everything the loader itself

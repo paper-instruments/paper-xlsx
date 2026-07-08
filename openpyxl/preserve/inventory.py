@@ -97,7 +97,7 @@ def _ext_names(payload):
     return names
 
 
-def scan_archive(archive, valid_files, keep_vba=False):
+def scan_archive(archive, valid_files, keep_vba=False, rich_text=False):
     """Build a :class:`LossInventory` from an open source ZipFile.
 
     ``valid_files`` is the archive namelist (already computed by the reader).
@@ -129,12 +129,21 @@ def scan_archive(archive, valid_files, keep_vba=False):
                 for label in _ext_names(payload) or ["Unknown"]:
                     inv.add("worksheet-extension", name,
                             "{0} extension will be removed".format(label))
-            if b"<is>" in payload and _RICH_RUN_RE.search(payload):
+            if not rich_text and b"<is>" in payload \
+                    and _RICH_RUN_RE.search(payload):
                 inv.add("rich-text", name,
                         "in-cell formatting runs (inline strings) will be "
                         "flattened to plain text (load with rich_text=True "
                         "to model them, or preserve=True to keep them "
                         "verbatim)")
+            if b"<protectedRanges" in payload \
+                    or b"<protectedRange " in payload:
+                # a WORKSHEET-level element (ECMA-376 18.3.1.99) — the v0.1
+                # first cut scanned workbook.xml for it: dead code the gate
+                # caught; allow-edit ranges carry password hashes
+                inv.add("worksheet-content", name,
+                        "protected ranges (allow-edit ranges, incl. their "
+                        "password hashes) will be dropped")
         elif name.startswith("xl/drawings/") and name.endswith(".xml"):
             payload = read(name)
             found = sorted({label for marker, label in _DRAWING_LOSS_MARKERS
@@ -172,12 +181,9 @@ def scan_archive(archive, valid_files, keep_vba=False):
                 inv.add("workbook-content", name,
                         "fileSharing (read-only recommendation/reservation) "
                         "will be dropped")
-            if b"<protectedRanges" in payload or b"<protectedRange " in payload:
-                inv.add("workbook-content", name,
-                        "protected ranges will be dropped")
         elif name == "xl/sharedStrings.xml":
             payload = read(name)
-            if _RICH_RUN_RE.search(payload):
+            if not rich_text and _RICH_RUN_RE.search(payload):
                 inv.add("rich-text", name,
                         "in-cell formatting runs will be flattened to plain "
                         "text (load with rich_text=True to model them, or "

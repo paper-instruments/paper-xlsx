@@ -530,6 +530,59 @@ content — it's modeled objects backed by preserved bytes."**
 
 Suite: 2946 passed; env-flip arm green.
 
+## Batch 1 — adversarial gate report (2026-07-08)
+
+Four lenses, one critical + eleven majors confirmed with live repros —
+all fixed and fixtured (tests/paper/test_gate_regressions.py):
+
+- **CRITICAL — 3-D span refs invisible:** =SUM(Sheet1:Sheet3!A1) was
+  recorded under the phantom sheet key 'Sheet1:Sheet3', so the 1.2
+  recalc guard, certification taint, and shift victim analysis all
+  silently missed 3-D formulas. Fixed: a ':' in the sheet component
+  classifies as unresolved (always-intersecting, conservative).
+- **Object-guard evasions:** chart MOVES (anchor lives outside
+  chart._write()) — anchors now fingerprinted; image DATA swaps with
+  identical anchor+path — backing bytes now digested (non-destructively:
+  image._data() CLOSES the ref stream and must never be used for
+  snapshots — the first digest attempt corrupted no-op saves that way);
+  chartsheet-anchored charts were entirely outside the boundary — now
+  snapshotted; the dead 'unstable' bookkeeping now feeds diff_objects as
+  the oscillating-serializer fallback (skip-compare, never false-refuse).
+- **Recalc-guard gaps:** computed-string INDIRECT/OFFSET targets left no
+  sketch footprint — such formulas now always count as unresolved;
+  case-sensitive sheet compares in the taint walk and
+  cells_referencing — casefolded.
+- **Protection evasions:** del ws['A1'] evaded what ws['A1']=None
+  refused — __delitem__ now protection-checked pre-deletion; structural
+  shifts on protected sheets (Excel blocks them) — warn/strict-refuse
+  via the same 1.6 discipline; strict_protection documented as
+  preserve-only (inert on stock loads).
+- **Perf regression:** the pre-bind hook doubled the per-write lookup
+  chain (+13% on the fresh-gen hot path) — hoisted to a single resolved
+  bail reused by both hooks.
+- **Input honesty:** CFB sniff anchored at absolute offset 0 (a valid
+  xlsx handed over at an embedded-CFB offset false-refused; a genuine
+  CFB via mid-position handle evaded the typed refusal);
+  protectedRanges is a WORKSHEET element — the workbook.xml check was
+  dead code (the Batch-1 test itself had planted it in the wrong part);
+  rich-text loss warnings suppressed under rich_text=True (the stock
+  save PRESERVES runs there — the warning was loud-but-wrong).
+- **Certify evasions:** Excel writes _xlfn.LET( — prefix now normalized
+  before catalog match; RANDARRAY added to VOLATILE_NONDETERMINISTIC
+  (CONVENTIONS 3.7 amendment: nondeterministic dynamic-array RNG);
+  external refs hiding behind defined names now seed external-link (both
+  in certify and the sketch).
+- **Boundary guard:** occupancy now includes dimension-only rows and
+  merged-range anchors; inserts beyond all content no longer
+  false-refuse (and the message no longer overclaims).
+- **Accepted with rationale:** style-only edits count as dirty for the
+  recalc flag (value/style indistinguishable in led.cells — conservative
+  direction, idempotent recalc); the certify LO test's CERTIFIED arm is
+  partially tautological (LO-vs-LO) — its exclusion-membership
+  assertions carry the signal, now including the _xlfn form; sketch
+  rebuild per save is uncached (0.5s on 50k formulas — revisit only with
+  a measured case, Appendix-A-5 spirit).
+
 ## Pinned-surface debt ledger
 
 Debts are pinned surface not yet produced-and-tested; each names its

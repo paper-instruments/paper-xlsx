@@ -94,6 +94,16 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         if _render_chartsheet(cs) != snap:
             _refuse("chartsheet {0!r} changed; chartsheet splicing is not "
                     "supported in v0.".format(cs.title))
+        cs_objects = ledger_mod.diff_objects(
+            cs, led.object_snapshots.get(cs))
+        if cs_objects:
+            _refuse(
+                "loaded object(s) were modified in-session on chartsheet "
+                "{0!r}: {1}. Their backing parts are preserved verbatim, "
+                "so the edits cannot be saved faithfully.".format(
+                    cs.title, "; ".join(
+                        "{0} {1!r}".format(kind, key)
+                        for kind, key in cs_objects)))
     if bool(workbook.template) != led.template_flag:
         _refuse("wb.template changed; rewriting the workbook content type "
                 "under preserve mode is not supported in v0.")
