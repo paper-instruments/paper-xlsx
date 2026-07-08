@@ -234,7 +234,12 @@ of preserved definedName bytes plus a dependent-part cascade; rename silently st
 formula referencing the old name (stock behavior is itself corrupting). pandas
 `if_sheet_exists="replace"` therefore refuses in v0; `"overlay"` and `"new"` work.
 
-**D9 — Mixed fresh-on-preserved (Q6).** New chart/image onto a preserved sheet WITHOUT an
+**D9 — Mixed fresh-on-preserved (Q6). [AMENDED in Phase 2d]:** fresh charts/images under
+preserve mode refuse in v0 everywhere (including new in-session sheets) — generating drawing
+parts + their rels/content-types alongside the preserved package was descoped from Phase 2d to
+keep the spine tight; the refusal is typed and names the option (build charts in a separate
+stock-mode workbook). The anchor-merge evidence from Q6 stands for the post-v0 lift. Original
+decision text (now post-v0): new chart/image onto a preserved sheet WITHOUT an
 existing drawing: supported — part names allocated `1 + max existing number per family` from
 the retained namelist (never per-save session counters), one appended sheet-rels entry with
 `rId = max numeric + 1`, `<drawing r:id>` spliced at its CT_Worksheet slot, targeted

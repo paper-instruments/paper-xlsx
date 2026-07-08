@@ -148,19 +148,6 @@ class TestCellEdits:
         wb2 = load_workbook(out)
         assert wb2["Model"]["B9"].style == "paper_input"
 
-    def test_new_style_refuses_at_this_stage(self, fixture_copy, tmp_path):
-        from openpyxl.styles import Font
-
-        src = fixture_copy(GAUNTLET)
-        with open(src, "rb") as f:
-            before = f.read()
-        wb = load_workbook(src, preserve=True)
-        wb["Model"]["A2"].font = Font(name="Menlo", size=7)   # brand-new font
-        out = str(tmp_path / "o.xlsx")
-        with pytest.raises(UnsupportedStructureError, match="Phase 2d"):
-            wb.save(out)
-        with open(src, "rb") as f:
-            assert f.read() == before
 
 
 class TestSharedAndArrayFormulas:
@@ -273,7 +260,9 @@ class TestRegionEdits:
         wb2 = load_workbook(out)
         assert [str(r) for r in wb2["Sheet1"].merged_cells.ranges] == ["F1:G2"]
 
-    def test_cf_change_refuses_at_this_stage(self, fixture_copy, tmp_path):
+    def test_cf_change_refuses_when_x14_twins_present(self, fixture_copy, tmp_path):
+        # the gauntlet's dataBar rule carries an x14 twin pointer: editing
+        # the classic element alone would orphan it (PR-0 D15 gate)
         from openpyxl.formatting.rule import CellIsRule
         from openpyxl.styles import PatternFill
 
@@ -284,15 +273,15 @@ class TestRegionEdits:
         wb["Model"].conditional_formatting.add(
             "B9:B9", CellIsRule(operator="lessThan", formula=["0"],
                                 fill=PatternFill("solid", fgColor="FF0000AA")))
-        with pytest.raises(UnsupportedStructureError, match="conditionalFormatting"):
+        with pytest.raises(UnsupportedStructureError, match="twin"):
             wb.save(str(tmp_path / "o.xlsx"))
         with open(src, "rb") as f:
             assert f.read() == before
 
 
-class TestStageRefusals:
-    """Cross-part operations that land in Phase 2d refuse loudly and
-    atomically at this stage (never a silent drop)."""
+class TestV0Refusals:
+    """Operations outside the v0 write set refuse loudly and atomically —
+    never a silent drop (PR-0 D8/D9/D15)."""
 
     def _assert_refuses(self, wb, src, tmp_path, match):
         with open(src, "rb") as f:
@@ -305,18 +294,10 @@ class TestStageRefusals:
         with open(src, "rb") as f:
             assert f.read() == before
 
-    def test_added_sheet_refuses(self, fixture_copy, tmp_path):
+    def test_workbook_pr_change_refuses(self, fixture_copy, tmp_path):
         src = fixture_copy(GAUNTLET)
         wb = load_workbook(src, preserve=True)
-        wb.create_sheet("New")
-        self._assert_refuses(wb, src, tmp_path, "Phase 2d")
-
-    def test_workbook_level_change_refuses(self, fixture_copy, tmp_path):
-        from openpyxl.workbook.defined_name import DefinedName
-
-        src = fixture_copy(GAUNTLET)
-        wb = load_workbook(src, preserve=True)
-        wb.defined_names["Fresh"] = DefinedName("Fresh", attr_text="Model!$A$1")
+        wb.code_name = "ThisWorkbookX"        # serializes into workbookPr
         self._assert_refuses(wb, src, tmp_path, "workbook-level")
 
     def test_comment_change_refuses(self, fixture_copy, tmp_path):

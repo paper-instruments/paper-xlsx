@@ -143,11 +143,9 @@ SPLICEABLE_REGIONS = [
 ]
 REGION_BY_TAG = {r.tag: r for r in SPLICEABLE_REGIONS}
 
-# regions whose USER change is detected but not yet writable: refusal, never
-# silent drop. conditionalFormatting needs dxf/styles coordination (the
-# stock writer allocates dxfIds into styles.xml); hyperlinks and tableParts
-# need relationship edits. All three land in Phase 2d.
-DETECT_ONLY_REGIONS = ["conditionalFormatting", "hyperlinks", "tableParts"]
+# regions whose USER change is detected but not writable in v0: refusal,
+# never silent drop. Table add/remove needs table-part lifecycle.
+DETECT_ONLY_REGIONS = ["tableParts"]
 
 
 def _render_cf(ws):
@@ -159,10 +157,46 @@ def _render_cf(ws):
     return tuple(parts)
 
 
-def _render_hyperlinks(ws):
-    links = getattr(ws, "_hyperlinks", None) or []
-    return tuple(sorted(
-        tostring(link.to_tree()) for link in links))
+def render_cf_for_write(ws):
+    """Serialize conditional formatting FOR WRITING, mirroring the stock
+    writer's dxf handling (worksheet/_writer.py write_formatting): rules
+    carrying a dxf get a dxfId allocated in the workbook's differential
+    styles; the new dxfs are appended to styles.xml by the styles planner."""
+    from openpyxl.styles.differential import DifferentialStyle
+
+    empty = DifferentialStyle()
+    wb = ws.parent
+    parts = []
+    for cf in ws.conditional_formatting:
+        for rule in cf.rules:
+            if rule.dxf and rule.dxf != empty:
+                rule.dxfId = wb._differential_styles.add(rule.dxf)
+        parts.append(tostring(cf.to_tree()))
+    return b"".join(parts)
+
+
+def render_hyperlinks_for_write(ws):
+    """The hyperlinks element from the cells' link objects (ids must already
+    be assigned for external links)."""
+    from openpyxl.worksheet.hyperlink import HyperlinkList
+
+    links = [cell._hyperlink for (_r, _c), cell in sorted(ws._cells.items())
+             if getattr(cell, "_hyperlink", None) is not None]
+    if not links:
+        return b""
+    return tostring(HyperlinkList(links).to_tree())
+
+
+def hyperlink_signatures(ws):
+    """Per-cell hyperlink signatures, excluding the relationship id (ids for
+    new links are allocated at save time and must not affect detection)."""
+    sig = {}
+    for (row, col), cell in ws._cells.items():
+        link = getattr(cell, "_hyperlink", None)
+        if link is not None:
+            sig[(row, col)] = (link.target, link.location, link.tooltip,
+                               link.display)
+    return sig
 
 
 def _render_tables(ws):
@@ -176,7 +210,7 @@ def snapshot_regions(ws):
     for region in SPLICEABLE_REGIONS:
         snap[region.tag] = region.render(ws)
     snap["conditionalFormatting"] = _render_cf(ws)
-    snap["hyperlinks"] = _render_hyperlinks(ws)
+    snap["hyperlinks"] = hyperlink_signatures(ws)
     snap["tableParts"] = _render_tables(ws)
     return snap
 

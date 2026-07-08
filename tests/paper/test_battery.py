@@ -189,7 +189,7 @@ class TestBatterySafety:
         wb2 = load_workbook(out)
         assert wb2["Model"]["B8"].value == 0.15
 
-    @pytest.mark.xfail(reason="preserve mode via pandas lands in Phase 2d", strict=True)
+    # GREEN since Phase 2d: sheet addition composes with the preserved package
     def test_job2_pandas_append_preserves_everything(self, fixture_copy):
         pd = pytest.importorskip("pandas")
         src = fixture_copy("gauntlet/gauntlet.xlsx")

@@ -101,7 +101,7 @@ def _col_letter(col):
 
 
 def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
-                 scan=None):
+                 scan=None, cf_replacement=None, hyperlinks_replacement=None):
     """Return the new part payload for one worksheet.
 
     ``dirty_cells``: resolved coordinate set (see resolve_dirty_cells).
@@ -110,6 +110,9 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     ``row_attr_changes``: {row_index: {attr: value}} — changed row display
     attributes.
     ``scan``: a SheetScan of ``original`` if the caller already has one.
+    ``cf_replacement``: bytes replacing ALL conditionalFormatting elements
+    (gated by the caller; may be b"" to remove them).
+    ``hyperlinks_replacement``: bytes replacing the hyperlinks element.
     """
     if scan is None:
         scan = scan_sheet(original)
@@ -166,6 +169,42 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
         elif rendered:
             insert_at = _region_insert_offset(scan, tag)
             edits.append((insert_at, insert_at, rendered))
+
+    # 1b. conditional formatting: replace the whole (possibly multi-element)
+    # run with the freshly rendered blocks (dxf handling done by the caller)
+    if cf_replacement is not None:
+        spans = scan.regions.get("conditionalFormatting", [])
+        for span in spans:
+            if b"extLst" in original[span.start:span.end]:
+                raise SpliceRefusal(
+                    "cannot change conditional formatting on sheet {0!r}: an "
+                    "original rule carries an extLst (x14 twin pointer); "
+                    "editing the classic element alone would orphan the "
+                    "twin. Nothing was written.".format(ws.title))
+        for span in scan.regions.get("extLst", []):
+            if b"conditionalFormatting" in original[span.start:span.end]:
+                raise SpliceRefusal(
+                    "cannot change conditional formatting on sheet {0!r}: "
+                    "the sheet carries x14 conditional formatting in its "
+                    "extLst; editing the classic element alone would desync "
+                    "the twins. Nothing was written.".format(ws.title))
+        if spans:
+            edits.append((spans[0].start, spans[0].end, cf_replacement))
+            for extra in spans[1:]:
+                edits.append((extra.start, extra.end, b""))
+        elif cf_replacement:
+            offset = _region_insert_offset(scan, "conditionalFormatting")
+            edits.append((offset, offset, cf_replacement))
+
+    # 1c. hyperlinks element
+    if hyperlinks_replacement is not None:
+        spans = scan.regions.get("hyperlinks", [])
+        if spans:
+            edits.append((spans[0].start, spans[0].end,
+                          hyperlinks_replacement))
+        elif hyperlinks_replacement:
+            offset = _region_insert_offset(scan, "hyperlinks")
+            edits.append((offset, offset, hyperlinks_replacement))
 
     # 2. cell and row edits inside sheetData
     edits.extend(_sheetdata_edits(ws, scan, dirty_cells, row_attr_changes))
