@@ -1,0 +1,116 @@
+{
+  "chartsheets": [],
+  "confession": {
+    "at_risk_content": [
+      {
+        "detail": "Unknown extension will be removed",
+        "kind": "worksheet-extension",
+        "location": "xl/worksheets/sheet1.xml"
+      },
+      {
+        "detail": "Sparkline Group extension will be removed",
+        "kind": "worksheet-extension",
+        "location": "xl/worksheets/sheet1.xml"
+      },
+      {
+        "detail": "Conditional Formatting extension will be removed",
+        "kind": "worksheet-extension",
+        "location": "xl/worksheets/sheet1.xml"
+      }
+    ],
+    "chart_parts": 1,
+    "custom_xml": false,
+    "drawing_parts": 1,
+    "pivot_parts": 0,
+    "printer_settings": false,
+    "vba_present": false,
+    "worksheet_extensions": [
+      "Conditional Formatting",
+      "Sparkline Group",
+      "Unknown"
+    ]
+  },
+  "defined_names": {
+    "GrowthRate": "Model!$B$8"
+  },
+  "external_links": 0,
+  "preservation": {
+    "at_risk": [],
+    "guarantee": "untouched parts survive byte-identical (raw copy of the retained package); touched sheets are spliced, preserving unmodeled content; unsafe operations raise a typed PaperRefusal instead of proceeding lossily",
+    "mode": "preserve"
+  },
+  "schema": "workbook_manifest",
+  "sheets": [
+    {
+      "cell_count": 39,
+      "charts": 1,
+      "conditional_formatting_blocks": 3,
+      "data_validations": 1,
+      "defined_names": {},
+      "dimensions": "A1:F12",
+      "formula_count": 5,
+      "freeze_panes": "A3",
+      "images": 1,
+      "merged_ranges": [
+        "A1:F1"
+      ],
+      "state": "visible",
+      "tables": [],
+      "title": "Model"
+    },
+    {
+      "cell_count": 10,
+      "charts": 0,
+      "conditional_formatting_blocks": 0,
+      "data_validations": 0,
+      "defined_names": {
+        "LocalTotal": "Data!$B$5"
+      },
+      "dimensions": "A1:B5",
+      "formula_count": 0,
+      "freeze_panes": null,
+      "images": 0,
+      "merged_ranges": [],
+      "state": "visible",
+      "tables": [
+        "RegionTable"
+      ],
+      "title": "Data"
+    },
+    {
+      "cell_count": 12,
+      "charts": 0,
+      "conditional_formatting_blocks": 0,
+      "data_validations": 0,
+      "defined_names": {},
+      "dimensions": "A1:B6",
+      "formula_count": 5,
+      "freeze_panes": null,
+      "images": 0,
+      "merged_ranges": [],
+      "state": "visible",
+      "tables": [],
+      "title": "Calc"
+    },
+    {
+      "cell_count": 1,
+      "charts": 0,
+      "conditional_formatting_blocks": 0,
+      "data_validations": 0,
+      "defined_names": {},
+      "dimensions": "A1:A1",
+      "formula_count": 0,
+      "freeze_panes": null,
+      "images": 0,
+      "merged_ranges": [],
+      "state": "hidden",
+      "tables": [],
+      "title": "HiddenNotes"
+    }
+  ],
+  "version": 1,
+  "volatile_functions": {
+    "deterministic": {},
+    "nondeterministic": {}
+  }
+}

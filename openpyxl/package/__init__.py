@@ -9,6 +9,7 @@ defined on part payloads, never whole-archive bytes: zip entry metadata
 (timestamps, permissions) is out of scope.
 """
 
+from .cells import CellsDiff, diff_cells
 from .diff import (
     PackageDiff,
     PartChange,
@@ -18,8 +19,10 @@ from .diff import (
 )
 
 __all__ = [
+    "CellsDiff",
     "PackageDiff",
     "PartChange",
+    "diff_cells",
     "diff_package",
     "xml_equivalent",
     "xml_semantic_diff",

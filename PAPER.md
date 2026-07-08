@@ -249,6 +249,26 @@ stable release tag.
   tests on the LO-authored fixtures.
 - Full suite: 2769 passed, 6 skipped, 7 xfailed.
 
+## Phase 4 — Perception (2026-07-08)
+
+- `Workbook.manifest()` -> `WorkbookManifest.to_dict()` (schema
+  `workbook_manifest` v1): per-sheet dimensions/formula counts/tables/merges/
+  CF/DV/freeze/local defined names; workbook defined names; volatile-function
+  detection per the pinned §3.7 table (nondeterministic vs deterministic
+  reported separately); a confession block enumerated from the PACKAGE (the
+  retained bytes under preserve, the loss inventory otherwise — never the
+  model, which under-reports exactly the at-risk content); and a preservation
+  block stating the active mode's guarantee. Golden-tested against the
+  gauntlet (goldens update only via explicit command).
+- `openpyxl.package.diff_cells(a, b)` -> `CellsDiff` (schema `cells_diff` v1):
+  address + old/new value + old/new formula, deterministic order, using the
+  formula view and the cached-value view like the ecosystem does.
+- `openpyxl.preserve.perception.dependency_sketch(wb)`: tokenizer-based
+  which-cells-feed-which map with cross-sheet resolution, defined-name
+  expansion via destinations, and conservative handling of structured/table
+  references (unresolved => intersects everything) — the Phase 6a guard input.
+- Full suite: 2782 passed, 6 skipped, 7 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment
