@@ -52,6 +52,10 @@ from .views import (
 )
 from .cell_range import MultiCellRange, CellRange
 from .merge import MergedCellRange
+from openpyxl.preserve.ledger import (
+    mark_deleted_cell as _mark_deleted_cell,
+    refuse_structural_edit as _refuse_structural_edit,
+)
 from .properties import WorksheetProperties
 from .pagebreak import RowBreak, ColBreak
 from .scenario import ScenarioList
@@ -324,7 +328,9 @@ class Worksheet(_WorkbookChild):
     def __delitem__(self, key):
         row, column = coordinate_to_tuple(key)
         if (row, column) in self._cells:
+            was_formula = self._cells[(row, column)].data_type == 'f'
             del self._cells[(row, column)]
+            _mark_deleted_cell(self, row, column, was_formula)
 
 
     @property
@@ -718,6 +724,7 @@ class Worksheet(_WorkbookChild):
         """
         Insert row or rows before row==idx
         """
+        _refuse_structural_edit(self, "insert_rows")
         self._move_cells(min_row=idx, offset=amount, row_or_col="row")
         self._current_row = self.max_row
 
@@ -726,6 +733,7 @@ class Worksheet(_WorkbookChild):
         """
         Insert column or columns before col==idx
         """
+        _refuse_structural_edit(self, "insert_cols")
         self._move_cells(min_col=idx, offset=amount, row_or_col="column")
 
 
@@ -733,6 +741,7 @@ class Worksheet(_WorkbookChild):
         """
         Delete row or rows from row==idx
         """
+        _refuse_structural_edit(self, "delete_rows")
 
         remainder = _gutter(idx, amount, self.max_row)
 
@@ -754,6 +763,7 @@ class Worksheet(_WorkbookChild):
         """
         Delete column or columns from col==idx
         """
+        _refuse_structural_edit(self, "delete_cols")
 
         remainder = _gutter(idx, amount, self.max_column)
 
@@ -782,6 +792,7 @@ class Worksheet(_WorkbookChild):
             raise ValueError("Only CellRange objects can be moved")
         if not rows and not cols:
             return
+        _refuse_structural_edit(self, "move_range")
 
         down = rows > 0
         right = cols > 0

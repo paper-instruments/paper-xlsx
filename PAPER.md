@@ -129,6 +129,32 @@ stable release tag.
   2, 4 remain strict xfails for 2c/2d.
 - Full suite: 2661 passed, 6 skipped, 10 xfailed (upstream 2592 green).
 
+## Phase 2b — The dirty ledger (2026-07-08)
+
+- `openpyxl/preserve/ledger.py`: per-cell dirt keyed by worksheet, formula-change
+  flag (drives the calcChain cascade and recalc-on-load), added-sheet tracking,
+  `mark_dirty` target parsing, and a style-registry fingerprint that converts the
+  StyleProxy nested-mutation leak (upstream silent fan-out corruption) into a
+  typed save-time refusal.
+- Chokepoints instrumented (Tier 1): `Cell._bind_value` (marks only after
+  validation succeeds), the four style descriptors + number-format + named-style
+  descriptors, hyperlink/comment setters, `cell.data_type` (converted to a
+  property — direct assignment silently demotes formulas and is now a chokepoint;
+  the reader writes the backing slot directly to keep the load hot path fast),
+  `Worksheet.__delitem__`.
+- Refusals installed at the chokepoints PR-0 D7/D8 pin: `insert_rows/insert_cols/
+  delete_rows/delete_cols/move_range` on loaded sheets (refined by Phase 6),
+  sheet remove/rename/reorder/copy for loaded sheets. All raised before any
+  mutation; in-session sheets are exempt (they are generated whole at save).
+- Tier-2 satellite regions need no load-time snapshots: the retained blob IS the
+  snapshot; the splice save compares faithful re-serializations of fully-modeled
+  elements against the original bytes (2c/2d).
+- The ledger arms only after load completes; reads/materialization never dirty
+  (tested). Perf: large-fixture load 2.522s vs 2.505s baseline (+0.7%, noise).
+- Considered and deferred: type-check overrides for `DefinedNameDict.update/|=/
+  setdefault` (would be a hard behavior change; upstream-bug note instead).
+- Full suite: 2695 passed, 6 skipped, 10 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

@@ -28,6 +28,7 @@ from openpyxl.styles.styleable import StyleableObject
 from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.formula import DataTableFormula, ArrayFormula
 from openpyxl.cell.rich_text import CellRichText
+from openpyxl.preserve.ledger import mark_cell_dirty as _mark_cell_dirty
 
 # constants
 
@@ -99,7 +100,7 @@ class Cell(StyleableObject):
         'row',
         'column',
         '_value',
-        'data_type',
+        '_data_type',
         'parent',
         '_hyperlink',
         '_comment',
@@ -114,10 +115,24 @@ class Cell(StyleableObject):
         # _value is the stored value, while value is the displayed value
         self._value = None
         self._hyperlink = None
-        self.data_type = 'n'
+        self._data_type = 'n'
         if value is not None:
             self.value = value
         self._comment = None
+
+
+    @property
+    def data_type(self):
+        return self._data_type
+
+    @data_type.setter
+    def data_type(self, value):
+        # a direct data_type assignment changes how the value serializes
+        # (it can silently demote a formula to literal text), so it is a
+        # ledger chokepoint like any other cell mutation (PR-0 D5)
+        old = self._data_type
+        self._data_type = value
+        _mark_cell_dirty(self, formula_involved='f' in (old, value))
 
 
     @property
@@ -176,7 +191,8 @@ class Cell(StyleableObject):
     def _bind_value(self, value):
         """Given a value, infer the correct data type"""
 
-        self.data_type = "n"
+        old_data_type = self._data_type
+        self._data_type = "n"
         t = type(value)
         try:
             dt = _TYPES[t]
@@ -187,7 +203,7 @@ class Cell(StyleableObject):
             raise ValueError("Cannot convert {0!r} to Excel".format(value))
 
         if dt:
-            self.data_type = dt
+            self._data_type = dt
 
         if dt == 'd':
             if not is_date_format(self.number_format):
@@ -196,11 +212,15 @@ class Cell(StyleableObject):
         elif dt == "s" and not isinstance(value, CellRichText):
             value = self.check_string(value)
             if len(value) > 1 and value.startswith("="):
-                self.data_type = 'f'
+                self._data_type = 'f'
             elif value in ERROR_CODES:
-                self.data_type = 'e'
+                self._data_type = 'e'
 
         self._value = value
+        # ledger chokepoint: the mark happens only after validation and
+        # assignment succeeded, so a refused/invalid bind dirties nothing
+        _mark_cell_dirty(
+            self, formula_involved='f' in (old_data_type, self._data_type))
 
 
     @property
@@ -244,6 +264,7 @@ class Cell(StyleableObject):
             self._hyperlink = val
             if self._value is None:
                 self.value = val.target or val.location
+        _mark_cell_dirty(self)
 
 
     @property
@@ -295,6 +316,7 @@ class Cell(StyleableObject):
         elif value is None and self._comment:
             self._comment.unbind()
         self._comment = value
+        _mark_cell_dirty(self)
 
 
 class MergedCell(StyleableObject):

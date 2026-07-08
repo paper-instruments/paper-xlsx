@@ -378,7 +378,7 @@ class WorksheetReader:
                 style = self.ws.parent._cell_styles[cell['style_id']]
                 c = Cell(self.ws, row=cell['row'], column=cell['column'], style_array=style)
                 c._value = cell['value']
-                c.data_type = cell['data_type']
+                c._data_type = cell['data_type']  # direct slot write: load hot path, pre-arm
                 self.ws._cells[(cell['row'], cell['column'])] = c
 
         if self.ws._cells:

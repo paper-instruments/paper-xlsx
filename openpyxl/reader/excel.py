@@ -38,6 +38,7 @@ from openpyxl.comments.comment_sheet import CommentSheet
 from .strings import read_string_table, read_rich_text
 from .workbook import WorkbookParser
 from openpyxl.preserve.inventory import scan_archive
+from openpyxl.preserve.ledger import DirtyLedger
 from openpyxl.styles.stylesheet import apply_stylesheet
 
 from openpyxl.packaging.core import DocumentProperties
@@ -357,6 +358,12 @@ class ExcelReader:
                 self.wb._paper_loss_inventory = scan_archive(
                     self.archive, self.valid_files, keep_vba=self.keep_vba)
                 self.archive.close()
+                if self.preserve:
+                    # the ledger arms only now: everything the loader itself
+                    # fired (create_sheet, cell binds, style writes) is the
+                    # file's own state, not user dirt (PR-0 D5)
+                    action = "arm the dirty ledger"
+                    self.wb._paper_ledger = DirtyLedger.arm(self.wb)
         except ValueError as e:
             raise ValueError(
                 f"Unable to read workbook: could not {action} from {self.archive.filename}.\n"

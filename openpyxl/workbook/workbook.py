@@ -29,6 +29,7 @@ from openpyxl.styles.named_styles import NamedStyleList
 from openpyxl.styles.table import TableStyleList
 
 from openpyxl.chartsheet import Chartsheet
+from openpyxl.preserve import ledger as _ledger
 from .defined_name import DefinedName, DefinedNameDict
 from openpyxl.packaging.core import DocumentProperties
 from openpyxl.packaging.custom import CustomPropertyList
@@ -57,6 +58,7 @@ class Workbook:
     _preserve = False
     _paper_source = None            # retained source-package bytes
     _paper_loss_inventory = None    # content the stock save cannot preserve
+    _paper_ledger = None            # the dirty ledger; armed after load
     template = False
     path = "/xl/workbook.xml"
 
@@ -147,6 +149,19 @@ class Workbook:
         lossless splice of recorded edits into them."""
         return self._preserve
 
+    def mark_dirty(self, target):
+        """Escape hatch for anyone reaching below the public API in
+        preserve mode (CONVENTIONS §3.3): declare that ``target`` was
+        mutated so the splice save re-emits it from the model.
+
+        ``target`` is either a sheet-qualified A1 range (``"Model!B7"``,
+        ``"'My Sheet'!B2:D10"``) or an exact package part name
+        (``"xl/media/image1.png"``). Raises
+        :class:`openpyxl.errors.TargetNotFoundError` for unknown targets and
+        ``ValueError`` outside preserve mode.
+        """
+        _ledger.mark_dirty_target(self, target)
+
     @property
     def data_only(self):
         return self._data_only
@@ -210,6 +225,7 @@ class Workbook:
             new_ws = Worksheet(parent=self, title=title)
 
         self._add_sheet(sheet=new_ws, index=index)
+        _ledger.mark_sheet_added(self, new_ws)
         return new_ws
 
 
@@ -234,6 +250,11 @@ class Workbook:
         """
         if not isinstance(sheet, Worksheet):
             sheet = self[sheet]
+        _ledger.refuse_sheet_lifecycle(
+            self, "move_sheet",
+            "reordering sheets renumbers the positional localSheetId of "
+            "every sheet-scoped defined name inside the preserved "
+            "workbook.xml.")
         idx = self._sheets.index(sheet)
         del self._sheets[idx]
         new_pos = idx + offset
@@ -242,6 +263,13 @@ class Workbook:
 
     def remove(self, worksheet):
         """Remove `worksheet` from this workbook."""
+        if not _ledger.allow_sheet_removal(self, worksheet):
+            _ledger.refuse_sheet_lifecycle(
+                self, "removing sheet {0!r}".format(worksheet.title),
+                "deleting a loaded sheet requires remapping sheet-scoped "
+                "defined names (positional localSheetId) and cascading the "
+                "deletion of its comments, drawings, tables and "
+                "relationships inside the preserved package.")
         idx = self._sheets.index(worksheet)
         self._sheets.remove(worksheet)
 
@@ -417,6 +445,11 @@ class Workbook:
         """
         if self.__write_only or self._read_only:
             raise ValueError("Cannot copy worksheets in read-only or write-only mode")
+        _ledger.refuse_sheet_lifecycle(
+            self, "copy_worksheet",
+            "the copy machinery rebuilds cell and style state in ways the "
+            "dirty ledger cannot attribute; copy the data into a sheet "
+            "created with create_sheet() instead.")
 
         new_title = u"{0} Copy".format(from_worksheet.title)
         to_worksheet = self.create_sheet(title=new_title)
