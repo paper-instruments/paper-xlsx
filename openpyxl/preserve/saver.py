@@ -175,9 +175,17 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             # the standard splice then treats the shifted bytes as its
             # baseline
             from .structural import apply_shift_to_bytes
+            from .chartpatch import plan_chart_updates
             for op, op_idx, op_amount in shift_ops:
                 original = apply_shift_to_bytes(original, op, op_idx,
                                                 op_amount)
+                chart_plans, chart_blockers = plan_chart_updates(
+                    workbook, ws.title, op, op_idx, op_amount)
+                if chart_blockers:
+                    _refuse("chart parts referencing sheet {0!r} cannot be "
+                            "patched: {1}.".format(
+                                ws.title, "; ".join(chart_blockers)))
+                plan.update(chart_plans)
             baselines[part] = original
         scan = scan_sheet(original)
         dirty = resolve_dirty_cells(ws, ledger_dirty, scan)

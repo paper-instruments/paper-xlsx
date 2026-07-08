@@ -273,7 +273,7 @@ def begin_structural_edit(ws, operation, index, amount):
         return False
     from .structural import analyze_shift, shift_blockers
 
-    blockers = shift_blockers(ws, operation, index)
+    blockers = shift_blockers(ws, operation, index, amount)
     if blockers:
         impacts = analyze_shift(ws, operation, index)
         lines = "".join("\n  - " + b for b in blockers)

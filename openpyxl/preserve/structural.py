@@ -173,7 +173,7 @@ STOCK_WARNING = (
 # ---------------------------------------------------------------------
 # Phase 6b: performing the shift (model fixups + byte renumber)
 
-def shift_blockers(ws, operation, index):
+def shift_blockers(ws, operation, index, amount=1):
     """Content that makes a shift unsafe to REWRITE in v0 — anything whose
     references live outside the fully-modeled set. A non-empty result means
     refusal (with analyze_shift providing the victim list)."""
@@ -203,9 +203,14 @@ def shift_blockers(ws, operation, index):
         blockers.append("the sheet references a legacy (VML) drawing")
     charts = _charts_referencing(wb, ws.title)
     if charts:
-        blockers.append(
-            "preserved chart(s) {0} reference this sheet (series ranges in "
-            "preserved bytes; Phase 6c scope)".format(", ".join(sorted(charts))))
+        # Phase 6c: chart series references and drawing anchors are
+        # patchable in place — dry-run the planner; only its blockers
+        # (extension machinery, would-be #REF!) refuse now
+        from .chartpatch import plan_chart_updates
+
+        _plans, chart_blockers = plan_chart_updates(
+            wb, ws.title, operation, index, amount)
+        blockers.extend(chart_blockers)
     pivots = _pivots_referencing(wb, ws.title)
     if pivots:
         blockers.append(

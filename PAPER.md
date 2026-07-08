@@ -339,6 +339,23 @@ stable release tag.
   only in the plan); regression-tested.
 - Full suite: 2834 passed, 6 skipped, 7 xfailed.
 
+## Phase 6c — Chart-range rewriting (2026-07-08)
+
+- `openpyxl/preserve/chartpatch.py`: namespace-aware leaf-text walker over
+  preserved chart/drawing bytes; rewrites `c:f` series reference texts (both
+  the openpyxl default-namespace form and prefixed producer forms) and
+  `xdr:from`/`xdr:to` anchor markers, entity-safe, everything else verbatim.
+- Wired as a dry-run in the shift blockers (charts referencing the sheet no
+  longer refuse when patchable) and as real part plans at save time. Charts
+  carrying c15 filtered-series machinery, extension lists or
+  AlternateContent still refuse; a shift that would delete charted data
+  refuses rather than write #REF! into a chart — the refusal stands where
+  the patch cannot be honest (PLAN's 6c scope rule).
+- Verified: value series move with their data while header refs stay; chart
+  and drawing bytes are untouched when the shift is entirely below the
+  charted region; patched output loads in LibreOffice.
+- Full suite: 2839 passed, 6 skipped, 7 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment
