@@ -54,19 +54,41 @@ def _coord_ref(row, col):
     return "{0}{1}".format(letters, row)
 
 
-def verify_splice(source_bytes, output_bytes, dirty_by_part, baselines=None):
+def _region_signatures(payload):
+    """Canonical signatures of every top-level element EXCEPT sheetData
+    (whose cells the cell check covers, keyed to the ledger's dirt)."""
+    root = ET.fromstring(payload)
+    regions = {}
+    for el in root:
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag == "sheetData":
+            continue
+        regions.setdefault(tag, []).append(
+            ET.canonicalize(ET.tostring(el)))
+    return regions
+
+
+def verify_splice(source_bytes, output_bytes, dirty_by_part, baselines=None,
+                  region_claims=None):
     """Assert that in every spliced part, the set of semantically changed
-    cells is a subset of the ledger's dirty claims.
+    cells is a subset of the ledger's dirty claims — and (PLAN-v0.1 0.4)
+    that no region the saver didn't claim differs.
 
     ``baselines`` maps parts to their post-shift bytes (Phase 6b): those
     parts are checked against the renumbered baseline (the renumber pass is
-    covered by its own tests and the oracle property tests)."""
+    covered by its own tests and the oracle property tests).
+    ``region_claims`` maps parts to the region tags the saver knowingly
+    rewrote; an unclaimed region that differs is corruption inside the
+    safety tooling, exactly like an unclaimed cell."""
     baselines = baselines or {}
+    region_claims = region_claims or {}
     with zipfile.ZipFile(io.BytesIO(source_bytes)) as zin, \
             zipfile.ZipFile(io.BytesIO(output_bytes)) as zout:
         for part, dirty in dirty_by_part.items():
-            before = _sheet_cells(baselines.get(part) or zin.read(part))
-            after = _sheet_cells(zout.read(part))
+            baseline = baselines.get(part) or zin.read(part)
+            output = zout.read(part)
+            before = _sheet_cells(baseline)
+            after = _sheet_cells(output)
             allowed = {_coord_ref(r, c) for (r, c) in dirty}
             changed = set()
             for ref in set(before) | set(after):
@@ -79,3 +101,18 @@ def verify_splice(source_bytes, output_bytes, dirty_by_part, baselines=None):
                     "cell(s) {1} that the ledger never recorded. This is "
                     "corruption inside the safety tooling; the save output "
                     "must not be trusted.".format(part, sorted(rogue)))
+
+            regions_before = _region_signatures(baseline)
+            regions_after = _region_signatures(output)
+            claimed = region_claims.get(part, set())
+            rogue_regions = {
+                tag for tag in set(regions_before) | set(regions_after)
+                if regions_before.get(tag) != regions_after.get(tag)
+                and tag not in claimed}
+            if rogue_regions:
+                raise LedgerCrossCheckError(
+                    "ledger cross-check FAILED for {0}: the splice changed "
+                    "region(s) {1} the saver never claimed. This is "
+                    "corruption inside the safety tooling; the save output "
+                    "must not be trusted.".format(
+                        part, sorted(rogue_regions)))
