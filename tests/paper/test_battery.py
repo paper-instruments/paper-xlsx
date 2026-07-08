@@ -413,49 +413,63 @@ class TestBatteryToday:
         with pytest.raises(UnsupportedStructureError, match="renam"):
             wb["Schedule"].title = "Renamed"
 
-    # job 9 — today: SILENTLY COMPLIES (documented dishonesty; the write
-    # lands with no warning or refusal). Batch 1 flips to warn/refuse.
-    def test_job9_locked_cell_write_silently_complies(self, tmp_path):
+    # job 9 — Batch-1 state (flipped by 1.6): warn by default, refuse
+    # under wb.strict_protection. Protection is reported, never bypassed
+    # silently — and never enforced beyond what the caller asked for.
+    def test_job9_locked_cell_write_warns_or_refuses(self, tmp_path):
         from openpyxl import Workbook
+        from openpyxl.errors import (
+            ProtectedWriteWarning,
+            UnsupportedStructureError,
+        )
 
         wb = Workbook()
         ws = wb.active
         ws["A1"] = "original"
+        ws["A2"] = "original2"
         ws.protection.sheet = True          # cells are locked by default
         src = str(tmp_path / "protected.xlsx")
         wb.save(src)
 
         wb2 = load_workbook(src, preserve=True)
-        import warnings as _w
-        with _w.catch_warnings():
-            _w.simplefilter("error")        # any warning would raise
+        with pytest.warns(ProtectedWriteWarning, match="locked"):
             wb2.active["A1"] = "overwritten"
-            out = str(tmp_path / "o.xlsx")
-            wb2.save(out)
+        import warnings as _w
+        with _w.catch_warnings():           # once per sheet, not per cell
+            _w.simplefilter("error")
+            wb2.active["A2"] = "again"
+        out = str(tmp_path / "o.xlsx")
+        wb2.save(out)                       # the write itself proceeds
         assert load_workbook(out).active["A1"].value == "overwritten"
 
-    # job 10 — today: table objects are silently stale (model edit
-    # accepted, part unchanged). Batch 1 flips to refuse, Batch 2 to
-    # correct append semantics.
-    def test_job10_table_ref_edit_is_silently_stale(
-            self, fixture_copy, tmp_path):
+        wb3 = load_workbook(src, preserve=True)
+        wb3.strict_protection = True
+        with pytest.raises(UnsupportedStructureError, match="locked"):
+            wb3.active["A1"] = "refused"
+        assert wb3.active["A1"].value == "original"   # atomic
+
+        # the manifest reports protection so agents can check BEFORE writing
+        doc = wb3.manifest().to_dict()
+        assert doc["sheets"][0]["protection"] is True
+        assert doc["workbook_protection"] is False
+
+    # job 10 — Batch-1 state: REFUSE (flipped from silent staleness by
+    # the 1.1 object guards). Batch 2's lifecycle engine flips to correct
+    # append semantics.
+    def test_job10_table_ref_edit_refuses(self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+
         src = fixture_copy("features/tables.xlsx")
+        with open(src, "rb") as f:
+            before = f.read()
         wb = load_workbook(src, preserve=True)
         ws = wb.worksheets[0]
         name = sorted(ws.tables)[0]
-        table_part_before = next(
-            p for n, p in part_payloads(src).items()
-            if n.startswith("xl/tables/"))
         ws.tables[name].ref = "A1:B2"
-        out = str(tmp_path / "o.xlsx")
-        import warnings as _w
-        with _w.catch_warnings():
-            _w.simplefilter("error")     # not even a warning fires today
-            wb.save(out)
-        table_part_after = next(
-            p for n, p in part_payloads(out).items()
-            if n.startswith("xl/tables/"))
-        assert table_part_after == table_part_before  # edit went nowhere
+        with pytest.raises(UnsupportedStructureError, match="table"):
+            wb.save(str(tmp_path / "o.xlsx"))
+        with open(src, "rb") as f:
+            assert f.read() == before                 # atomic
 
     # job 11 — today: refuse at call time. Batch 3 flips to correct copy.
     def test_job11_copy_sheet_refuses(self, fixture_copy):
@@ -472,50 +486,87 @@ class TestBatteryToday:
 
         assert not hasattr(Workbook, "evaluate")
 
-    # job 13 — today: cryptic zip error. Batch 1 flips to typed refusal
-    # naming encryption and the decrypt route.
-    def test_job13_encrypted_cfb_is_a_cryptic_zip_error(self, tmp_path):
+    # job 13 — Batch-1 state (flipped by 1.5): typed refusal naming the
+    # encryption and the decrypt route, on both load arms.
+    def test_job13_encrypted_cfb_gets_typed_refusal(
+            self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+
         src = str(tmp_path / "encrypted.xlsx")
         with open(src, "wb") as f:
             f.write(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 4096)
-        with pytest.raises(zipfile.BadZipFile):
+        with pytest.raises(UnsupportedStructureError, match="ENCRYPT"):
             load_workbook(src, preserve=True)
+        with pytest.raises(UnsupportedStructureError, match="password"):
+            load_workbook(src)                        # stock arm too
+        # file-like arm rewinds after sniffing on ordinary files
+        import io as _io
+        with open(fixture_copy("minimal/minimal_clean.xlsx"), "rb") as f:
+            buf = _io.BytesIO(f.read())
+        assert load_workbook(buf).active is not None
 
-    # job 16 — today: loaded chart objects are silently stale. Batch 1
-    # flips to refuse, Batch 4 to correct chart editing.
-    def test_job16_chart_title_edit_is_silently_stale(
+    # 1.5 input honesty: duplicate entry names are a parser differential
+    # (reader takes the LAST copy, raw copy keeps BOTH) — preserve refuses
+    def test_duplicate_zip_entries_refuse_under_preserve(
             self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        dup = str(tmp_path / "dup.xlsx")
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dup, "w") as zout:
+            for name in zin.namelist():
+                zout.writestr(name, zin.read(name))
+                if name.startswith("xl/worksheets/sheet"):
+                    zout.writestr(name, zin.read(name))   # duplicate
+        with pytest.raises(UnsupportedStructureError, match="duplicate"):
+            load_workbook(dup, preserve=True)
+        load_workbook(dup)                       # stock keeps upstream arm
+
+    # job 16 — Batch-1 state: REFUSE (flipped from silent staleness by
+    # the 1.1 object guards). Batch 4 flips chart editing to correct.
+    def test_job16_chart_title_edit_refuses(self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+
         src = fixture_copy("features/chart_image.xlsx")
-        chart_part_before = next(
-            p for n, p in part_payloads(src).items()
-            if n.startswith("xl/charts/chart"))
+        with open(src, "rb") as f:
+            before = f.read()
         wb = load_workbook(src, preserve=True)
         ws = next(w for w in wb.worksheets if w._charts)
         ws._charts[0].title = "TAMPERED"
-        # a cell edit alongside, so the save has work to do
-        ws["A1"] = ws["A1"].value
-        out = str(tmp_path / "o.xlsx")
-        import warnings as _w
-        with _w.catch_warnings():
-            _w.simplefilter("error")     # not even a warning fires today
-            wb.save(out)
-        chart_part_after = next(
-            p for n, p in part_payloads(out).items()
-            if n.startswith("xl/charts/chart"))
-        assert chart_part_after == chart_part_before  # edit went nowhere
+        with pytest.raises(UnsupportedStructureError, match="chart"):
+            wb.save(str(tmp_path / "o.xlsx"))
+        with open(src, "rb") as f:
+            assert f.read() == before                 # atomic
 
-    # job 17 — today: a value edit feeding formulas saves stale caches
-    # with workbook.xml untouched (no fullCalcOnLoad). Batch 1 widens the
-    # flag to dependency-sketch hits.
-    def test_job17_value_edit_feeding_formulas_sets_no_flag(
+        # a MUTATION-ONLY session refuses too (no other dirt on the sheet)
+        wb2 = load_workbook(src, preserve=True)
+        ws2 = next(w for w in wb2.worksheets if w._images)
+        ws2._images[0].anchor._from.col = 9
+        with pytest.raises(UnsupportedStructureError, match="image"):
+            wb2.save(str(tmp_path / "o2.xlsx"))
+
+    # job 17 — Batch-1 state (flipped by 1.2): a value edit feeding
+    # formulas forces fullCalcOnLoad so stale caches can never masquerade
+    # as current to a human opener.
+    def test_job17_value_edit_feeding_formulas_sets_recalc_flag(
             self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule_calc.xlsx")
         wb = load_workbook(src, preserve=True)
         wb["Schedule"]["B2"] = 1200            # feeds =SUM(B2:B11)
         out = str(tmp_path / "o.xlsx")
         wb.save(out)
-        assert part_payloads(out)["xl/workbook.xml"] == \
-            part_payloads(src)["xl/workbook.xml"]
+        assert b"fullCalcOnLoad" in part_payloads(out)["xl/workbook.xml"]
+
+        # a value edit feeding NO formula keeps workbook.xml untouched —
+        # the flag is targeted, not a blanket stamp (reads never dirty,
+        # and neither do isolated writes)
+        src2 = fixture_copy("minimal/minimal_clean.xlsx")
+        wb2 = load_workbook(src2, preserve=True)
+        wb2["Sheet1"]["A1"] = "note"
+        out2 = str(tmp_path / "o2.xlsx")
+        wb2.save(out2)
+        assert part_payloads(out2)["xl/workbook.xml"] == \
+            part_payloads(src2)["xl/workbook.xml"]
 
     # job 18 — today: refuse at save. Batch 2 flips to correct via the
     # part-lifecycle engine.

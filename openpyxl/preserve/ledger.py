@@ -44,6 +44,8 @@ class DirtyLedger:
                  "_style_fingerprint", "region_snapshots", "row_attr_snapshots",
                  "comment_snapshots", "workbook_snapshot", "core_snapshot",
                  "custom_snapshot", "chartsheet_snapshots", "pinned_regions",
+                 "object_snapshots", "external_links_snapshot",
+                 "protection_warned",
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag")
@@ -68,6 +70,9 @@ class DirtyLedger:
         self.custom_snapshot = None
         self.chartsheet_snapshots = {} # chartsheet -> rendered
         self.pinned_regions = {}       # ws -> {tag}: impure serializers
+        self.object_snapshots = {}     # ws -> preserved-part-backed objects
+        self.external_links_snapshot = ()
+        self.protection_warned = set()   # sheets warned once (1.6)
         self.orig_cell_styles_len = 0
         self.rich_text_mode = False
         self.sheet_states = {}         # title -> state at arm (all sheets)
@@ -100,6 +105,8 @@ class DirtyLedger:
             led.region_snapshots[ws] = settled
             led.row_attr_snapshots[ws] = snapshot_row_attrs(ws)
             led.comment_snapshots[ws] = _comment_snapshot(ws)
+            led.object_snapshots[ws] = _object_snapshot(ws)
+        led.external_links_snapshot = _external_links_snapshot(wb)
         for cs in wb.chartsheets:
             led.chartsheet_snapshots[cs] = _render_chartsheet(cs)
         from .crosspart import render_workbook_elements
@@ -176,6 +183,100 @@ def _comment_snapshot(ws):
     return snap
 
 
+def _settled(render):
+    """Render twice, keep the second (the 0.3 discipline: a serializer
+    with render-time side effects settles after one pass; comparing
+    settled-vs-settled is producer-quirk-free). Returns (settled bytes,
+    self_consistent flag)."""
+    first = render()
+    second = render()
+    return second, first == second
+
+
+def _object_snapshot(ws):
+    """Serialized fingerprints of the model objects whose backing parts
+    are PRESERVED BYTES — the review's named threat class: loaded tables,
+    charts, images, pivots are live and mutable, but the splice never
+    re-serializes their parts, so an in-session edit would vanish
+    silently. Snapshot at arm, compare at save, refuse on drift
+    (PLAN-v0.1 1.1: refusal is fully acceptable; silence is not)."""
+    from openpyxl.xml.functions import tostring
+
+    snap = {"unstable": set()}
+
+    tables = {}
+    for name in ws.tables:
+        tbl = ws.tables[name]
+        rendered, ok = _settled(lambda t=tbl: tostring(t.to_tree()))
+        tables[name] = rendered
+        if not ok:
+            snap["unstable"].add(("table", name))
+    snap["table"] = tables
+
+    charts = {}
+    for i, chart in enumerate(getattr(ws, "_charts", []) or []):
+        rendered, ok = _settled(lambda c=chart: tostring(c._write()))
+        charts[i] = rendered
+        if not ok:
+            snap["unstable"].add(("chart", i))
+    snap["chart"] = charts
+
+    images = {}
+    for i, image in enumerate(getattr(ws, "_images", []) or []):
+        anchor = getattr(image, "anchor", None)
+        if anchor is not None and hasattr(anchor, "to_tree"):
+            rendered, ok = _settled(lambda a=anchor: tostring(a.to_tree()))
+        else:
+            rendered, ok = repr(anchor).encode("utf-8"), True
+        images[i] = (rendered, getattr(image, "path", None))
+        if not ok:
+            snap["unstable"].add(("image", i))
+    snap["image"] = images
+
+    pivots = {}
+    for i, pivot in enumerate(getattr(ws, "_pivots", []) or []):
+        rendered, ok = _settled(lambda p=pivot: tostring(p.to_tree()))
+        pivots[i] = rendered
+        if not ok:
+            snap["unstable"].add(("pivot", i))
+    snap["pivot"] = pivots
+
+    return snap
+
+
+_OBJECT_UNLOCKS = {
+    "table": "table editing lands with the v0.1 lifecycle engine "
+             "(Batch 2)",
+    "chart": "chart editing lands with v0.1 Batch 4",
+    "image": "image editing lands with v0.1 Batch 4",
+    "pivot": "pivot editing is out of scope (preservation and "
+             "refresh-on-load cover brownfield pivots)",
+}
+
+
+def diff_objects(ws, armed):
+    """(kind, key) pairs whose settled serialization drifted since arm —
+    in-session mutations of preserved-part-backed objects."""
+    if not armed:
+        return []
+    current = _object_snapshot(ws)
+    changed = []
+    for kind in ("table", "chart", "image", "pivot"):
+        before = armed.get(kind, {})
+        after = current.get(kind, {})
+        for key in set(before) | set(after):
+            if before.get(key) != after.get(key):
+                changed.append((kind, key))
+    return sorted(changed)
+
+
+def _external_links_snapshot(wb):
+    from openpyxl.xml.functions import tostring
+
+    return tuple(tostring(link.to_tree())
+                 for link in wb._external_links or [])
+
+
 def render_core_model(wb):
     from openpyxl.xml.functions import tostring
 
@@ -229,6 +330,49 @@ def mark_cell_dirty(cell, formula_involved=False):
     led.mark_cell(ws, cell.row, cell.column)
     if formula_involved:
         led.formulas_changed = True
+
+
+def check_protection(cell):
+    """Protection awareness (PLAN-v0.1 1.6): we report protection, we
+    never enforce or bypass it. Called BEFORE the value binds (a strict
+    refusal must be atomic): a write to a locked cell of a protected
+    sheet warns once per sheet — or refuses under wb.strict_protection.
+    Scope: value writes (the chokepoint agents hit); style/comment edits
+    to locked cells are not protection-checked in v0.1."""
+    ws = cell.parent
+    if ws is None:
+        return
+    led = _armed_ledger_for_ws(ws)
+    if led is None:
+        return
+    try:
+        protected = bool(ws.protection.sheet)
+    except AttributeError:
+        return
+    if not protected:
+        return
+    if not cell.protection.locked:
+        return
+    wb = ws.parent
+    if getattr(wb, "strict_protection", False):
+        raise UnsupportedStructureError(
+            "cell {0} on sheet {1!r} is locked and the sheet is protected; "
+            "this workbook has strict_protection enabled, so the write is "
+            "refused. Nothing was changed. Unlock the cell, unprotect the "
+            "sheet, or set wb.strict_protection = False to warn "
+            "instead.".format(cell.coordinate, ws.title))
+    if ws not in led.protection_warned:
+        led.protection_warned.add(ws)
+        import warnings
+
+        from openpyxl.errors import ProtectedWriteWarning
+
+        warnings.warn(ProtectedWriteWarning(
+            "writing to locked cell(s) on protected sheet {0!r} (first: "
+            "{1}). The write proceeds — protection is reported, never "
+            "enforced — but the sheet's author expected these cells to be "
+            "read-only. Set wb.strict_protection = True to refuse such "
+            "writes.".format(ws.title, cell.coordinate)), stacklevel=3)
 
 
 def mark_styleable_dirty(instance):
@@ -288,7 +432,30 @@ def begin_structural_edit(ws, operation, index, amount):
         return False
     if ws in led.added_sheets:
         return False
-    from .structural import analyze_shift, shift_blockers
+    from .structural import (
+        EXCEL_MAX_COL,
+        EXCEL_MAX_ROW,
+        analyze_shift,
+        shift_blockers,
+    )
+
+    if operation == "insert_rows" and ws.max_row + amount > EXCEL_MAX_ROW:
+        from openpyxl.errors import BoundaryViolationError
+
+        raise BoundaryViolationError(
+            "insert_rows({0}, {1}) would shift occupied cells past row "
+            "{2}, the sheet's hard limit; Excel would refuse this edit "
+            "too. Nothing was changed.".format(index, amount,
+                                               EXCEL_MAX_ROW))
+    if operation == "insert_cols" \
+            and ws.max_column + amount > EXCEL_MAX_COL:
+        from openpyxl.errors import BoundaryViolationError
+
+        raise BoundaryViolationError(
+            "insert_cols({0}, {1}) would shift occupied cells past column "
+            "{2} (XFD), the sheet's hard limit; Excel would refuse this "
+            "edit too. Nothing was changed.".format(index, amount,
+                                                    EXCEL_MAX_COL))
 
     blockers = shift_blockers(ws, operation, index, amount)
     if blockers:
@@ -309,10 +476,13 @@ def begin_structural_edit(ws, operation, index, amount):
 
 def finish_structural_edit(ws, operation, index, amount):
     """Model-side reference fixups + snapshot rebasing, after the cells
-    moved (see structural.apply_model_shift)."""
-    from .structural import apply_model_shift
+    moved (see structural.apply_model_shift). Returns the pinned
+    AddressRemap (CONVENTIONS §2): pre-edit addresses must be remapped
+    through it, never reused."""
+    from .structural import AddressRemap, apply_model_shift
 
     apply_model_shift(ws, operation, index, amount)
+    return AddressRemap(ws.title, operation, index, amount)
 
 
 def refuse_structural_edit(ws, operation, index=None):

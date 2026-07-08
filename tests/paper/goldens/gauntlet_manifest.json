@@ -55,6 +55,7 @@
       "merged_ranges": [
         "A1:F1"
       ],
+      "protection": false,
       "state": "visible",
       "tables": [],
       "title": "Model"
@@ -72,6 +73,7 @@
       "freeze_panes": null,
       "images": 0,
       "merged_ranges": [],
+      "protection": false,
       "state": "visible",
       "tables": [
         "RegionTable"
@@ -89,6 +91,7 @@
       "freeze_panes": null,
       "images": 0,
       "merged_ranges": [],
+      "protection": false,
       "state": "visible",
       "tables": [],
       "title": "Calc"
@@ -104,6 +107,7 @@
       "freeze_panes": null,
       "images": 0,
       "merged_ranges": [],
+      "protection": false,
       "state": "hidden",
       "tables": [],
       "title": "HiddenNotes"
@@ -113,5 +117,6 @@
   "volatile_functions": {
     "deterministic": {},
     "nondeterministic": {}
-  }
+  },
+  "workbook_protection": false
 }

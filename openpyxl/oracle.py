@@ -25,6 +25,7 @@ preservation-related works with no LibreOffice installed.
 
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -303,12 +304,18 @@ class CertificationResult:
     BASELINE_UNVERIFIABLE = "BASELINE_UNVERIFIABLE"
 
     def __init__(self, status, checked, divergences, volatile_excluded,
-                 unverifiable):
+                 unverifiable, external_excluded=None,
+                 unsupported_excluded=None):
         self.status = status
         self.checked = checked
         self.divergences = divergences          # [{"address", "cached", "computed"}]
         self.volatile_excluded = volatile_excluded
         self.unverifiable = unverifiable        # formula cells without a cache
+        # excluded-with-reason (PLAN-v0.1 1.7): DIVERGED keeps meaning
+        # "genuine disagreement" because known-unverifiable classes are
+        # named, never silently checked-and-wrong or silently skipped
+        self.external_excluded = external_excluded or []
+        self.unsupported_excluded = unsupported_excluded or []
 
     def to_dict(self):
         return {
@@ -318,6 +325,8 @@ class CertificationResult:
             "cells_checked": self.checked,
             "divergences": list(self.divergences),
             "volatile_excluded": list(self.volatile_excluded),
+            "external_excluded": list(self.external_excluded),
+            "unsupported_excluded": list(self.unsupported_excluded),
             "unverifiable": list(self.unverifiable),
         }
 
@@ -356,40 +365,26 @@ def certify(source, *, timeout=120.0):
     wb_formulas = load_workbook(io.BytesIO(data), data_only=False)
     wb_cached = load_workbook(io.BytesIO(data), data_only=True)
 
-    # cells downstream of nondeterministic volatiles are excluded (§3.7):
-    # seed with the volatile cells, propagate through the dependency sketch
-    from openpyxl.formula import Tokenizer
-
+    # excluded-with-reason (§3.7 + PLAN-v0.1 1.7): nondeterministic
+    # volatiles, oracle-unsupported functions, and external-workbook
+    # references are all excluded from certification — so DIVERGED keeps
+    # meaning "genuine disagreement" — with the reason recorded, never a
+    # silent shrink of the check. Downstream cells inherit the taint.
     sketch = dependency_sketch(wb_formulas)
-    volatile_funcs = {name + "(" for name in VOLATILE_NONDETERMINISTIC}
-    tainted = set()
-    for ws in wb_formulas.worksheets:
-        for (row, col), cell in ws._cells.items():
-            if cell.data_type != "f" or not isinstance(cell._value, str):
-                continue
-            # tokenizer-precise seeding: string literals or UDF names that
-            # merely CONTAIN a volatile name must not taint (and must not
-            # silently shrink the divergence check)
-            try:
-                tokens = Tokenizer(cell._value).items
-            except Exception:
-                tainted.add((ws.title, row, col))   # unparseable: exclude
-                continue
-            for token in tokens:
-                if (token.type == "FUNC" and token.subtype == "OPEN"
-                        and token.value.upper() in volatile_funcs):
-                    tainted.add((ws.title, row, col))
-                    break
+    reasons = _exclusion_seeds(wb_formulas)
+    tainted = set(reasons)
     changed = True
     while changed:
         changed = False
-        for address, refs in sketch.references.items():
+        for address, refs in sorted(sketch.references.items()):
             key = _address_key(address, wb_formulas)
             if key in tainted:
                 continue
             for ref_sheet, bounds, _raw in refs:
-                if _bounds_hit_tainted(ref_sheet, bounds, tainted):
+                hit = _bounds_hit_tainted(ref_sheet, bounds, tainted)
+                if hit is not None:
                     tainted.add(key)
+                    reasons[key] = reasons[hit]
                     changed = True
                     break
 
@@ -421,11 +416,20 @@ def certify(source, *, timeout=120.0):
     checked = 0
     divergences = []
     volatile_excluded = []
+    external_excluded = []
+    unsupported_excluded = []
     unverifiable = []
     for (sheet, row, col, coord, cached) in formula_cells:
         address = "{0}!{1}".format(sheet, coord)
-        if (sheet, row, col) in tainted:
-            volatile_excluded.append(address)
+        reason = reasons.get((sheet, row, col))
+        if reason is not None:
+            if reason == "external-link":
+                external_excluded.append(address)
+            elif reason.startswith("unsupported:"):
+                unsupported_excluded.append(
+                    "{0} ({1})".format(address, reason[12:]))
+            else:
+                volatile_excluded.append(address)
             continue
         if cached is None or cached == "":
             unverifiable.append(address)
@@ -442,7 +446,65 @@ def certify(source, *, timeout=120.0):
               else CertificationResult.CERTIFIED)
     return CertificationResult(status, checked, divergences,
                                sorted(volatile_excluded),
-                               sorted(unverifiable))
+                               sorted(unverifiable),
+                               external_excluded=sorted(external_excluded),
+                               unsupported_excluded=sorted(
+                                   unsupported_excluded))
+
+
+# functions LibreOffice's recalc cannot be trusted to reproduce (version-
+# dependent or environment-dependent semantics). Conservative by design:
+# an excluded cell is NAMED with its reason; a mis-checked cell would be a
+# false DIVERGED (PLAN-v0.1 1.7).
+ORACLE_UNSUPPORTED_FUNCS = frozenset([
+    "LAMBDA", "LET", "MAP", "REDUCE", "SCAN", "BYROW", "BYCOL",
+    "MAKEARRAY", "ISOMITTED",
+    "STOCKHISTORY", "RTD", "WEBSERVICE", "FILTERXML", "IMAGE", "PY",
+    "CUBEVALUE", "CUBEMEMBER", "CUBESET", "CUBESETCOUNT",
+    "CUBERANKEDMEMBER", "CUBEMEMBERPROPERTY", "CUBEKPIMEMBER",
+])
+
+# an operand that opens with a bracketed workbook token is an external-
+# workbook reference ([1]Sheet!A1, '[Budget.xlsx]Sheet One'!A1); table
+# structured refs (Table1[Col]) never START with the bracket
+_EXTERNAL_REF_RE = re.compile(r"^'?\[[^\]]+\]")
+
+
+def _exclusion_seeds(wb_formulas):
+    """{(sheet, row, col): reason} for every formula cell certification
+    must exclude: volatile, unsupported function, external reference, or
+    unparseable. Tokenizer-precise — string literals that merely contain
+    a trigger name do not taint."""
+    from openpyxl.formula import Tokenizer
+    from openpyxl.preserve.perception import VOLATILE_NONDETERMINISTIC
+
+    volatile_funcs = {name + "(" for name in VOLATILE_NONDETERMINISTIC}
+    unsupported_funcs = {name + "(" for name in ORACLE_UNSUPPORTED_FUNCS}
+    reasons = {}
+    for ws in wb_formulas.worksheets:
+        for (row, col), cell in ws._cells.items():
+            if cell.data_type != "f" or not isinstance(cell._value, str):
+                continue
+            key = (ws.title, row, col)
+            try:
+                tokens = Tokenizer(cell._value).items
+            except Exception:
+                reasons[key] = "unparseable"
+                continue
+            for token in tokens:
+                if token.type == "FUNC" and token.subtype == "OPEN":
+                    up = token.value.upper()
+                    if up in volatile_funcs:
+                        reasons[key] = "volatile"
+                        break                       # volatile outranks all
+                    if up in unsupported_funcs and key not in reasons:
+                        reasons[key] = "unsupported:" + up.rstrip("(")
+                elif (token.type == "OPERAND"
+                        and token.subtype == "RANGE"
+                        and _EXTERNAL_REF_RE.match(token.value)
+                        and key not in reasons):
+                    reasons[key] = "external-link"
+    return reasons
 
 
 def _address_key(address, wb):
@@ -466,5 +528,5 @@ def _bounds_hit_tainted(sheet, bounds, tainted):
         if t_sheet != sheet:
             continue
         if min_row <= t_row <= max_row and min_col <= t_col <= max_col:
-            return True
-    return False
+            return (t_sheet, t_row, t_col)
+    return None

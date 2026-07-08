@@ -59,6 +59,10 @@ class Workbook:
     _paper_source = None            # retained source-package bytes
     _paper_loss_inventory = None    # content the stock save cannot preserve
     _paper_ledger = None            # the dirty ledger; armed after load
+    # protection awareness (PLAN-v0.1 1.6): True turns writes to locked
+    # cells on protected sheets into typed refusals (default: warn once
+    # per sheet). Protection is reported, never enforced or bypassed.
+    strict_protection = False
     template = False
     path = "/xl/workbook.xml"
 

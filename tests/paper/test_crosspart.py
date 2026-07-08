@@ -322,12 +322,16 @@ class TestHyperlinks:
         assert wb2["Model"]["A13"].hyperlink.target == "https://example.org/new"
 
     def test_hyperlink_removal_refuses(self, fixture_copy, tmp_path):
+        # retyped in v0.1 Batch 1 (1.3): relationship-rewrite policy is
+        # exactly RelationshipPolicyError's pinned domain
+        from openpyxl.errors import RelationshipPolicyError
+
         src = fixture_copy(GAUNTLET)
         with open(src, "rb") as f:
             before = f.read()
         wb = load_workbook(src, preserve=True)
         wb["Model"]["A11"].hyperlink = None
-        with pytest.raises(UnsupportedStructureError, match="ADDITION"):
+        with pytest.raises(RelationshipPolicyError, match="ADDITION"):
             wb.save(str(tmp_path / "o.xlsx"))
         with open(src, "rb") as f:
             assert f.read() == before

@@ -365,3 +365,14 @@ oracle.certify(path, *, timeout=120.0) -> CertificationResult
    not hidden: dissolved untouched members lose cached `<v>` values; mitigations are the
    auto-set fullCalcOnLoad flag (verified), honest certify() unverifiable reporting, and
    recalc(); write-back (PLAN-v0.1 §5.3) is the cure. Battery job 6: correct.
+7. Batch-1 surface widenings (PLAN-v0.1 1.2/1.6/1.7): (a) D2's cell-edit collateral
+   set gains xl/workbook.xml (calcPr) when a VALUE edit intersects the dependency
+   sketch of any formula — the recalc-on-load honesty flag now covers the most
+   common agent edit, not just formula-text changes; (b) the workbook_manifest
+   schema gains per-sheet "protection" and workbook-level "workbook_protection"
+   booleans, and a new pinned warning ProtectedWriteWarning + wb.strict_protection
+   flag implement protection awareness (reported, never enforced or bypassed);
+   (c) the oracle_certification schema gains "external_excluded" and
+   "unsupported_excluded" (excluded-with-reason, like volatiles, with downstream
+   taint inheritance) so DIVERGED keeps meaning genuine disagreement; the
+   ORACLE_UNSUPPORTED_FUNCS catalog is pinned data in oracle.py.

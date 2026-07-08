@@ -761,7 +761,7 @@ class Worksheet(_WorkbookChild):
         self._move_cells(min_row=idx, offset=amount, row_or_col="row")
         self._current_row = self.max_row
         if fixup:
-            _finish_structural_edit(self, "insert_rows", idx, amount)
+            return _finish_structural_edit(self, "insert_rows", idx, amount)
 
 
     def insert_cols(self, idx, amount=1):
@@ -771,7 +771,7 @@ class Worksheet(_WorkbookChild):
         fixup = _structural_guard(self, "insert_cols", idx, amount)
         self._move_cells(min_col=idx, offset=amount, row_or_col="column")
         if fixup:
-            _finish_structural_edit(self, "insert_cols", idx, amount)
+            return _finish_structural_edit(self, "insert_cols", idx, amount)
 
 
     def delete_rows(self, idx, amount=1):
@@ -795,7 +795,7 @@ class Worksheet(_WorkbookChild):
         if not self._cells:
             self._current_row = 0
         if fixup:
-            _finish_structural_edit(self, "delete_rows", idx, amount)
+            return _finish_structural_edit(self, "delete_rows", idx, amount)
 
 
     def delete_cols(self, idx, amount=1):
@@ -817,7 +817,7 @@ class Worksheet(_WorkbookChild):
                     del self._cells[row, col]
 
         if fixup:
-            _finish_structural_edit(self, "delete_cols", idx, amount)
+            return _finish_structural_edit(self, "delete_cols", idx, amount)
 
     def move_range(self, cell_range, rows=0, cols=0, translate=False):
         """

@@ -477,16 +477,66 @@ Corruption fixes outrank planning; this batch merged before PR-1.
   silently; the adversarial review is a standing per-batch gate (this
   batch's report is in the PR).
 
+## Batch 1 — Honesty completion (2026-07-08, PLAN-v0.1)
+
+The boundary class, closed: **"the dangerous boundary isn't unmodeled
+content — it's modeled objects backed by preserved bytes."**
+
+- **1.1 Preserved-object guards:** loaded tables, charts, images, and
+  pivots get settled-serialization snapshots at arm (the 0.3 double-render
+  discipline); any in-session mutation refuses atomically at save, naming
+  the object and its unlock batch (tables: Batch 2; charts/images: Batch
+  4). External-link objects snapshot at workbook level. Battery jobs 10
+  and 16 flipped from silent-staleness to REFUSE.
+- **1.2 fullCalcOnLoad widened:** a VALUE edit intersecting the dependency
+  sketch of any formula forces the recalc flag (case-insensitive sheet
+  match; structured refs count conservatively). calcChain is untouched
+  (still valid for value-only edits). Battery job 17 flipped.
+- **1.3 Pinned-surface debts paid:** AddressRemap implemented
+  (insert/delete rows/cols return it under preserve; .map() handles
+  cells/ranges/sheet-qualified/absolute forms; deleted addresses map to
+  None); BoundaryViolationError raised when a shift would push occupied
+  cells past row 1048576 / column XFD; RelationshipPolicyError retyped
+  onto the hyperlink modify/remove refusal (its pinned domain). All three
+  debt entries removed.
+- **1.4 Loss-inventory completeness:** chart colors/style parts matched by
+  numbered-name regex (the v0 endswith was dead code — verified against
+  lo_authored.xlsx which loses both parts on stock save); rich-text run
+  flattening detected in sharedStrings AND inline strings; workbook.xml
+  fileSharing and protectedRanges; threaded-comment parts.
+- **1.5 Input honesty:** encrypted/CFB files get a typed refusal naming
+  the condition and the decrypt route on BOTH load arms (battery job 13
+  flipped); duplicate zip entry names refuse under preserve (load-vs-copy
+  parser differential); diff_cells no longer sprays stock loss warnings
+  during read-only diagnostics (and pins preserve=False so the env
+  default cannot double-retain).
+- **1.6 Protection awareness:** value writes to locked cells on protected
+  sheets warn once per sheet (ProtectedWriteWarning, new pinned surface)
+  or refuse atomically under wb.strict_protection — checked BEFORE the
+  value binds. Manifest gains per-sheet protection + workbook_protection.
+  Protection is reported, never enforced or bypassed. Battery job 9
+  flipped. Scope note: style/comment writes to locked cells are not
+  protection-checked in v0.1.
+- **1.7 Certification noise classes:** external-workbook references and a
+  pinned ORACLE_UNSUPPORTED_FUNCS catalog (LAMBDA/LET family, RTD,
+  STOCKHISTORY, CUBE*, WEBSERVICE, IMAGE, PY) are excluded-with-reason
+  with downstream taint inheritance; CertificationResult gains
+  external_excluded/unsupported_excluded.
+- **1.8 Producer fingerprint pinned:** fresh app.xml bytes are a pinned
+  test constant (changing the producer string is a reviewed decision);
+  edited preserve saves keep original app.xml byte-identical (explicit
+  test beyond the no-op property); real-Excel open checks queued in
+  FIXTURE-REQUESTS.md (LibreOffice smoke is provably blind to this class).
+
+Suite: 2946 passed; env-flip arm green.
+
 ## Pinned-surface debt ledger
 
 Debts are pinned surface not yet produced-and-tested; each names its
 owning batch. Paying a debt REQUIRES removing its entry (the CI check
 enforces both directions).
 
-- `AddressRemap` — owed to Batch 1 (PLAN-v0.1 1.3: shifts return it, period)
 - `AmbiguousTargetError` — owed to Batch 6 (label localization raises it)
-- `BoundaryViolationError` — owed to Batch 1 (1.3: raise or formally retire)
-- `RelationshipPolicyError` — owed to Batch 1 (1.3: raise or formally retire)
 
 ## Batch 0 — adversarial gate report (2026-07-08)
 

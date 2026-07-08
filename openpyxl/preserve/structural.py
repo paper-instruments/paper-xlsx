@@ -18,6 +18,55 @@ import zipfile
 MAX_COL = 1 << 20
 MAX_ROW = 1 << 22
 
+# hard sheet limits (ECMA-376): shifting occupied cells past these is a
+# BoundaryViolationError, not a silent wrap or drop
+EXCEL_MAX_ROW = 1048576
+EXCEL_MAX_COL = 16384
+
+
+class AddressRemap:
+    """How one structural edit moved addresses (CONVENTIONS §2, pinned):
+    every pre-edit address must be remapped through this, never reused.
+
+    ``map('Model!B12') -> 'Model!B13'``; addresses whose cells the edit
+    deleted map to ``None``; addresses on other sheets (or untouched by
+    the shift) come back unchanged. Accepts bare cells, ranges, and
+    sheet-qualified forms; ``$`` markers are kept positionally, matching
+    the rewriter's Excel semantics."""
+
+    def __init__(self, sheet_title, operation, index, amount):
+        self.sheet_title = sheet_title
+        self.operation = operation
+        self.index = index
+        self.amount = amount
+
+    def map(self, address):
+        from .rewrite import REF_ERROR, shift_ref
+
+        sheet, ref = None, address
+        m = _SHEET_PREFIX_RE.match(address)
+        if m:
+            sheet = (m.group(1) or m.group(2)).replace("''", "'")
+            ref = m.group(3)
+        if sheet is not None \
+                and sheet.casefold() != self.sheet_title.casefold():
+            return address
+        axis = "rows" if self.operation.endswith("_rows") else "cols"
+        is_delete = self.operation.startswith("delete")
+        shifted = shift_ref(ref, axis, self.index, self.amount, is_delete)
+        if shifted == REF_ERROR:
+            return None
+        if sheet is None:
+            return shifted
+        return address[:m.end(0) - len(m.group(3))] + shifted
+
+    def __repr__(self):
+        return "AddressRemap({0!r}, {1}, index={2}, amount={3})".format(
+            self.sheet_title, self.operation, self.index, self.amount)
+
+
+_SHEET_PREFIX_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([^'!]+))!(.+)$")
+
 
 def shift_bounds(kind, index):
     """The cell region a shift at ``index`` moves or destroys: everything

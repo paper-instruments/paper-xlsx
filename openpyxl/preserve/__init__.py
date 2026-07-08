@@ -11,7 +11,8 @@ touched worksheet parts are spliced, never re-serialized (Phase 2c).
 from .inventory import LossInventory, scan_archive
 from .saver import save_preserved
 
-__all__ = ["DirtyLedger", "LossInventory", "scan_archive", "save_preserved"]
+__all__ = ["AddressRemap", "DirtyLedger", "LossInventory", "scan_archive",
+           "save_preserved"]
 
 
 def __getattr__(name):
@@ -21,4 +22,7 @@ def __getattr__(name):
     if name == "DirtyLedger":
         from .ledger import DirtyLedger
         return DirtyLedger
+    if name == "AddressRemap":
+        from .structural import AddressRemap
+        return AddressRemap
     raise AttributeError(name)

@@ -73,3 +73,68 @@ class TestStockWarning:
             ws.insert_rows(1)
         assert not [w for w in caught
                     if isinstance(w.message, StructuralShiftWarning)]
+
+
+class TestAddressRemap:
+    """CONVENTIONS §2 (pinned, debt paid in v0.1 Batch 1): structural
+    edits return an AddressRemap; pre-edit addresses must be remapped,
+    never reused."""
+
+    def test_insert_rows_returns_remap(self, fixture_copy, tmp_path):
+        from openpyxl.preserve import AddressRemap
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        remap = wb["Schedule"].insert_rows(3)
+        assert isinstance(remap, AddressRemap)
+        assert remap.map("Schedule!B12") == "Schedule!B13"
+        assert remap.map("B12") == "B13"
+        assert remap.map("B2") == "B2"                 # above the insert
+        assert remap.map("Summary!B1") == "Summary!B1" # other sheet
+        assert remap.map("'Schedule'!$B$12") == "'Schedule'!$B$13"
+        assert remap.map("B2:B11") == "B2:B12"         # spanning range
+        # the remapped address reads the moved cell after save→reopen
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Schedule"]["B13"].value == "=SUM(B2:B12)"
+
+    def test_delete_rows_maps_deleted_to_none(self, fixture_copy):
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        remap = wb["Schedule"].delete_rows(5)
+        assert remap.map("B5") is None                 # deleted
+        assert remap.map("Schedule!A5") is None
+        assert remap.map("B12") == "B11"               # shifted up
+        assert remap.map("B2") == "B2"
+
+    def test_stock_path_keeps_returning_none(self, fixture_copy):
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        with pytest.warns(StructuralShiftWarning):
+            assert wb["Schedule"].insert_rows(3) is None
+
+
+class TestBoundaryViolation:
+
+    def test_insert_rows_past_sheet_limit_refuses(self, fixture_copy):
+        from openpyxl.errors import BoundaryViolationError
+
+        src = fixture_copy("features/schedule.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Schedule"]
+        ws.cell(row=1048576, column=1, value="sentinel")
+        with pytest.raises(BoundaryViolationError, match="1048576"):
+            ws.insert_rows(1)
+        # atomic: the guard fired before any cell moved
+        assert ws.cell(row=1048576, column=1).value == "sentinel"
+        assert ws["B12"].value == "=SUM(B2:B11)"
+
+    def test_insert_cols_past_sheet_limit_refuses(self, fixture_copy):
+        from openpyxl.errors import BoundaryViolationError
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        ws = wb["Schedule"]
+        ws.cell(row=1, column=16384, value="sentinel")
+        with pytest.raises(BoundaryViolationError, match="XFD"):
+            ws.insert_cols(1)

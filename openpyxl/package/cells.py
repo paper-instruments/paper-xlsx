@@ -46,12 +46,20 @@ def _snapshot(source):
     Two loads, mirroring how the ecosystem reads workbooks: the formula view
     (data_only=False) and the cached-value view (data_only=True).
     """
+    import warnings
+
     from openpyxl.reader.excel import load_workbook
 
-    wb_formulas = load_workbook(source, data_only=False)
-    if hasattr(source, "seek"):
-        source.seek(0)
-    wb_values = load_workbook(source, data_only=True)
+    # a READ-ONLY diagnostic must not announce losses it will never cause:
+    # the stock loader's "will be removed" warnings describe saves, and
+    # nothing here saves (PLAN-v0.1 1.5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        wb_formulas = load_workbook(source, data_only=False,
+                                    preserve=False)
+        if hasattr(source, "seek"):
+            source.seek(0)
+        wb_values = load_workbook(source, data_only=True, preserve=False)
 
     out = {}
     for ws in wb_formulas.worksheets:

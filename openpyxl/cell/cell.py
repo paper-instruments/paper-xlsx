@@ -28,7 +28,10 @@ from openpyxl.styles.styleable import StyleableObject
 from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.formula import DataTableFormula, ArrayFormula
 from openpyxl.cell.rich_text import CellRichText
-from openpyxl.preserve.ledger import mark_cell_dirty as _mark_cell_dirty
+from openpyxl.preserve.ledger import (
+    check_protection as _check_protection,
+    mark_cell_dirty as _mark_cell_dirty,
+)
 
 # constants
 
@@ -190,6 +193,16 @@ class Cell(StyleableObject):
 
     def _bind_value(self, value):
         """Given a value, infer the correct data type"""
+
+        # protection awareness (PLAN-v0.1 1.6) runs BEFORE any mutation so
+        # a strict-mode refusal is atomic; same fast bail as the ledger
+        # mark below
+        ws = self.parent
+        if ws is not None:
+            wb = getattr(ws, "parent", None)
+            if wb is not None \
+                    and getattr(wb, "_paper_ledger", None) is not None:
+                _check_protection(self)
 
         old_data_type = self._data_type
         self._data_type = "n"

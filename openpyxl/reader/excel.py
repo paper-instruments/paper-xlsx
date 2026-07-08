@@ -100,8 +100,37 @@ def _validate_archive(filename):
     if not is_file_like:
         _check_extension(filename)
 
+    _refuse_cfb(filename)
     archive = ZipFile(filename, 'r')
     return archive
+
+
+# OLE2/CFB magic: what an ENCRYPTED xlsx actually is on disk (the zip is
+# wrapped in a Compound File). zipfile's "File is not a zip file" told the
+# user nothing actionable (PLAN-v0.1 1.5; battery job 13).
+_CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _refuse_cfb(filename):
+    try:
+        if hasattr(filename, "read"):
+            pos = filename.tell()
+            head = filename.read(8)
+            filename.seek(pos)
+        else:
+            with open(filename, "rb") as f:
+                head = f.read(8)
+    except Exception:
+        return                       # unreadable sources fail downstream
+    if head == _CFB_MAGIC:
+        from openpyxl.errors import UnsupportedStructureError
+
+        raise UnsupportedStructureError(
+            "this file is an OLE2/Compound File container — almost always "
+            "a password-ENCRYPTED workbook (or a legacy .xls saved with an "
+            ".xlsx name). openpyxl cannot decrypt; remove the password in "
+            "Excel or LibreOffice (File > Save As, clear the password) and "
+            "reopen, or decrypt with a dedicated tool first.")
 
 
 def _read_source_bytes(fn):
@@ -178,6 +207,20 @@ class ExcelReader:
             fn = BytesIO(self._source_blob)
         self.archive = _validate_archive(fn)
         self.valid_files = self.archive.namelist()
+        if preserve and len(self.valid_files) != len(set(self.valid_files)):
+            # a parser differential (PLAN-v0.1 1.5): the reader takes the
+            # LAST duplicate entry while the raw copy would keep BOTH, so
+            # custody of such a package cannot be honest
+            from collections import Counter
+
+            from openpyxl.errors import UnsupportedStructureError
+            dupes = sorted(name for name, n
+                           in Counter(self.valid_files).items() if n > 1)
+            raise UnsupportedStructureError(
+                "the archive contains duplicate entry names ({0}): readers "
+                "disagree about which copy wins, so preserve mode refuses "
+                "it. Rewrite the file through Excel or LibreOffice (which "
+                "de-duplicates) and reopen.".format(", ".join(dupes)))
         self.read_only = read_only
         self.keep_vba = keep_vba
         self.data_only = data_only

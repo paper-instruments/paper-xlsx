@@ -73,6 +73,7 @@ def build_manifest(wb):
             "conditional_formatting_blocks":
                 len(list(ws.conditional_formatting)),
             "freeze_panes": ws.freeze_panes,
+            "protection": bool(ws.protection.sheet),
             "defined_names": {name: dn.value for name, dn
                               in sorted(ws.defined_names.items())},
         }
@@ -94,6 +95,12 @@ def build_manifest(wb):
             "deterministic": {k: v for k, v in sorted(volatile.items())
                               if k in VOLATILE_DETERMINISTIC},
         },
+        "workbook_protection": bool(
+            wb.security is not None
+            and (wb.security.lockStructure or wb.security.lockWindows
+                 or wb.security.workbookPassword
+                 or wb.security.workbookPasswordCharacterSet
+                 or wb.security.revisionsPassword)),
         "confession": _confession(wb),
         "preservation": _preservation(wb),
     }

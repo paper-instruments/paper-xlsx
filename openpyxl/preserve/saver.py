@@ -25,6 +25,7 @@ from openpyxl.errors import UnsupportedStructureError
 from openpyxl.xml.constants import ARC_CORE, ARC_CUSTOM, ARC_THEME, ARC_STYLE, REL_NS, WORKSHEET_TYPE
 
 from . import crosspart, zipio
+from . import ledger as ledger_mod
 from .ledger import render_core_model, render_custom_model, _render_chartsheet
 from .regions import (
     diff_regions,
@@ -66,13 +67,16 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     led.check_style_registry(workbook)
 
     force_calcpr = False
-    if led.formulas_changed:
-        # honesty organ (PLAN Phase 3): a human opener's Excel must always
-        # compute fresh numbers — stale cached values can never masquerade
-        # as current. The model's CalcProperties defaults the flag to True,
-        # so the arm-vs-save diff cannot see this change: calcPr is forced
-        # into the workbook.xml plan (sanctioned collateral for formula
-        # edits, PR-0 D2) and re-rendered from the fully-modeled object.
+    if led.formulas_changed or _dirty_feeds_formulas(workbook, led):
+        # honesty organ (PLAN Phase 3, widened by PLAN-v0.1 1.2): a human
+        # opener's Excel must always compute fresh numbers — stale cached
+        # values can never masquerade as current. That holds for formula
+        # TEXT edits and equally for the most common agent edit of all: a
+        # VALUE write into cells that formulas read. The model's
+        # CalcProperties defaults the flag to True, so the arm-vs-save
+        # diff cannot see this change: calcPr is forced into the
+        # workbook.xml plan (sanctioned collateral, PR-0 D2) and
+        # re-rendered from the fully-modeled object.
         workbook.calculation.fullCalcOnLoad = True
         force_calcpr = True
 
@@ -93,6 +97,12 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     if bool(workbook.template) != led.template_flag:
         _refuse("wb.template changed; rewriting the workbook content type "
                 "under preserve mode is not supported in v0.")
+    if ledger_mod._external_links_snapshot(workbook) \
+            != led.external_links_snapshot:
+        _refuse("external workbook links were modified in-session; their "
+                "parts are preserved verbatim, so the edits cannot be "
+                "saved faithfully. Reopen without preserve=True to "
+                "rewrite the workbook lossily instead.")
 
     zin = zipfile.ZipFile(io.BytesIO(source))
     names = set(zin.namelist())
@@ -154,6 +164,25 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     for ws in workbook.worksheets:
         if ws in led.added_sheets:
             continue
+        changed_objects = ledger_mod.diff_objects(
+            ws, led.object_snapshots.get(ws))
+        if changed_objects:
+            # the boundary class (PLAN-v0.1 1.1): these objects' backing
+            # parts are preserved bytes the splice never re-serializes —
+            # an accepted-but-unsaved edit is the forbidden fourth outcome
+            details = "; ".join(
+                "{0} {1!r} ({2})".format(
+                    kind, key, ledger_mod._OBJECT_UNLOCKS[kind])
+                for kind, key in changed_objects)
+            _refuse(
+                "loaded object(s) were modified in-session on sheet "
+                "{0!r}: {1}. Their backing parts are preserved verbatim, "
+                "so the edits cannot be saved faithfully — {2}. Reopen "
+                "without preserve=True to rewrite the workbook lossily "
+                "instead.".format(
+                    ws.title, details,
+                    "editing loaded objects of these kinds is not "
+                    "supported yet"))
         ledger_dirty = led.dirty_coordinates(ws)
         all_region_changes = diff_regions(ws, led.region_snapshots.get(ws, {}))
         pinned_hits = sorted(
@@ -390,6 +419,43 @@ def _namelist(source):
         return set(z.namelist())
 
 
+def _dirty_feeds_formulas(workbook, led):
+    """True when any ledger-dirty cell intersects a reference some formula
+    makes (PLAN-v0.1 1.2): the saved file's caches for those formulas are
+    stale, and the human opener must recompute. Structured/table and
+    unresolvable references count as always-intersecting (conservative,
+    like the Phase-6 guards)."""
+    if not any(led.cells.values()):
+        return False
+    from .perception import dependency_sketch
+
+    sketch = dependency_sketch(workbook)
+    if not sketch.references and not sketch.unresolved:
+        return False
+    if sketch.unresolved and any(led.cells.values()):
+        return True
+    for ws, dirty in led.cells.items():
+        if not dirty:
+            continue
+        title = ws.title.casefold()      # Excel sheet names: case-insensitive
+        for refs in sketch.references.values():
+            for ref_sheet, bounds, _raw in refs:
+                if ref_sheet.casefold() != title:
+                    continue
+                min_col, min_row, max_col, max_row = bounds
+                if min_col is None:
+                    min_col, max_col = 1, 1 << 20
+                if min_row is None:
+                    min_row, max_row = 1, 1 << 22
+                for (row, col) in dirty:
+                    if row is None or col is None:
+                        continue
+                    if min_row <= row <= max_row \
+                            and min_col <= col <= max_col:
+                        return True
+    return False
+
+
 def _comments_changed(ws, led):
     from .ledger import _comment_snapshot
 
@@ -550,9 +616,13 @@ def _plan_hyperlinks(workbook, ws, led, zin, sheet_part, names):
     removed = set(arm) - set(now)
     changed = {k for k in set(arm) & set(now) if arm[k] != now[k]}
     if removed or changed:
-        _refuse("hyperlinks were removed or modified on sheet {0!r}; only "
-                "hyperlink ADDITION is supported in v0 (removal would leave "
-                "or rewrite preserved relationships).".format(ws.title))
+        from openpyxl.errors import RelationshipPolicyError
+
+        raise RelationshipPolicyError(
+            "hyperlinks were removed or modified on sheet {0!r}; only "
+            "hyperlink ADDITION is supported in v0 (removal would leave "
+            "dangling or rewritten preserved relationships). Nothing was "
+            "written.".format(ws.title))
     added = set(now) - set(arm)
     if not added:
         return render_hyperlinks_for_write(ws), None

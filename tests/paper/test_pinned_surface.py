@@ -34,6 +34,7 @@ PINNED_EXCEPTIONS = [
     "OracleTimeoutError",
     "LossySaveWarning",
     "StructuralShiftWarning",
+    "ProtectedWriteWarning",
 ]
 
 # result states pinned by PR-0 §7 (oracle) — each must be produced somewhere
@@ -83,7 +84,7 @@ def _debt_ledger():
 
 @pytest.mark.parametrize("name", PINNED_EXCEPTIONS)
 def test_pinned_exception_is_raised_and_tested_or_ledgered(name):
-    if name in ("LossySaveWarning", "StructuralShiftWarning"):
+    if name.endswith("Warning"):
         produced = _grep(REPO / "openpyxl",
                          r"warn.*{0}|{0}\(".format(name),
                          strip_comments=True)

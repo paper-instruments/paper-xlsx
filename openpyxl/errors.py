@@ -70,3 +70,12 @@ class LossySaveWarning(UserWarning):
     def __init__(self, message, losses=None):
         super().__init__(message)
         self.losses = list(losses) if losses else []
+
+
+class ProtectedWriteWarning(UserWarning):
+    """A write landed on a locked cell of a protected sheet (PLAN-v0.1
+    1.6). The write proceeds — openpyxl-level protection is advisory, and
+    this library reports it rather than enforcing or bypassing it — but
+    the human who protected the sheet expected the cell to be read-only.
+    Set ``wb.strict_protection = True`` to turn these writes into typed
+    refusals."""
