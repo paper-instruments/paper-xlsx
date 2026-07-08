@@ -72,6 +72,24 @@ None.
 - Full suite after Phase 1: 2617 passed, 6 skipped, 12 xfailed (2592 upstream tests
   unchanged and green).
 
+
+## Phase 1.5 — PR-0 API proposal (2026-07-08)
+
+- `agent_docs/PR0-API-PROPOSAL.md`: the v0 design contract. Freezes the delegated
+  decisions (inline strings everywhere; per-operation-class collateral sets; no
+  core.xml auto-stamp under preserve; performance budget 1.5x stock save, evidence
+  0.16x composed prototype; frozen three-tier chokepoint inventory; splice guard
+  set; shared-formula dissolve-on-touch; sheet delete/rename/reorder refuse in v0;
+  mixed-chart semantics; rels append-only policy; calcChain deletion cascade).
+- Sanctioned deviations register grows by one (recorded in PR-0 §10 and below):
+  preserve-mode save does not auto-stamp `properties.modified` (stock path
+  unchanged) — required by the pinned no-op payload-identity invariant.
+- G6/G9 evidence spikes: `scratch/probes/pr0_composed_save.py` (preserve save
+  prototype 0.381s vs stock 2.325s on 600k cells; untouched payloads verified
+  byte-identical), `scratch/probes/pr0_g9_chokepoints.py` (chart mutation -> chart
+  part; ws._rels.append discarded by stock save; code_name -> workbook.xml;
+  template -> [Content_Types]).
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment
