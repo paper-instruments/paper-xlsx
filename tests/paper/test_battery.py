@@ -202,7 +202,10 @@ class TestBatterySafety:
         wb = load_workbook(src)
         assert "Appended" in wb.sheetnames
 
-    @pytest.mark.xfail(reason="structural-edit guard lands in Phase 6a", strict=True)
+    # GREEN since Phase 2a via the blanket preserve-save refusal (any refusal
+    # satisfies "correct or loudly refused"); Phase 6a narrows the refusal to
+    # the specific stranded references and 6b upgrades it to a correct rewrite
+    # — this test must STAY green through both.
     def test_job3_insert_rows_refuses_or_rewrites(self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule.xlsx")
         with open(src, "rb") as f:
@@ -225,7 +228,7 @@ class TestBatterySafety:
             assert wb2.defined_names["Growth"].value == "Schedule!$B$16"
             assert wb2["Summary"]["B1"].value == "=Schedule!B13"
 
-    @pytest.mark.xfail(reason="byte retention + raw copy lands in Phase 2a", strict=True)
+    @pytest.mark.xfail(reason="preserve-mode save (raw copy) lands in Phase 2c", strict=True)
     def test_job4_xlsm_roundtrip_preserves_vba(self, fixture_copy, tmp_path):
         src = fixture_copy("features/macro_stub.xlsm")
         vba_before = part_payloads(src)["xl/vbaProject.bin"]
@@ -236,7 +239,9 @@ class TestBatterySafety:
         assert parts["xl/vbaProject.bin"] == vba_before
         assert b"macroEnabled" in parts["[Content_Types].xml"]
 
-    @pytest.mark.xfail(reason="data_only save refusal lands in Phase 3", strict=True)
+    # GREEN since Phase 2a via the blanket preserve-save refusal; Phase 3
+    # narrows it to the data_only-specific trap (with allow_formula_loss
+    # override) — this test must STAY green through that change.
     def test_job5_data_only_save_refuses(self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule_calc.xlsx")
         with open(src, "rb") as f:

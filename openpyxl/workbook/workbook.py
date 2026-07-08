@@ -53,6 +53,10 @@ class Workbook:
 
     _read_only = False
     _data_only = False
+    # paper-xlsx preserve mode (PR-0 §3): set by the reader, never directly
+    _preserve = False
+    _paper_source = None            # retained source-package bytes
+    _paper_loss_inventory = None    # content the stock save cannot preserve
     template = False
     path = "/xl/workbook.xml"
 
@@ -135,6 +139,13 @@ class Workbook:
     @property
     def read_only(self):
         return self._read_only
+
+    @property
+    def preserve(self):
+        """True when this workbook was loaded with ``preserve=True``: the
+        original package bytes are the source of truth and save is a
+        lossless splice of recorded edits into them."""
+        return self._preserve
 
     @property
     def data_only(self):

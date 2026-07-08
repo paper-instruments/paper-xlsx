@@ -32,7 +32,27 @@ stable release tag.
 
 ## Sanctioned Deviations From Upstream Behavior
 
-None.
+1. **Lossy-save warning (CONVENTIONS §1.1; since Phase 2a).** The stock save path
+   emits `openpyxl.errors.LossySaveWarning` (a `UserWarning`) when the workbook was
+   loaded from a file containing content the regenerating save cannot preserve
+   (worksheet extensions, shapes, VBA without `keep_vba`, chart extensions/aux parts,
+   non-default app.xml, customXml, printer settings). Warning only — never an
+   exception — and silent for files with nothing to lose.
+2. **Preserve mode (CONVENTIONS §1.1; since Phase 2a).** `load_workbook(path,
+   preserve=True)` opts into the spine: source bytes retained, lossless splice save,
+   typed refusals. Pure opt-in; upstream code never enters it. Under preserve, the
+   stock load-time "extension is not supported and will be removed" warning is
+   suppressed (it would be false — the splice preserves extensions).
+3. **No `properties.modified` auto-stamp under preserve (PR-0 D3).** Preserve-mode
+   saves raw-copy `docProps/core.xml` unless the user explicitly changed
+   `wb.properties`; the stock path keeps stock stamping. Required by the pinned
+   no-op payload-identity invariant.
+
+## Future Breaking-Change Candidates
+
+1. Flip `preserve=True` to the default — only after the fixture corpus (including
+   the real-Excel bucket) proves the spine.
+2. Make the `data_only`+save refusal apply on the stock path by default.
 
 ## Phase 0 — Orientation (2026-07-07)
 
@@ -89,6 +109,25 @@ None.
   byte-identical), `scratch/probes/pr0_g9_chokepoints.py` (chart mutation -> chart
   part; ws._rels.append discarded by stock save; code_name -> workbook.xml;
   template -> [Content_Types]).
+
+## Phase 2a — Retention, kernel, lossy-save warning (2026-07-08)
+
+- `openpyxl/errors.py`: the pinned refusal taxonomy (`PaperRefusal` + seven
+  subclasses) and `LossySaveWarning` with structured `.losses`.
+- `openpyxl/package/`: the kernel — `xml_equivalent` (semantic, never normalizes
+  cell text), `diff_package` → `PackageDiff.to_dict()` (schema `package_diff` v1).
+- `openpyxl/preserve/`: `zipio` (deterministic entries; raw compressed-stream copy
+  with D10 guards + recompression fallback; atomic path delivery via temp +
+  `os.replace` with failure-injection test; file-like seek/write/truncate delivery),
+  `inventory` (content-level loss scan built at load), `saver` (Phase-2a stub: a
+  typed atomic refusal until the splice lands in 2c).
+- `load_workbook(..., preserve=True)`: eager byte retention (file-likes rewound —
+  the pandas handle case), `wb.preserve`, `ValueError` on `preserve+read_only`
+  raised before any handle opens, `.xls`/`.xlsb` extension refusals kept.
+- Battery: jobs 3 and 5 flip to green-by-refusal (the blanket preserve-save refusal
+  satisfies the criterion; Phases 6a/3 narrow it and must keep them green); jobs 1,
+  2, 4 remain strict xfails for 2c/2d.
+- Full suite: 2661 passed, 6 skipped, 10 xfailed (upstream 2592 green).
 
 ## Release Safety
 

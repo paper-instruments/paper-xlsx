@@ -4,9 +4,11 @@
 # Python stdlib imports
 import datetime
 import re
+import warnings
 from zipfile import ZipFile, ZIP_DEFLATED
 
 # package imports
+from openpyxl.errors import LossySaveWarning
 from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.xml.constants import (
     ARC_ROOT_RELS,
@@ -288,6 +290,17 @@ def save_workbook(workbook, filename):
     :rtype: bool
 
     """
+    if getattr(workbook, "_preserve", False):
+        # preserve mode: the retained package is the source of truth; the
+        # stock regenerate-everything path below must never run for it
+        from openpyxl.preserve.saver import save_preserved
+        return save_preserved(workbook, filename)
+
+    inventory = getattr(workbook, "_paper_loss_inventory", None)
+    if inventory:
+        warnings.warn(LossySaveWarning(inventory.render(), inventory.losses),
+                      stacklevel=2)
+
     archive = ZipFile(filename, 'w', ZIP_DEFLATED, allowZip64=True)
     workbook.properties.modified = datetime.datetime.now(tz=datetime.timezone.utc).replace(tzinfo=None)
     writer = ExcelWriter(workbook, archive)
