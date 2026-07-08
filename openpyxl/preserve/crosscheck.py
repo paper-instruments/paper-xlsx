@@ -54,13 +54,18 @@ def _coord_ref(row, col):
     return "{0}{1}".format(letters, row)
 
 
-def verify_splice(source_bytes, output_bytes, dirty_by_part):
+def verify_splice(source_bytes, output_bytes, dirty_by_part, baselines=None):
     """Assert that in every spliced part, the set of semantically changed
-    cells is a subset of the ledger's dirty claims."""
+    cells is a subset of the ledger's dirty claims.
+
+    ``baselines`` maps parts to their post-shift bytes (Phase 6b): those
+    parts are checked against the renumbered baseline (the renumber pass is
+    covered by its own tests and the oracle property tests)."""
+    baselines = baselines or {}
     with zipfile.ZipFile(io.BytesIO(source_bytes)) as zin, \
             zipfile.ZipFile(io.BytesIO(output_bytes)) as zout:
         for part, dirty in dirty_by_part.items():
-            before = _sheet_cells(zin.read(part))
+            before = _sheet_cells(baselines.get(part) or zin.read(part))
             after = _sheet_cells(zout.read(part))
             allowed = {_coord_ref(r, c) for (r, c) in dirty}
             changed = set()

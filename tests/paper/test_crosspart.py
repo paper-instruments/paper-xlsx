@@ -426,3 +426,19 @@ class TestStyleTranslation:
         assert lo.lo_loads(out)
         wb2 = load_workbook(out)
         assert wb2.active["A2"].font.bold is True
+
+
+class TestHyperlinkOnRelsLessSheet:
+
+    def test_first_hyperlink_creates_the_rels_part(self, fixture_copy, tmp_path):
+        # regression: the new rels part existed only in the plan and was
+        # never written, leaving a dangling r:id (found by the 6b tests)
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"]["A3"].hyperlink = "https://example.org/x"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        d = diff_package(src, out)
+        assert any("_rels" in n for n in d.added)
+        wb2 = load_workbook(out)
+        assert wb2["Sheet1"]["A3"].hyperlink.target == "https://example.org/x"

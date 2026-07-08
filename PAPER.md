@@ -313,6 +313,32 @@ stable release tag.
   silent; stock behavior itself is unchanged.
 - Full suite: 2803 passed, 6 skipped, 7 xfailed.
 
+## Phase 6b — The reference rewriter (2026-07-08)
+
+- `openpyxl/preserve/rewrite.py`: Excel INSERT/DELETE semantics — endpoint-wise
+  shifting (absolutes move too; spanning ranges expand; deleted references
+  become `#REF!` exactly as Excel writes), over Tokenizer operands with sheet
+  prefixes and quoting handled; `Translator` untouched (fill semantics,
+  load-bearing for shared-formula expansion).
+- A shift on a fully-modeled sheet now PROCEEDS under preserve: model-side
+  fixups (formulas workbook-wide, defined names incl. sheet-scoped and print
+  settings, merges/CF/DV/autoFilter ranges, row display attributes, hyperlink
+  anchors) + positional arm-snapshot rebasing, then at save a byte-level
+  renumber pre-transform (deleted rows cut, shifted r attributes rewritten,
+  every other byte verbatim) that becomes the standard splice's baseline.
+  Shared-formula groups on shifted sheets dissolve-on-touch.
+- Support matrix is honest: sheets carrying extLst (sparklines/x14), array
+  formulas, comments, legacy drawings, tables, manual page breaks, or
+  referenced by preserved charts/pivots still REFUSE, with blockers and
+  victims named; one structural edit per sheet per session (save between).
+- Battery job 3 flips from green-by-refusal to green-by-rewrite: the oracle
+  computes 7499 / 7873.95 — the correct values where stock silently produced
+  1100/6399/5400. Insert-then-delete round-trips clean (PLAN property test).
+- Bug found by these tests and fixed: the first hyperlink added to a loaded
+  sheet with no rels part left a dangling r:id (the new rels part existed
+  only in the plan); regression-tested.
+- Full suite: 2834 passed, 6 skipped, 7 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

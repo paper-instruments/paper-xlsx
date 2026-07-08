@@ -45,7 +45,7 @@ class DirtyLedger:
                  "comment_snapshots", "workbook_snapshot", "core_snapshot",
                  "custom_snapshot", "chartsheet_snapshots",
                  "orig_cell_styles_len", "rich_text_mode",
-                 "sheet_states", "dxfs_len", "named_styles_len")
+                 "sheet_states", "dxfs_len", "named_styles_len", "shifts")
 
     def __init__(self):
         self.armed = False
@@ -71,6 +71,7 @@ class DirtyLedger:
         self.sheet_states = {}         # title -> state at arm (all sheets)
         self.dxfs_len = 0
         self.named_styles_len = 0
+        self.shifts = {}               # ws -> [(operation, index, amount)]
 
     # -- arming --------------------------------------------------------
 
@@ -257,6 +258,44 @@ def allow_sheet_removal(wb, ws):
         led.cells.pop(ws, None)
         return True
     return False
+
+
+def begin_structural_edit(ws, operation, index, amount):
+    """Gate for insert/delete rows/cols under preserve (Phase 6b): shifts
+    on fully-modeled sheets PROCEED (reference rewriting + byte renumber);
+    anything with unmodeled range-bearing content refuses with the precise
+    blocker and victim list. Returns True when the caller must run the
+    model fixups after mutating."""
+    led = _armed_ledger_for_ws(ws)
+    if led is None:
+        return False
+    if ws in led.added_sheets:
+        return False
+    from .structural import analyze_shift, shift_blockers
+
+    blockers = shift_blockers(ws, operation, index)
+    if blockers:
+        impacts = analyze_shift(ws, operation, index)
+        lines = "".join("\n  - " + b for b in blockers)
+        victim_lines = "".join("\n  - " + i for i in impacts)
+        raise UnsupportedStructureError(
+            "{0}() on preserved sheet {1!r} cannot be rewritten safely:"
+            "{2}\nWhat the shift would otherwise corrupt:{3}\n"
+            "Nothing was changed. Options: restructure the edit to avoid "
+            "shifting, or perform it without preserve=True and accept "
+            "stock behavior (references are NOT updated).".format(
+                operation, ws.title, lines,
+                victim_lines or "\n  - (no intersecting references found)")
+        )
+    return True
+
+
+def finish_structural_edit(ws, operation, index, amount):
+    """Model-side reference fixups + snapshot rebasing, after the cells
+    moved (see structural.apply_model_shift)."""
+    from .structural import apply_model_shift
+
+    apply_model_shift(ws, operation, index, amount)
 
 
 def refuse_structural_edit(ws, operation, index=None):

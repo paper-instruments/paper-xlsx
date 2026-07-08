@@ -168,3 +168,271 @@ STOCK_WARNING = (
     "cells — the numbers that come out will look plausible and be wrong. "
     "Open the file with preserve=True to get a safety analysis instead."
 )
+
+
+# ---------------------------------------------------------------------
+# Phase 6b: performing the shift (model fixups + byte renumber)
+
+def shift_blockers(ws, operation, index):
+    """Content that makes a shift unsafe to REWRITE in v0 — anything whose
+    references live outside the fully-modeled set. A non-empty result means
+    refusal (with analyze_shift providing the victim list)."""
+    wb = ws.parent
+    blockers = []
+    source = getattr(wb, "_paper_source", None)
+    led = getattr(wb, "_paper_ledger", None)
+    if led is not None and led.shifts.get(ws):
+        blockers.append(
+            "the sheet already has a pending structural edit this session; "
+            "save the workbook between structural edits")
+    part_payload = _sheet_payload(wb, ws.title)
+    if part_payload is None:
+        blockers.append("the sheet's package part could not be located")
+        return blockers
+    if b"extLst" in part_payload:
+        blockers.append(
+            "the sheet carries extension content (extLst: sparklines, x14 "
+            "rules, ...) whose cell ranges live in unmodeled bytes")
+    if b"t=\"array\"" in part_payload or b"t='array'" in part_payload:
+        blockers.append("the sheet carries array formulas (ref rewriting "
+                        "for spill ranges is not supported in v0)")
+    if any(cell._comment is not None for cell in ws._cells.values()):
+        blockers.append("the sheet carries comments; their anchors live in "
+                        "comment/VML parts the shift cannot rewrite")
+    if b"<legacyDrawing" in part_payload:
+        blockers.append("the sheet references a legacy (VML) drawing")
+    charts = _charts_referencing(wb, ws.title)
+    if charts:
+        blockers.append(
+            "preserved chart(s) {0} reference this sheet (series ranges in "
+            "preserved bytes; Phase 6c scope)".format(", ".join(sorted(charts))))
+    pivots = _pivots_referencing(wb, ws.title)
+    if pivots:
+        blockers.append(
+            "preserved pivot part(s) {0} reference this sheet".format(
+                ", ".join(sorted(pivots))))
+    if ws.tables:
+        blockers.append("the sheet carries table(s) {0}; table-part "
+                        "rewriting is not supported in v0".format(
+                            ", ".join(sorted(ws.tables))))
+    if ws.row_breaks or ws.col_breaks:
+        blockers.append("the sheet carries manual page breaks, which "
+                        "anchor to row/column numbers (not rewritten in v0)")
+    for other in wb.worksheets:
+        for (_r, _c), cell in other._cells.items():
+            if cell.data_type == "f" and isinstance(cell._value, str) \
+                    and "[" in cell._value and ws.title in cell._value:
+                blockers.append(
+                    "formula {0}!{1} uses a structured/external reference "
+                    "mentioning this sheet".format(other.title,
+                                                   cell.coordinate))
+                break
+    return blockers
+
+
+def _pivots_referencing(wb, sheet_title):
+    source = getattr(wb, "_paper_source", None)
+    if not source:
+        return []
+    needle = sheet_title.encode("utf-8")
+    hits = []
+    with zipfile.ZipFile(io.BytesIO(source)) as z:
+        for name in z.namelist():
+            if name.startswith(("xl/pivotTables/", "xl/pivotCache/")) \
+                    and name.endswith(".xml") and needle in z.read(name):
+                hits.append(name)
+    return hits
+
+
+def _sheet_payload(wb, title):
+    source = getattr(wb, "_paper_source", None)
+    if not source:
+        return None
+    import zipfile as _zf
+
+    from .saver import _package_info
+
+    with _zf.ZipFile(io.BytesIO(source)) as z:
+        _wb_part, mapping = _package_info(z)
+        part = mapping.get(title)
+        if part is None:
+            return None
+        return z.read(part)
+
+
+def apply_model_shift(ws, operation, index, amount):
+    """All the reference updates stock openpyxl skips, applied to the MODEL
+    after the cells moved (Excel insert/delete semantics via rewrite.py).
+    Also rebases the positional arm snapshots so pure moves are not
+    mis-detected as user changes."""
+    from .ledger import _armed_ledger_for_ws
+    from .rewrite import (
+        row_mapping,
+        shift_cell_range,
+        shift_formula,
+        shift_name_value,
+    )
+
+    wb = ws.parent
+    led = _armed_ledger_for_ws(ws)
+    axis = "rows" if "rows" in operation else "cols"
+    is_delete = operation.startswith("delete")
+    mapper = row_mapping(operation, index, amount)
+
+    # 1. formulas everywhere in the workbook that reference this sheet
+    for other in wb.worksheets:
+        for (row, col), cell in list(other._cells.items()):
+            if cell.data_type != "f" or not isinstance(cell._value, str):
+                continue
+            new_formula, changed = shift_formula(
+                cell._value, other.title, ws.title, axis, index, amount,
+                is_delete)
+            if changed:
+                cell.value = new_formula     # through the chokepoint: dirty
+
+    # 2. defined names (workbook- and sheet-scoped) and print settings
+    for names in [wb.defined_names] + [s.defined_names
+                                       for s in wb.worksheets]:
+        for name in list(names):
+            dn = names[name]
+            if not isinstance(dn.value, str):
+                continue
+            new_value, changed = shift_name_value(
+                dn.value, ws.title, axis, index, amount, is_delete)
+            if changed:
+                dn.attr_text = new_value
+
+    # 3. sheet-internal regions (fully modeled; the splice re-renders them)
+    for rng in list(ws.merged_cells.ranges):
+        if shift_cell_range(rng, axis, index, amount, is_delete) == "deleted":
+            ws.merged_cells.ranges.remove(rng)
+    for cf in list(ws.conditional_formatting):
+        for rng in list(getattr(cf.sqref, "ranges", [])):
+            if shift_cell_range(rng, axis, index, amount,
+                                is_delete) == "deleted":
+                cf.sqref.ranges.remove(rng)
+    if ws.data_validations:
+        for dv in list(ws.data_validations.dataValidation):
+            for rng in list(getattr(dv.sqref, "ranges", [])):
+                if shift_cell_range(rng, axis, index, amount,
+                                    is_delete) == "deleted":
+                    dv.sqref.ranges.remove(rng)
+    if ws.auto_filter and ws.auto_filter.ref:
+        from openpyxl.worksheet.cell_range import CellRange
+
+        cr = CellRange(ws.auto_filter.ref)
+        if shift_cell_range(cr, axis, index, amount, is_delete) == "changed":
+            ws.auto_filter.ref = cr.coord
+
+    if axis == "rows":
+        # 4. row display attributes move with their rows
+        new_dims = {}
+        for r, dim in list(ws.row_dimensions.items()):
+            new_row = mapper(r)
+            if new_row is None:
+                continue
+            dim.index = new_row
+            new_dims[new_row] = dim
+        ws.row_dimensions.clear()
+        ws.row_dimensions.update(new_dims)
+
+        # 5. hyperlink anchors track their cells
+        for (_r, _c), cell in ws._cells.items():
+            link = getattr(cell, "_hyperlink", None)
+            if link is not None:
+                link.ref = cell.coordinate
+
+    if led is not None:
+        _rebase_snapshots(led, ws, mapper, axis)
+        led.shifts.setdefault(ws, []).append((operation, index, amount))
+        led.formulas_changed = True
+
+
+def _rebase_snapshots(led, ws, mapper, axis):
+    """Positional arm snapshots (row attrs, hyperlink anchors, comments)
+    must follow a pure move, or the save would mis-read the move as user
+    edits (and hyperlink 'removals' would refuse)."""
+    if axis != "rows":
+        return   # column shifts do not renumber rows
+    rows = led.row_attr_snapshots.get(ws)
+    if rows:
+        led.row_attr_snapshots[ws] = {
+            mapper(r): attrs for r, attrs in rows.items()
+            if mapper(r) is not None}
+    links = led.region_snapshots.get(ws, {}).get("hyperlinks")
+    if links:
+        led.region_snapshots[ws]["hyperlinks"] = {
+            (mapper(r), c): sig for (r, c), sig in links.items()
+            if mapper(r) is not None}
+    comments = led.comment_snapshots.get(ws)
+    if comments:
+        led.comment_snapshots[ws] = {
+            (mapper(r), c): sig for (r, c), sig in comments.items()
+            if mapper(r) is not None}
+
+
+def apply_shift_to_bytes(original, operation, index, amount):
+    """The byte-level renumber pre-transform: deleted rows are cut; shifted
+    rows get their r attributes (row and cells) rewritten; every other byte
+    — cell contents, unmodeled attributes, spans — is copied verbatim. The
+    result becomes the baseline the standard splice runs against."""
+    from .rewrite import row_mapping
+    from .xmlscan import scan_sheet
+
+    axis = "rows" if "rows" in operation else "cols"
+    scan = scan_sheet(original)
+    edits = []
+
+    if axis == "rows":
+        mapper = row_mapping(operation, index, amount)
+        for row_index, row_span in scan.rows.items():
+            new_row = mapper(row_index)
+            if new_row is None:
+                edits.append((row_span.start, row_span.end, b""))
+                continue
+            if new_row == row_index:
+                continue
+            head_end = (row_span.content_start
+                        if not row_span.self_closing else row_span.end)
+            head = original[row_span.start:head_end]
+            new_head = re.sub(
+                br'(<row[^>]*?\sr=")%d(")' % row_index,
+                br"\g<1>%d\g<2>" % new_row, head, 1)
+            edits.append((row_span.start, head_end, new_head))
+            for col, cell_span in row_span.cells.items():
+                cell_head_end = original.index(b">", cell_span.start) + 1
+                cell_head = original[cell_span.start:cell_head_end]
+                old_ref = cell_span.attrs["r"].encode("ascii")
+                letters = old_ref.rstrip(b"0123456789")
+                new_ref = letters + str(new_row).encode("ascii")
+                new_cell_head = cell_head.replace(
+                    b'r="%s"' % old_ref, b'r="%s"' % new_ref, 1)
+                edits.append((cell_span.start, cell_head_end, new_cell_head))
+    else:
+        from openpyxl.utils import column_index_from_string, get_column_letter
+
+        from .rewrite import _shift_span
+        is_delete = operation.startswith("delete")
+        for row_index, row_span in scan.rows.items():
+            for col, cell_span in sorted(row_span.cells.items()):
+                span = _shift_span(col, col, index, amount, is_delete)
+                if span is None:
+                    edits.append((cell_span.start, cell_span.end, b""))
+                    continue
+                if span[0] == col:
+                    continue
+                cell_head_end = original.index(b">", cell_span.start) + 1
+                cell_head = original[cell_span.start:cell_head_end]
+                old_ref = cell_span.attrs["r"].encode("ascii")
+                digits = old_ref.lstrip(
+                    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+                new_ref = get_column_letter(span[0]).encode("ascii") + digits
+                edits.append((cell_span.start, cell_head_end,
+                              cell_head.replace(b'r="%s"' % old_ref,
+                                                b'r="%s"' % new_ref, 1)))
+
+    if not edits:
+        return original
+    from .crosspart import apply_edits
+
+    return apply_edits(original, edits)

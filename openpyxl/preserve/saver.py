@@ -144,6 +144,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     # ---- loaded-sheet plans ----------------------------------------------
     plan = {}
     dirty_by_part = {}
+    baselines = {}            # part -> shifted baseline bytes (Phase 6b)
     sheet_rels_updates = {}   # part_name -> new payload
     for ws in workbook.worksheets:
         if ws in led.added_sheets:
@@ -152,8 +153,9 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         all_region_changes = diff_regions(ws, led.region_snapshots.get(ws, {}))
         row_changes = diff_row_attrs(ws, led.row_attr_snapshots.get(ws, {}))
         comments_changed = _comments_changed(ws, led)
+        shift_ops = led.shifts.get(ws, [])
         if not (ledger_dirty or all_region_changes or row_changes
-                or comments_changed or led.rich_text_mode):
+                or comments_changed or shift_ops or led.rich_text_mode):
             continue
         if comments_changed:
             _refuse("comments changed on sheet {0!r}; comment-part editing "
@@ -167,6 +169,16 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             _refuse("cannot locate the package part for sheet {0!r} via "
                     "the workbook relationships.".format(ws.title))
         original = zin.read(part)
+        if shift_ops:
+            # Phase 6b: the byte renumber runs first (deleted rows cut,
+            # shifted r attributes rewritten, all other bytes verbatim);
+            # the standard splice then treats the shifted bytes as its
+            # baseline
+            from .structural import apply_shift_to_bytes
+            for op, op_idx, op_amount in shift_ops:
+                original = apply_shift_to_bytes(original, op, op_idx,
+                                                op_amount)
+            baselines[part] = original
         scan = scan_sheet(original)
         dirty = resolve_dirty_cells(ws, ledger_dirty, scan)
 
@@ -179,13 +191,18 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             cf_replacement = render_cf_for_write(ws)
 
         hyperlinks_replacement = None
+        if shift_ops and "hyperlinks" not in all_region_changes \
+                and hyperlink_signatures(ws):
+            # anchors moved with their cells: re-render the element (the
+            # relationship ids on the link objects are unchanged)
+            hyperlinks_replacement = render_hyperlinks_for_write(ws)
         if "hyperlinks" in all_region_changes:
             hyperlinks_replacement, rels_update = _plan_hyperlinks(
                 workbook, ws, led, zin, part, names)
             if rels_update is not None:
                 sheet_rels_updates[rels_update[0]] = rels_update[1]
 
-        if not (dirty or region_changes or row_changes
+        if not (dirty or region_changes or row_changes or shift_ops
                 or cf_replacement is not None
                 or hyperlinks_replacement is not None):
             continue
@@ -287,12 +304,17 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             zipio.write_entry(zout, part_name, payload)
         for part_name, payload in new_rels_parts:
             zipio.write_entry(zout, part_name, payload)
+        # rels parts created for LOADED sheets that had none (first
+        # hyperlink on a rels-less sheet): they exist only in the plan
+        for part_name, payload in sheet_rels_updates.items():
+            if part_name not in names:
+                zipio.write_entry(zout, part_name, payload)
 
     data = zipio.build_archive_bytes(build)
 
     if os.environ.get("PAPER_LEDGER_CROSSCHECK") == "1" and plan:
         from .crosscheck import verify_splice
-        verify_splice(source, data, dirty_by_part)
+        verify_splice(source, data, dirty_by_part, baselines=baselines)
 
     zipio.deliver(data, target)
     return True
