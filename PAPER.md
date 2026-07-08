@@ -427,6 +427,62 @@ raises its UnicodeDecodeError at first attrs access during edit
 planning instead of at scan time — still strictly before any output is
 written.
 
+## Batch 0 — Restore the invariant (2026-07-08, PLAN-v0.1)
+
+Corruption fixes outrank planning; this batch merged before PR-1.
+
+- **Item zero (0.1):** the shared-formula probe came back CLEAN — the splice
+  is `si=`-group aware (dissolve-on-touch, `splice.resolve_dirty_cells`).
+  Probed adversarially: master/follower/literal/delete edits, two-group
+  isolation (untouched group byte-verbatim), gap cells in stale refs,
+  orphan + ref-less-host refusals, LO loop closure. Battery job 6: CORRECT.
+  Un-share default + the enumerated cache-drop side effect recorded as
+  PR-0 amendment 6.
+- **0.2:** self-closing region corruption FIXED — the scanner never set
+  `RegionSpan.end` for self-closing top-level elements; editing a
+  self-closing `autoFilter`/`pageMargins`/`pageSetup`/`sheetFormatPr`
+  emitted silently malformed XML (document duplicated after the edit).
+  Region x self-closing matrix added (6 regions x edit/no-op arms).
+  Battery job 15: CORRECT.
+- **0.3:** no-op false-dirty FIXED AS A PATTERN — upstream
+  `DimensionHolder.to_tree()` mutates `max_outline` at render time,
+  perturbing the next `sheetFormatPr` render; a ZERO-EDIT save corrupted
+  cols-bearing sheets (our own hidden.xlsx fixture). The ledger now
+  double-renders every region at arm: self-disagreeing regions are PINNED
+  (settled second render becomes the snapshot; no-op keeps original bytes;
+  USER edits to a pinned region refuse). Any impure upstream serializer —
+  present or future — lands in "pinned", never in "false dirty". Cost:
+  sheetFormatPr edits on cols-bearing sheets now refuse (rare edit, loud
+  outcome, stock-mode workaround named). Battery job 14: CORRECT.
+- **0.4:** permanent property infrastructure — no-op byte-identity across
+  EVERY loadable corpus fixture (glob-enumerated; the 0.3 bug survived v0
+  because the hand-listed no-op test skipped hidden.xlsx), and the ledger
+  cross-check extended to REGION claims (an unclaimed region may never
+  differ; wired through save_preserved, active suite-wide).
+- **0.5:** battery grown to the 24-job table — jobs 7-13 and 16-24 land as
+  today-state tests (each names the batch that flips it); jobs 14/15/6
+  flipped to their required states by this batch. `PAPER_PRESERVE_DEFAULT=1`
+  env switch shipped (a default, not a mandate: read_only loads fall back
+  to stock); paper-internal harness images set it at Batch-0 exit — the
+  PUBLIC default stays False behind the Appendix-A release gate (region
+  matrix green + battery green + real-file soak).
+- **Process amendments:** the pinned-surface CI check
+  (tests/paper/test_pinned_surface.py) mechanizes "pinned means produced,
+  tested, or ledgered" — the AddressRemap breach class cannot recur
+  silently; the adversarial review is a standing per-batch gate (this
+  batch's report is in the PR).
+
+## Pinned-surface debt ledger
+
+Debts are pinned surface not yet produced-and-tested; each names its
+owning batch. Paying a debt REQUIRES removing its entry (the CI check
+enforces both directions).
+
+- `AddressRemap` — owed to Batch 1 (PLAN-v0.1 1.3: shifts return it, period)
+- `AmbiguousTargetError` — owed to Batch 6 (label localization raises it)
+- `BoundaryViolationError` — owed to Batch 1 (1.3: raise or formally retire)
+- `RelationshipPolicyError` — owed to Batch 1 (1.3: raise or formally retire)
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

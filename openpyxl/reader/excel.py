@@ -388,7 +388,7 @@ class ExcelReader:
 
 def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
                   data_only=False, keep_links=True, rich_text=False, *,
-                  preserve=False):
+                  preserve=None):
     """Open the given filename and return the workbook
 
     :param filename: the path to open or a file-like object
@@ -415,8 +415,14 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
         (charts, drawings, VBA, pivot caches, extensions) survives
         byte-identical. Unsafe operations raise a typed
         :class:`openpyxl.errors.PaperRefusal` instead of proceeding lossily.
-        Cannot be combined with ``read_only``.
-    :type preserve: bool
+        Cannot be combined with ``read_only``. The default ``None`` resolves
+        to the ``PAPER_PRESERVE_DEFAULT`` environment switch (``"1"`` turns
+        preserve on for every load that supports it, ``read_only`` loads
+        excepted — a default, not a mandate); unset, it resolves to
+        ``False``. The public package ships with the switch unset
+        (PLAN-v0.1 Appendix A item 1 gates the public flip); paper-internal
+        harness images set it.
+    :type preserve: bool or None
 
     :rtype: :class:`openpyxl.workbook.Workbook`
 
@@ -426,6 +432,11 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
         and the returned workbook will be read-only.
 
     """
+    if preserve is None:
+        # env switch is a DEFAULT, never a mandate: read_only loads (which
+        # explicit preserve=True refuses) silently fall back to stock
+        preserve = (os.environ.get("PAPER_PRESERVE_DEFAULT") == "1"
+                    and not read_only)
     reader = ExcelReader(filename, read_only, keep_vba,
                          data_only, keep_links, rich_text,
                          preserve=preserve)

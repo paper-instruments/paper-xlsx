@@ -357,3 +357,233 @@ class TestBatterySafety:
         wb2 = load_workbook(out)
         assert wb2["Sheet1"].page_margins.left == 1.25
         assert wb2["Sheet1"]["B2"].value is not None   # data intact
+
+    # Battery job 2 at Batch-0 exit (PLAN-v0.1 0.5): with the internal
+    # default flipped (PAPER_PRESERVE_DEFAULT=1, set in paper harness
+    # images), plain pandas mode="a" — no engine_kwargs — preserves.
+    def test_job2_pandas_append_under_internal_default_flip(
+            self, fixture_copy, monkeypatch):
+        pd = pytest.importorskip("pandas")
+        monkeypatch.setenv("PAPER_PRESERVE_DEFAULT", "1")
+        src = fixture_copy("gauntlet/gauntlet.xlsx")
+        df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+        with pd.ExcelWriter(src, engine="openpyxl", mode="a") as writer:
+            df.to_excel(writer, sheet_name="Appended", index=False)
+        _, model_after = _sheet_payload(src, b"Quarterly Model")
+        assert b"sparklineGroups" in model_after
+        wb = load_workbook(src)
+        assert "Appended" in wb.sheetnames
+
+
+class TestBatteryToday:
+    """PLAN-v0.1 battery rows 7-13, 16-24 implemented AT THEIR TODAY
+    STATES. Several assert dishonest behavior on purpose — they exist to
+    be FLIPPED by the batch named in each comment, and only by it
+    (weakening an expected state to make a batch pass is prohibited).
+    """
+
+    def _surgery(self, fixture_copy, tmp_path, name, old, new):
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        out = str(tmp_path / name)
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+            for part in zin.namelist():
+                payload = zin.read(part)
+                if part.startswith("xl/worksheets/sheet"):
+                    payload = payload.replace(old, new, 1)
+                zout.writestr(part, payload)
+        return out
+
+    # job 7 — today: refuse. Batch 1 keeps refuse, adds in_spill context.
+    def test_job7_spill_write_refuses(self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+
+        src = self._surgery(fixture_copy, tmp_path, "spill.xlsx",
+                            b'<c r="B2"', b'<c r="B2" vm="1"')
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"]["B2"] = 5
+        with pytest.raises(UnsupportedStructureError, match="cm/vm"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+    # job 8 — today: refuse at set-time. Batch 3 flips to cascade rewrite.
+    def test_job8_sheet_rename_refuses(self, fixture_copy):
+        from openpyxl.errors import UnsupportedStructureError
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        with pytest.raises(UnsupportedStructureError, match="renam"):
+            wb["Schedule"].title = "Renamed"
+
+    # job 9 — today: SILENTLY COMPLIES (documented dishonesty; the write
+    # lands with no warning or refusal). Batch 1 flips to warn/refuse.
+    def test_job9_locked_cell_write_silently_complies(self, tmp_path):
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "original"
+        ws.protection.sheet = True          # cells are locked by default
+        src = str(tmp_path / "protected.xlsx")
+        wb.save(src)
+
+        wb2 = load_workbook(src, preserve=True)
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("error")        # any warning would raise
+            wb2.active["A1"] = "overwritten"
+            out = str(tmp_path / "o.xlsx")
+            wb2.save(out)
+        assert load_workbook(out).active["A1"].value == "overwritten"
+
+    # job 10 — today: table objects are silently stale (model edit
+    # accepted, part unchanged). Batch 1 flips to refuse, Batch 2 to
+    # correct append semantics.
+    def test_job10_table_ref_edit_is_silently_stale(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        name = sorted(ws.tables)[0]
+        table_part_before = next(
+            p for n, p in part_payloads(src).items()
+            if n.startswith("xl/tables/"))
+        ws.tables[name].ref = "A1:B2"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)                                   # no refusal today
+        table_part_after = next(
+            p for n, p in part_payloads(out).items()
+            if n.startswith("xl/tables/"))
+        assert table_part_after == table_part_before  # edit went nowhere
+
+    # job 11 — today: refuse at call time. Batch 3 flips to correct copy.
+    def test_job11_copy_sheet_refuses(self, fixture_copy):
+        from openpyxl.errors import UnsupportedStructureError
+
+        wb = load_workbook(fixture_copy("gauntlet/gauntlet.xlsx"),
+                           preserve=True)
+        with pytest.raises(UnsupportedStructureError, match="copy"):
+            wb.copy_worksheet(wb["Model"])
+
+    # job 12 — today: no scenario API. Batch 5 ships wb.evaluate().
+    def test_job12_no_evaluate_api_yet(self):
+        from openpyxl.workbook import Workbook
+
+        assert not hasattr(Workbook, "evaluate")
+
+    # job 13 — today: cryptic zip error. Batch 1 flips to typed refusal
+    # naming encryption and the decrypt route.
+    def test_job13_encrypted_cfb_is_a_cryptic_zip_error(self, tmp_path):
+        src = str(tmp_path / "encrypted.xlsx")
+        with open(src, "wb") as f:
+            f.write(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 4096)
+        with pytest.raises(zipfile.BadZipFile):
+            load_workbook(src, preserve=True)
+
+    # job 16 — today: loaded chart objects are silently stale. Batch 1
+    # flips to refuse, Batch 4 to correct chart editing.
+    def test_job16_chart_title_edit_is_silently_stale(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("features/chart_image.xlsx")
+        chart_part_before = next(
+            p for n, p in part_payloads(src).items()
+            if n.startswith("xl/charts/chart"))
+        wb = load_workbook(src, preserve=True)
+        ws = next(w for w in wb.worksheets if w._charts)
+        ws._charts[0].title = "TAMPERED"
+        # a cell edit alongside, so the save has work to do
+        ws["A1"] = ws["A1"].value
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)                                   # no refusal today
+        chart_part_after = next(
+            p for n, p in part_payloads(out).items()
+            if n.startswith("xl/charts/chart"))
+        assert chart_part_after == chart_part_before  # edit went nowhere
+
+    # job 17 — today: a value edit feeding formulas saves stale caches
+    # with workbook.xml untouched (no fullCalcOnLoad). Batch 1 widens the
+    # flag to dependency-sketch hits.
+    def test_job17_value_edit_feeding_formulas_sets_no_flag(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("features/schedule_calc.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Schedule"]["B2"] = 1200            # feeds =SUM(B2:B11)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        assert part_payloads(out)["xl/workbook.xml"] == \
+            part_payloads(src)["xl/workbook.xml"]
+
+    # job 18 — today: refuse at save. Batch 2 flips to correct via the
+    # part-lifecycle engine.
+    def test_job18_make_range_a_table_refuses(self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+        from openpyxl.worksheet.table import Table
+
+        wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"),
+                           preserve=True)
+        wb["Sheet1"].add_table(Table(displayName="New", ref="A1:B3"))
+        with pytest.raises(UnsupportedStructureError, match="table"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+    # job 19 — today: refuse at save. Batch 2 flips to correct.
+    def test_job19_comment_on_comment_free_sheet_refuses(
+            self, fixture_copy, tmp_path):
+        from openpyxl.comments import Comment
+        from openpyxl.errors import UnsupportedStructureError
+
+        wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"),
+                           preserve=True)
+        wb["Sheet1"]["B2"].comment = Comment("note", "paper")
+        with pytest.raises(UnsupportedStructureError, match="comment"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+    # job 20 — today: refuse (x14 twin desync gate). Batch 3 flips to
+    # correct twin-sync.
+    def test_job20_x14_cf_edit_refuses(self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+        from openpyxl.formatting.rule import CellIsRule
+        from openpyxl.styles import PatternFill
+
+        wb = load_workbook(fixture_copy("gauntlet/gauntlet.xlsx"),
+                           preserve=True)
+        wb["Model"].conditional_formatting.add(
+            "B3:B5", CellIsRule(
+                operator="greaterThan", formula=["1000"],
+                fill=PatternFill(start_color="FFC7CE", fill_type="solid")))
+        with pytest.raises(UnsupportedStructureError, match="x14"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+    # job 21 — today: refuse (cm metadata). Batch 3 flips to correct
+    # cm/vm bookkeeping.
+    def test_job21_value_write_on_excel365_cell_refuses(
+            self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+
+        src = self._surgery(fixture_copy, tmp_path, "e365.xlsx",
+                            b'<c r="B2"', b'<c r="B2" cm="1"')
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"]["B2"] = 5
+        with pytest.raises(UnsupportedStructureError, match="cm/vm"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+    # job 22 — today: refuse at call time. Batch 4 flips to correct.
+    def test_job22_add_chart_refuses(self, fixture_copy):
+        from openpyxl.chart import BarChart
+        from openpyxl.errors import UnsupportedStructureError
+
+        wb = load_workbook(fixture_copy("gauntlet/gauntlet.xlsx"),
+                           preserve=True)
+        with pytest.raises(UnsupportedStructureError, match="chart"):
+            wb["Model"].add_chart(BarChart(), "H1")
+
+    # job 23 — today: no localization API. Batch 6 ships it (and finally
+    # raises the pinned AmbiguousTargetError).
+    def test_job23_no_label_localization_api_yet(self, fixture_copy):
+        wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"))
+        assert not hasattr(wb, "locate")
+        assert not hasattr(wb.active, "find_by_label")
+
+    # job 24 — today: no oracle write-back. Batch 5 ships it,
+    # certification-gated.
+    def test_job24_no_oracle_writeback_yet(self):
+        from openpyxl import oracle
+
+        assert not hasattr(oracle, "write_back")
