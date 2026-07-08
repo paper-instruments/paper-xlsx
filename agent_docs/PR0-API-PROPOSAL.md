@@ -356,3 +356,12 @@ oracle.certify(path, *, timeout=120.0) -> CertificationResult
    §3.4's invariant unchanged).
 5. PLAN damage-table row 1 / battery jobs 1–2 wording → coverage-gated loss claims
    (already encoded in the Phase-1 battery).
+6. D7 shared-formula default, settled by the Batch-0 item-zero probe (PLAN-v0.1 §0.1):
+   the default is UN-SHARE (dissolve-on-touch — any edit intersecting a group's observed
+   `si=` members re-emits the whole group as model-translated plain formulas), REFUSE for
+   orphan followers and ref-less hosts (group extent named, atomic). Probed adversarially:
+   master/follower/literal/delete edits, two-group isolation (untouched group byte-verbatim),
+   gap cells in stale refs, followers beyond stale refs. Known lossy side effect, enumerated
+   not hidden: dissolved untouched members lose cached `<v>` values; mitigations are the
+   auto-set fullCalcOnLoad flag (verified), honest certify() unverifiable reporting, and
+   recalc(); write-back (PLAN-v0.1 §5.3) is the cure. Battery job 6: correct.

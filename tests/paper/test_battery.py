@@ -256,3 +256,104 @@ class TestBatterySafety:
         assert not os.path.exists(out)  # refusal left nothing behind
         with open(src, "rb") as f:
             assert f.read() == before
+
+    # Battery job 6 (PLAN-v0.1): edit inside a shared-formula group.
+    # Settled CORRECT by the Batch-0 item-zero probe: dissolve-on-touch via
+    # observed si= members (splice.resolve_dirty_cells), refuse orphans.
+    def test_job6_shared_group_edit_correct_or_refused(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("features/shared_formulas.xlsx")
+
+        # master formula edit: whole group dissolves, meaning preserved
+        wb = load_workbook(src, preserve=True)
+        wb["Calc"]["B2"] = "=A2*5"
+        out = str(tmp_path / "job6_master.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        assert b't="shared"' not in sheet
+        wb2 = load_workbook(out)
+        assert wb2["Calc"]["B2"].value == "=A2*5"
+        assert wb2["Calc"]["B6"].value == "=A6*2"    # follower kept meaning
+        # dissolve is formula-affecting: the recalc flag must be set
+        assert b"fullCalcOnLoad" in part_payloads(out)["xl/workbook.xml"]
+
+        # two groups, one touched: the untouched group survives verbatim
+        surgical = str(tmp_path / "job6_two_groups.xlsx")
+        with zipfile.ZipFile(fixture_copy("features/shared_formulas.xlsx")) \
+                as zin, zipfile.ZipFile(surgical, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/"):
+                    payload = payload.replace(
+                        b'<c r="D2">',
+                        b'<c r="C2"><f t="shared" ref="C2:C3" si="1">A2+1'
+                        b'</f><v></v></c><c r="D2">', 1)
+                    payload = payload.replace(
+                        b'<c r="B3"><f t="shared" si="0"/><v></v></c>',
+                        b'<c r="B3"><f t="shared" si="0"/><v></v></c>'
+                        b'<c r="C3"><f t="shared" si="1"/><v></v></c>', 1)
+                zout.writestr(name, payload)
+        wb = load_workbook(surgical, preserve=True)
+        wb["Calc"]["B3"] = 999
+        out2 = str(tmp_path / "job6_isolation.xlsx")
+        wb.save(out2)
+        sheet = next(p for n, p in part_payloads(out2).items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'<f t="shared" ref="C2:C3" si="1">A2+1</f>' in sheet
+        assert sheet.count(b'si="0"') == 0
+        assert load_workbook(out2)["Calc"]["C3"].value == "=A3+1"
+
+        # orphan follower (host never seen): typed refusal, atomic
+        orphan = str(tmp_path / "job6_orphan.xlsx")
+        with zipfile.ZipFile(fixture_copy("features/shared_formulas.xlsx")) \
+                as zin, zipfile.ZipFile(orphan, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/"):
+                    payload = payload.replace(
+                        b'<c r="B4"><f t="shared" si="0"/><v></v></c>',
+                        b'<c r="B4"><f t="shared" si="9"/><v></v></c>', 1)
+                zout.writestr(name, payload)
+        with open(orphan, "rb") as f:
+            before = f.read()
+        wb = load_workbook(orphan, preserve=True)
+        wb["Calc"]["B4"] = 5
+        from openpyxl.errors import UnsupportedStructureError
+        with pytest.raises(UnsupportedStructureError, match="si=9"):
+            wb.save(str(tmp_path / "job6_refused.xlsx"))
+        with open(orphan, "rb") as f:
+            assert f.read() == before
+
+    # Battery job 14 (PLAN-v0.1): a zero-edit save must be byte-identical on
+    # EVERY part — including sheets whose <cols> render trips upstream's
+    # impure DimensionHolder.to_tree() (the Batch-0 false-dirty bug).
+    def test_job14_noop_save_is_byte_identical_on_cols_sheet(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        out = str(tmp_path / "job14.xlsx")
+        wb.save(out)
+        assert part_payloads(src) == part_payloads(out)
+
+    # Battery job 15 (PLAN-v0.1): editing a region whose ORIGINAL element is
+    # self-closing (pageMargins/pageSetup/autoFilter/sheetPr...) must splice
+    # correctly — the Batch-0 scanner bug emitted malformed XML here.
+    def test_job15_self_closing_region_edit_is_correct(
+            self, fixture_copy, tmp_path):
+        import xml.etree.ElementTree as ET
+
+        # pageMargins is self-closing in the fixture as authored
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"].page_margins.left = 1.25
+        out = str(tmp_path / "job15.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        ET.fromstring(sheet)                       # well-formed
+        assert sheet.count(b"<pageMargins") == 1
+        assert b'left="1.25"' in sheet
+        wb2 = load_workbook(out)
+        assert wb2["Sheet1"].page_margins.left == 1.25
+        assert wb2["Sheet1"]["B2"].value is not None   # data intact
