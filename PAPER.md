@@ -34,6 +34,23 @@ stable release tag.
 
 None.
 
+## Phase 0 — Orientation (2026-07-07)
+
+- Baseline re-verified on the development machine (`.venv`, Python 3.13.3, lxml 5.4.0,
+  pandas 3.0.3): `2592 passed, 6 skipped, 7 xfailed in 2.77s` — matches the fork-point baseline
+  above. Raw log: `scratch/results/baseline_pytest.txt` (gitignored spike area).
+- Provenance re-verified: full converted history (9,142 commits, 123 tags);
+  `paper-base` == `3.1.5` == `c4986390b`; PyPI's latest openpyxl is still 3.1.5 as of
+  2026-07-07, so the fork base is current upstream stable.
+- Deliverables: `agent_docs/ARCHITECTURE-NOTES.md` (source tour),
+  `agent_docs/OPEN-QUESTIONS.md` (ten open questions answered with evidence, cross-cutting
+  gaps, and flags against pinned shapes for human decision), `FIXTURE-REQUESTS.md`
+  (real-Excel fixtures a human must author).
+- Performance seeds for the Phase-2 guardrail (large synthetic fixture, 3.39 MB / 600k cells):
+  stock load 2.505 s, stock save 2.174 s, LibreOffice warm convert 2.09 s.
+- Hygiene note: a leftover `soxhub` git remote points at `/tmp/soxhub-openpyxl` (the
+  hg-conversion staging clone); candidate for removal, left untouched pending owner decision.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment
