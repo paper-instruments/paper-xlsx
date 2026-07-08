@@ -498,6 +498,37 @@ class TestRegionSelfClosingMatrix:
         assert part_payloads(src) == part_payloads(out)
 
 
+class TestSelfClosingSheetData:
+    """The 0.2 fix also repairs the self-closing <sheetData/> expansion
+    path (splice.py builds its edit from span.end, which was None before
+    the fix — the same document-duplication corruption)."""
+
+    def test_cell_add_into_self_closing_sheetdata(
+            self, fixture_copy, tmp_path):
+        import xml.etree.ElementTree as ET
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        surgical = str(tmp_path / "sc_sheetdata.xlsx")
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(surgical, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/sheet"):
+                    i = payload.find(b"<sheetData>")
+                    j = payload.find(b"</sheetData>") + len(b"</sheetData>")
+                    payload = payload[:i] + b"<sheetData/>" + payload[j:]
+                zout.writestr(name, payload)
+        wb = load_workbook(surgical, preserve=True)
+        wb["Sheet1"]["A1"] = 42
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        ET.fromstring(sheet)
+        assert sheet.count(b"<sheetData") == 1
+        assert load_workbook(out)["Sheet1"]["A1"].value == 42
+
+
 class TestImpureSerializerPinning:
     """PLAN-v0.1 §0.3: a region whose serializer disagrees with itself at
     arm time is PINNED — no-op saves keep the original bytes (never false
