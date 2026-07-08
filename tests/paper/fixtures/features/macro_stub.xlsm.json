@@ -1,0 +1,19 @@
+{
+  "fixture": "macro_stub.xlsm",
+  "provenance": {
+    "app": "openpyxl 3.1.5 + zip surgery",
+    "version": "",
+    "notes": "SYNTHETIC vbaProject.bin stub (OLE magic + padding; not a real VBA project \u2014 real .xlsm is in FIXTURE-REQUESTS.md). Battery job 4."
+  },
+  "features": [
+    "vba_stub",
+    "formulas"
+  ],
+  "ground_truth": {
+    "formula_count": 3,
+    "vba_present": true,
+    "vba_is_stub": true
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

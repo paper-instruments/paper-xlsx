@@ -1,0 +1,20 @@
+{
+  "fixture": "schedule.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "SUM schedule + defined name + cross-sheet ref; NO cached values (openpyxl never calculates) \u2014 battery jobs 3 and stale-value evidence"
+  },
+  "features": [
+    "formulas",
+    "defined_names",
+    "cross_sheet_formulas"
+  ],
+  "ground_truth": {
+    "formula_count": 3,
+    "cached_values": {},
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

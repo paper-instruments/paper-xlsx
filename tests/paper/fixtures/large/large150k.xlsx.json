@@ -1,0 +1,21 @@
+{
+  "fixture": "large150k.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "10000x15 = 150000 cells incl. 10000 SUM formulas and repeated strings \u2014 performance smoke (>=100k cells per CONVENTIONS taxonomy)"
+  },
+  "features": [
+    "large",
+    "formulas"
+  ],
+  "ground_truth": {
+    "rows": 10000,
+    "cols": 15,
+    "cell_count": 150000,
+    "formula_count": 10000,
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

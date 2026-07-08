@@ -51,6 +51,27 @@ None.
 - Hygiene note: a leftover `soxhub` git remote points at `/tmp/soxhub-openpyxl` (the
   hg-conversion staging clone); candidate for removal, left untouched pending owner decision.
 
+## Phase 1 — Test infrastructure (2026-07-08)
+
+- Fixture corpus frozen: 18 fixtures under `tests/paper/fixtures/` with pinned-schema
+  sidecars and `MANIFEST.sha256` (enforced by `tests/paper/test_manifest.py`). All
+  provenance is openpyxl-authored / zip surgery / LibreOffice conversion — honestly
+  labeled; the real-Excel bucket is requested in `FIXTURE-REQUESTS.md`.
+- Five-job battery in `tests/paper/test_battery.py`: `TestStockCarnageBaseline`
+  (passes today; regression-guards the damage model with the Phase-0-corrected claims)
+  and `TestBatterySafety` (the forever criterion as strict xfails, each naming the
+  phase that must flip it).
+- Contract-harness helpers in `tests/paper/support/` (part-payload diff, semantic XML
+  diff that never normalizes cell text, refusal-atomicity assertion, LibreOffice test
+  driver with per-invocation profile isolation and temp-copy discipline).
+- `pytest.ini`: registered the `lo_smoke` marker. CI: added a `test-libreoffice` job
+  (ubuntu, Python 3.13, `libreoffice-calc`, `PAPER_REQUIRE_LO=1` promotes skips to
+  failures).
+- `setup.py`: `find_packages` exclude extended with `"tests", "tests.*"` so the new
+  top-level test package cannot ship in the wheel.
+- Full suite after Phase 1: 2617 passed, 6 skipped, 12 xfailed (2592 upstream tests
+  unchanged and green).
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

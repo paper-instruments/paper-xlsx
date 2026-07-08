@@ -50,7 +50,11 @@ tests scheduled for Phases 2–6.
    comparison. Include a few date cells with known values in the sidecar.
 10. **External links + legacy formats:** a workbook referencing another workbook (external link
     chain), one `.xlsb`, and one legacy `.xls` (the latter two for typed-refusal tests only).
-11. **Non-canonical package paths (if encountered in the wild):** any real file from a
+11. **Google Sheets exports** (CONVENTIONS §4 provenance bucket): export a sheet with
+    formulas, a chart, and conditional formatting to .xlsx from Google Sheets and deliver
+    as-is. Purpose: producer-variance coverage (Sheets' namespace/prefix habits differ from
+    both Excel and LibreOffice).
+12. **Non-canonical package paths (if encountered in the wild):** any real file from a
     third-party producer whose parts don't live at `xl/worksheets/sheetN.xml`-style canonical
     paths, or that uses absolute `/xl/...` rel targets. Purpose: gaps item G10 (rels-driven part
     resolution). Opportunistic — grab one if a real integration surfaces it.

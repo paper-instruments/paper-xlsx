@@ -1,0 +1,44 @@
+{
+  "fixture": "gauntlet.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 + zip surgery",
+    "version": "",
+    "notes": "real-model-shaped: chart, image, comment, named style, merges, 3 CF rules (incl. dataBar with x14 twin pointer + x14 block), DV, freeze panes, hyperlink, hidden row + hidden sheet, table, global + sheet-scoped defined names, cross-sheet formulas, shared-formula group (surgery), sparklines (surgery). No cached values."
+  },
+  "features": [
+    "chart",
+    "image",
+    "comment",
+    "named_style",
+    "merged_cells",
+    "conditional_formatting",
+    "x14_cf_twin",
+    "sparklines",
+    "data_validation",
+    "freeze_panes",
+    "hyperlink",
+    "hidden_rows",
+    "hidden_sheet",
+    "table",
+    "defined_names",
+    "sheet_scoped_defined_name",
+    "cross_sheet_formulas",
+    "shared_formulas"
+  ],
+  "ground_truth": {
+    "chart_count": 1,
+    "image_count": 1,
+    "formula_count": 12,
+    "shared_groups": [
+      {
+        "si": 0,
+        "ref": "B2:B6",
+        "host": "B2"
+      }
+    ],
+    "cached_values": {},
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

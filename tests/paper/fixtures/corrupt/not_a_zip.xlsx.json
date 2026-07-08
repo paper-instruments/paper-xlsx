@@ -1,0 +1,14 @@
+{
+  "fixture": "not_a_zip.xlsx",
+  "provenance": {
+    "app": "zip surgery",
+    "version": "",
+    "notes": "plain text wearing an .xlsx extension"
+  },
+  "features": [
+    "corrupt"
+  ],
+  "ground_truth": {},
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

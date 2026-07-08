@@ -1,0 +1,16 @@
+{
+  "fixture": "binary.xlsb",
+  "provenance": {
+    "app": "dummy bytes",
+    "version": "",
+    "notes": "DUMMY bytes: openpyxl's refusal triggers on the extension before reading content; real .xlsb is in FIXTURE-REQUESTS.md"
+  },
+  "features": [
+    "legacy_xlsb"
+  ],
+  "ground_truth": {
+    "real_xlsb": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

@@ -1,0 +1,24 @@
+{
+  "fixture": "defined_names.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "global + sheet-scoped defined names; cross-sheet formula"
+  },
+  "features": [
+    "defined_names",
+    "cross_sheet_formulas",
+    "sheet_scoped_defined_name"
+  ],
+  "ground_truth": {
+    "formula_count": 2,
+    "defined_names": [
+      "Growth",
+      "Base",
+      "LocalTotal"
+    ],
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

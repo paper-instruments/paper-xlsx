@@ -1,0 +1,25 @@
+{
+  "fixture": "schedule_calc.xlsx",
+  "provenance": {
+    "app": "LibreOffice (headless convert)",
+    "version": "",
+    "notes": "schedule.xlsx recalculated by LibreOffice: real cached <v> values, LO producer XML (declaration, t=\"s\" shared strings, attr order) \u2014 battery job 5 and certification baselines"
+  },
+  "features": [
+    "formulas",
+    "cached_values",
+    "shared_strings",
+    "lo_producer"
+  ],
+  "ground_truth": {
+    "formula_count": 3,
+    "cached_values": {
+      "Schedule!B12": 6500,
+      "Schedule!B13": 6825,
+      "Summary!B1": 6500
+    },
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}
