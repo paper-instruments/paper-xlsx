@@ -52,14 +52,22 @@ def _source_files(root):
         yield p
 
 
-def _grep(root, pattern):
+_COMMENT = re.compile(r"#[^\n]*")
+
+
+def _grep(root, pattern, strip_comments=False):
     rx = re.compile(pattern)
     for p in _source_files(root):
         try:
-            if rx.search(p.read_text(encoding="utf-8")):
-                return True
+            text = p.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
+        if strip_comments:
+            # a TODO comment must never satisfy the produced-arm (gate
+            # finding: comment mentions flipped the check)
+            text = _COMMENT.sub("", text)
+        if rx.search(text):
+            return True
     return False
 
 
@@ -77,12 +85,23 @@ def _debt_ledger():
 def test_pinned_exception_is_raised_and_tested_or_ledgered(name):
     if name in ("LossySaveWarning", "StructuralShiftWarning"):
         produced = _grep(REPO / "openpyxl",
-                         r"warn.*{0}|{0}\(".format(name))
+                         r"warn.*{0}|{0}\(".format(name),
+                         strip_comments=True)
+        tested = _grep(REPO / "tests" / "paper",
+                       r"warns\(\s*{0}|with_warning.*{0}|"
+                       r"simplefilter.*\n.*{0}|{0}\)".format(name),
+                       strip_comments=True)
     else:
-        produced = _grep(REPO / "openpyxl", r"raise {0}\b".format(name)) \
-            or _grep(REPO / "openpyxl",
-                     r"class \w+\({0}\)".format(name))    # raised via subclass
-    tested = _grep(REPO / "tests" / "paper", r"\b{0}\b".format(name))
+        produced = (_grep(REPO / "openpyxl", r"raise {0}\b".format(name),
+                          strip_comments=True)
+                    or _grep(REPO / "openpyxl",
+                             r"class \w+\({0}\)".format(name),
+                             strip_comments=True))    # raised via subclass
+        # the tested-arm demands the exception be ASSERTED, not mentioned
+        # (gate finding: bare imports/comments satisfied a \b-grep)
+        tested = _grep(REPO / "tests" / "paper",
+                       r"raises\(\s*{0}\b|except {0}\b".format(name),
+                       strip_comments=True)
     ledgered = name in _debt_ledger()
     if produced and tested:
         assert not ledgered, (

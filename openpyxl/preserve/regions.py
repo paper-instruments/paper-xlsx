@@ -35,9 +35,26 @@ def _views(ws):
 
 
 def _sheet_format(ws):
-    # mirror _writer.write_format, including the outline sync
-    ws.sheet_format.outlineLevelCol = ws.column_dimensions.max_outline
-    return ws.sheet_format.to_tree()
+    # mirror _writer.write_format's outline sync, but PURELY: upstream
+    # reads DimensionHolder.max_outline, a value to_tree() only refreshes
+    # DURING a cols render — order-dependent state that false-dirtied
+    # sheetFormatPr on every cols-bearing sheet (Batch-0 gate). Compute
+    # the same quantity the way holder.to_tree() does (reindex is the
+    # idempotent min/max normalization upstream runs on every render;
+    # membership = renders-to-something), without touching max_outline
+    # or the model's sheet_format.
+    import copy as _copy
+
+    outlines = set()
+    for dim in ws.column_dimensions.values():
+        dim.reindex()
+        if dim.to_tree() is not None:
+            outlines.add(dim.outlineLevel)
+    fmt = ws.sheet_format
+    if outlines:
+        fmt = _copy.copy(fmt)
+        fmt.outlineLevelCol = max(outlines)
+    return fmt.to_tree()
 
 
 def _cols(ws):

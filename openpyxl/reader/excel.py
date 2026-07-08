@@ -433,10 +433,14 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
 
     """
     if preserve is None:
-        # env switch is a DEFAULT, never a mandate: read_only loads (which
-        # explicit preserve=True refuses) silently fall back to stock
+        # env switch is a DEFAULT, never a mandate: loads that explicit
+        # preserve=True would refuse (read_only; the .xls/.xlsb legacy
+        # formats) fall back to stock so its exceptions stay stock too
+        name = getattr(filename, "name", filename)
+        legacy = isinstance(name, str) and \
+            name.lower().endswith((".xls", ".xlsb"))
         preserve = (os.environ.get("PAPER_PRESERVE_DEFAULT") == "1"
-                    and not read_only)
+                    and not read_only and not legacy)
     reader = ExcelReader(filename, read_only, keep_vba,
                          data_only, keep_links, rich_text,
                          preserve=preserve)

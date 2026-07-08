@@ -497,6 +497,26 @@ class TestRegionSelfClosingMatrix:
         wb.save(out)
         assert part_payloads(src) == part_payloads(out)
 
+    def test_removal_of_self_closing_original(self, fixture_copy, tmp_path):
+        # the third matrix arm (gate finding: untested): the model renders
+        # the region to None -> the splice excises exactly the element
+        # bytes — a regressed end=None here resumes whole-document
+        # corruption
+        import xml.etree.ElementTree as ET
+
+        src = self._build(fixture_copy, tmp_path, "autoFilter",
+                          b'<autoFilter ref="A1:D5"/>')
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"].auto_filter.ref = None
+        out = str(tmp_path / "af_removed.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        ET.fromstring(sheet)
+        assert b"<autoFilter" not in sheet
+        assert sheet.count(b"<pageMargins") == 1      # neighbour intact
+        assert load_workbook(out)["Sheet1"]["B2"].value is not None
+
 
 class TestSelfClosingSheetData:
     """The 0.2 fix also repairs the self-closing <sheetData/> expansion
@@ -533,44 +553,141 @@ class TestImpureSerializerPinning:
     """PLAN-v0.1 §0.3: a region whose serializer disagrees with itself at
     arm time is PINNED — no-op saves keep the original bytes (never false
     dirty), and USER edits to it refuse rather than splice an
-    untrustworthy render."""
+    untrustworthy render. The one real instance (sheetFormatPr's outline
+    sync reading DimensionHolder's render-time side effect) was fixed by
+    making the render pure, so on the shipped corpus NOTHING pins; the
+    guard stays armed for the next impure upstream serializer and is
+    proven here with a synthetic one."""
 
-    def test_cols_sheet_pins_sheetformatpr(self, fixture_copy):
-        from openpyxl.preserve.ledger import DirtyLedger
+    def test_no_region_pins_anywhere_on_the_corpus(self, fixture_copy):
+        from .test_properties import ALL_LOADABLE
 
-        src = fixture_copy("features/hidden.xlsx")
+        for fixture in ALL_LOADABLE:
+            wb = load_workbook(fixture_copy(fixture), preserve=True)
+            for ws, pinned in wb._paper_ledger.pinned_regions.items():
+                assert not pinned, (fixture, ws.title, pinned)
+
+    def _make_impure(self, monkeypatch):
+        from openpyxl.preserve import regions as regions_mod
+
+        state = {"calls": 0}
+
+        def impure(ws):
+            # settles after the first render, like the DimensionHolder
+            # instance did: render 1 disagrees with every later render
+            from openpyxl.xml.functions import Element
+
+            state["calls"] += 1
+            el = Element("printOptions")
+            if state["calls"] > 1:
+                el.set("gridLines", "1")
+            return el
+
+        replacement = regions_mod.Region("printOptions", impure)
+        patched = [replacement if r.tag == "printOptions" else r
+                   for r in regions_mod.SPLICEABLE_REGIONS]
+        monkeypatch.setattr(regions_mod, "SPLICEABLE_REGIONS", patched)
+        monkeypatch.setitem(regions_mod.REGION_BY_TAG, "printOptions",
+                            replacement)
+        return state
+
+    def test_synthetic_impure_serializer_pins_and_noop_stays_identical(
+            self, fixture_copy, tmp_path, monkeypatch):
+        self._make_impure(monkeypatch)
+        src = fixture_copy("minimal/minimal_clean.xlsx")
         wb = load_workbook(src, preserve=True)
-        ws = wb["Visible"]
-        pinned = wb._paper_ledger.pinned_regions[ws]
-        # upstream DimensionHolder.to_tree() mutates max_outline during the
-        # cols render, perturbing the NEXT sheetFormatPr render
-        assert "sheetFormatPr" in pinned
-        assert "cols" not in pinned          # cols itself renders stably
+        assert "printOptions" in \
+            wb._paper_ledger.pinned_regions[wb["Sheet1"]]
+        out = str(tmp_path / "noop.xlsx")
+        wb.save(out)
+        assert part_payloads(src) == part_payloads(out)
 
-    def test_edit_to_pinned_region_refuses_atomically(
-            self, fixture_copy, tmp_path):
-        src = fixture_copy("features/hidden.xlsx")
+    def test_synthetic_impure_serializer_refuses_edits(
+            self, fixture_copy, tmp_path, monkeypatch):
+        state = self._make_impure(monkeypatch)
+        src = fixture_copy("minimal/minimal_clean.xlsx")
         with open(src, "rb") as f:
             before = f.read()
         wb = load_workbook(src, preserve=True)
-        wb["Visible"].sheet_format.defaultRowHeight = 22.5
+        state["calls"] = -2          # next renders disagree with settled arm
         with pytest.raises(UnsupportedStructureError, match="impure"):
             wb.save(str(tmp_path / "pinned.xlsx"))
         with open(src, "rb") as f:
             assert f.read() == before
 
-    def test_col_width_edit_still_works_alongside_pin(
+    def test_col_width_edit_does_not_drift_sheetformatpr(
             self, fixture_copy, tmp_path):
-        # the pin isolates the impure region; the stable cols region on the
-        # same sheet stays fully editable
+        # the gate's drift repro: a width-only edit must not rewrite
+        # sheetFormatPr (no outlineLevelCol="0" appearing, no unmodeled
+        # attribute loss)
+        import re
+
         src = fixture_copy("features/hidden.xlsx")
+        sheet_before = next(p for n, p in part_payloads(src).items()
+                            if b"HiddenNotes" not in p
+                            and n.startswith("xl/worksheets/"))
+        fmt_before = re.search(rb"<sheetFormatPr[^>]*>", sheet_before)
         wb = load_workbook(src, preserve=True)
         wb["Visible"].column_dimensions["B"].width = 30
         out = str(tmp_path / "width.xlsx")
         wb.save(out)
+        sheet_after = next(p for n, p in part_payloads(out).items()
+                           if b"HiddenNotes" not in p
+                           and n.startswith("xl/worksheets/"))
+        fmt_after = re.search(rb"<sheetFormatPr[^>]*>", sheet_after)
+        assert fmt_after.group(0) == fmt_before.group(0)
         wb2 = load_workbook(out)
         assert wb2["Visible"].column_dimensions["B"].width == 30
         assert wb2["Visible"].column_dimensions["C"].hidden is True
+
+    def test_sheetformatpr_edit_on_cols_sheet_now_works(
+            self, fixture_copy, tmp_path):
+        # refused under the interim pin; the pure render makes it splice
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].sheet_format.defaultRowHeight = 22.5
+        out = str(tmp_path / "fmt.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Visible"].sheet_format.defaultRowHeight == 22.5
+
+    def test_column_grouping_works_on_cols_sheet(
+            self, fixture_copy, tmp_path):
+        # the gate's collateral repro: grouping refused under the interim
+        # pin; now splices, with the outline sync landing in BOTH cols and
+        # sheetFormatPr exactly as a stock save would write them
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].column_dimensions.group("E", "F", outline_level=1)
+        out = str(tmp_path / "grouped.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if b"outlineLevel" in p and n.startswith("xl/worksheets/"))
+        assert b'outlineLevelCol="1"' in sheet
+        wb2 = load_workbook(out)
+        assert wb2["Visible"].column_dimensions["E"].outlineLevel == 1
+
+    def test_explicit_outlinelevelcol_edit_matches_stock_semantics(
+            self, fixture_copy, tmp_path):
+        # outlineLevelCol is derived metadata: on a cols-bearing sheet the
+        # writer's sync owns it (stock parity — the assignment is
+        # normalized away); on a cols-free sheet it lands verbatim
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].sheet_format.outlineLevelCol = 5
+        out = str(tmp_path / "derived.xlsx")
+        wb.save(out)
+        assert b'outlineLevelCol="5"' not in part_payloads(out)[
+            "xl/worksheets/sheet1.xml"]
+
+        src2 = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src2, preserve=True)
+        wb["Sheet1"].sheet_format.outlineLevelCol = 5
+        out2 = str(tmp_path / "derived2.xlsx")
+        wb.save(out2)
+        sheet = next(p for n, p in part_payloads(out2).items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'outlineLevelCol="5"' in sheet
 
 
 class TestSaveTargets:

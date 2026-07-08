@@ -448,7 +448,10 @@ class TestBatteryToday:
             if n.startswith("xl/tables/"))
         ws.tables[name].ref = "A1:B2"
         out = str(tmp_path / "o.xlsx")
-        wb.save(out)                                   # no refusal today
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("error")     # not even a warning fires today
+            wb.save(out)
         table_part_after = next(
             p for n, p in part_payloads(out).items()
             if n.startswith("xl/tables/"))
@@ -492,7 +495,10 @@ class TestBatteryToday:
         # a cell edit alongside, so the save has work to do
         ws["A1"] = ws["A1"].value
         out = str(tmp_path / "o.xlsx")
-        wb.save(out)                                   # no refusal today
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("error")     # not even a warning fires today
+            wb.save(out)
         chart_part_after = next(
             p for n, p in part_payloads(out).items()
             if n.startswith("xl/charts/chart"))

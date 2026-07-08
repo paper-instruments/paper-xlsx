@@ -451,9 +451,14 @@ Corruption fixes outrank planning; this batch merged before PR-1.
   double-renders every region at arm: self-disagreeing regions are PINNED
   (settled second render becomes the snapshot; no-op keeps original bytes;
   USER edits to a pinned region refuse). Any impure upstream serializer —
-  present or future — lands in "pinned", never in "false dirty". Cost:
-  sheetFormatPr edits on cols-bearing sheets now refuse (rare edit, loud
-  outcome, stock-mode workaround named). Battery job 14: CORRECT.
+  present or future — lands in "pinned", never in "false dirty". The
+  DimensionHolder INSTANCE was then fixed at the root after the batch gate
+  measured the pin's collateral (see the gate entry below): the
+  sheetFormatPr render now computes the outline sync purely, so NOTHING
+  pins on the shipped corpus (asserted corpus-wide), sheetFormatPr edits
+  and column grouping work, and the pattern guard stays armed for the next
+  impure serializer (proven by a synthetic one in tests). Battery job 14:
+  CORRECT.
 - **0.4:** permanent property infrastructure — no-op byte-identity across
   EVERY loadable corpus fixture (glob-enumerated; the 0.3 bug survived v0
   because the hand-listed no-op test skipped hidden.xlsx), and the ledger
@@ -482,6 +487,58 @@ enforces both directions).
 - `AmbiguousTargetError` — owed to Batch 6 (label localization raises it)
 - `BoundaryViolationError` — owed to Batch 1 (1.3: raise or formally retire)
 - `RelationshipPolicyError` — owed to Batch 1 (1.3: raise or formally retire)
+
+## Batch 0 — adversarial gate report (2026-07-08)
+
+Four lenses over the batch diff (process amendment 2), all findings
+fixed and fixtured before merge:
+
+- **Pinning collateral (major):** the interim pin refused legitimate
+  column grouping/ungrouping on every cols-bearing workbook, and a
+  width-only edit false-dirtied sheetFormatPr AFTER arm (adding
+  outlineLevelCol="0", dropping unmodeled attributes like
+  x14ac:dyDescent). Root fix: regions._sheet_format computes the outline
+  sync purely (mirrors holder.to_tree membership without reading its
+  render-time side effect). Corpus-wide zero-pins asserted; grouping,
+  width, and defaultRowHeight edits all splice; explicit outlineLevelCol
+  edits follow stock semantics (normalized on cols-bearing sheets,
+  verbatim otherwise — it is writer-derived metadata). The pattern guard
+  itself is retained and proven with a synthetic impure serializer.
+- **Cross-check row blindness (major):** verify_splice was blind to row
+  attribute drift/duplication/deletion inside sheetData while the saver
+  rewrites row attrs unclaimed. Extended with per-row signatures + row
+  claims; unit-tested in both directions; active suite-wide.
+- **Env-flip blast radius (major):** the suite could not run under
+  PAPER_PRESERVE_DEFAULT=1 (17 stock-arm failures). Root conftest now
+  normalizes the env (the suite asserts both arms explicitly; battery
+  job 2 covers the flipped default via monkeypatch) — the suite is
+  env-invariant, verified both ways. Legacy .xls/.xlsb loads under the
+  env default now fall back to stock exceptions ("a default, never a
+  mandate").
+- **Battery evasions (major):** jobs 10/16 could be satisfied by a
+  warn-then-drop implementation; both now arm simplefilter("error")
+  like job 9.
+- **Pinned-surface checker (minor):** comment mentions could satisfy
+  both arms and force debt-entry deletion. Produced-arm now strips
+  comments; tested-arm requires pytest.raises/warns or except-clauses.
+- **Minors accepted with rationale:** the extLst region guard is a
+  substring scan (over-refuses two exotic shapes; pre-existing v0 code,
+  NARROWED by the end fix; fails safe); cross-check does not compare
+  inter-tag order/root attrs (unreachable from a span-bounded splice;
+  documented in the docstring); chart/rels/workbook byte-patch paths sit
+  outside verify_splice (safety-tooling coverage gap, noted for the
+  Batch-3/4 crosscheck extension); deleting ALL column dimensions leaves
+  a stale outlineLevelCol (stock-divergent but Excel-tolerated; owned by
+  the region attr-carry work); data_only+env-default flips warn-then-
+  destroy into typed refusal (the intended direction); pandas
+  if_sheet_exists='replace' under the env refuses loudly where stock
+  destroyed silently (uncovered blast radius, noted here); a refused
+  pandas append still lets pandas' close() rewrite zip local-header
+  timestamps via a no-op save (part payloads byte-identical — the
+  per-part invariant holds; raw whole-file bytes were never pinned).
+- **Gate side-discovery, fixed in 0.2's addendum:** the self-closing
+  <sheetData/> expansion path was a fourth instance of the end=None
+  corruption class, repaired by the same fix and pinned with a test.
 
 ## Release Safety
 

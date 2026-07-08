@@ -148,6 +148,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     plan = {}
     dirty_by_part = {}
     region_claims = {}        # part -> region tags knowingly rewritten
+    row_claims = {}           # part -> row indices with claimed attr edits
     baselines = {}            # part -> shifted baseline bytes (Phase 6b)
     sheet_rels_updates = {}   # part_name -> new payload
     for ws in workbook.worksheets:
@@ -275,6 +276,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         if hyperlinks_replacement is not None:
             claims.add("hyperlinks")
         region_claims[part] = claims
+        row_claims[part] = set(row_changes)
 
     # ---- calcChain cascade (D13) ------------------------------------------
     drop_calcchain = led.formulas_changed and _CALC_CHAIN in names
@@ -377,7 +379,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     if os.environ.get("PAPER_LEDGER_CROSSCHECK") == "1" and plan:
         from .crosscheck import verify_splice
         verify_splice(source, data, dirty_by_part, baselines=baselines,
-                      region_claims=region_claims)
+                      region_claims=region_claims, row_claims=row_claims)
 
     zipio.deliver(data, target)
     return True

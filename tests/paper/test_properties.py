@@ -93,3 +93,42 @@ class TestRegionClaimsCrossCheck:
                       {"xl/worksheets/sheet1.xml": set()},
                       region_claims={
                           "xl/worksheets/sheet1.xml": {"pageMargins"}})
+
+    def test_unclaimed_row_attr_drift_raises(self):
+        # the Batch-0 gate's blind spot: row display attributes rewritten
+        # on rows the ledger never claimed
+        from openpyxl.preserve.crosscheck import (
+            LedgerCrossCheckError,
+            verify_splice,
+        )
+
+        before = self._pkg(
+            '<worksheet {0}><sheetData><row r="1"><c r="A1"><v>1</v></c>'
+            '</row></sheetData></worksheet>'.format(self._NS))
+        after = self._pkg(
+            '<worksheet {0}><sheetData><row r="1" ht="99" customHeight="1">'
+            '<c r="A1"><v>1</v></c></row></sheetData>'
+            '</worksheet>'.format(self._NS))
+        with pytest.raises(LedgerCrossCheckError, match="row"):
+            verify_splice(before, after,
+                          {"xl/worksheets/sheet1.xml": set()})
+        # claimed: same drift passes
+        verify_splice(before, after, {"xl/worksheets/sheet1.xml": set()},
+                      row_claims={"xl/worksheets/sheet1.xml": {1}})
+
+    def test_unclaimed_row_duplication_raises(self):
+        from openpyxl.preserve.crosscheck import (
+            LedgerCrossCheckError,
+            verify_splice,
+        )
+
+        before = self._pkg(
+            '<worksheet {0}><sheetData><row r="3"><c r="A3"><v>1</v></c>'
+            '</row></sheetData></worksheet>'.format(self._NS))
+        after = self._pkg(
+            '<worksheet {0}><sheetData><row r="3"><c r="A3"><v>1</v></c>'
+            '</row><row r="3"><c r="A3"><v>1</v></c></row></sheetData>'
+            '</worksheet>'.format(self._NS))
+        with pytest.raises(LedgerCrossCheckError, match="row"):
+            verify_splice(before, after,
+                          {"xl/worksheets/sheet1.xml": set()})

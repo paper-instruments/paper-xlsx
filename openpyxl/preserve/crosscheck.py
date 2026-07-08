@@ -56,7 +56,10 @@ def _coord_ref(row, col):
 
 def _region_signatures(payload):
     """Canonical signatures of every top-level element EXCEPT sheetData
-    (whose cells the cell check covers, keyed to the ledger's dirt)."""
+    (whose cells and rows the sheetData checks cover, keyed to the
+    ledger's claims). Known accepted limits, unreachable from the splice
+    (edits are span-bounded): inter-tag document order, root attributes,
+    and inter-element text are not compared."""
     root = ET.fromstring(payload)
     regions = {}
     for el in root:
@@ -68,20 +71,42 @@ def _region_signatures(payload):
     return regions
 
 
+def _sheet_rows(payload):
+    """Per-row signature: (attrs minus r, multiplicity) — catches row
+    attribute drift, duplication, and deletion that the per-cell check
+    (keyed by r only) is blind to."""
+    root = ET.fromstring(payload)
+    rows = {}
+    for sheetdata in root.iter(_SHEETDATA):
+        for row in sheetdata.findall(_ROW):
+            ref = row.get("r")
+            attrs = tuple(sorted((k, v) for k, v in row.attrib.items()
+                                 if k != "r"))
+            sig, count = rows.get(ref, (attrs, 0))
+            rows[ref] = (attrs if count == 0 else sig, count + 1)
+        break
+    return rows
+
+
 def verify_splice(source_bytes, output_bytes, dirty_by_part, baselines=None,
-                  region_claims=None):
+                  region_claims=None, row_claims=None):
     """Assert that in every spliced part, the set of semantically changed
     cells is a subset of the ledger's dirty claims — and (PLAN-v0.1 0.4)
-    that no region the saver didn't claim differs.
+    that no region the saver didn't claim differs, and no row's display
+    attributes/multiplicity change outside the claimed rows.
 
     ``baselines`` maps parts to their post-shift bytes (Phase 6b): those
     parts are checked against the renumbered baseline (the renumber pass is
     covered by its own tests and the oracle property tests).
     ``region_claims`` maps parts to the region tags the saver knowingly
     rewrote; an unclaimed region that differs is corruption inside the
-    safety tooling, exactly like an unclaimed cell."""
+    safety tooling, exactly like an unclaimed cell.
+    ``row_claims`` maps parts to row indices whose display attributes the
+    saver knowingly rewrote; rows holding dirty cells are implicitly
+    allowed (the splice recomputes their spans/attrs when rebuilding)."""
     baselines = baselines or {}
     region_claims = region_claims or {}
+    row_claims = row_claims or {}
     with zipfile.ZipFile(io.BytesIO(source_bytes)) as zin, \
             zipfile.ZipFile(io.BytesIO(output_bytes)) as zout:
         for part, dirty in dirty_by_part.items():
@@ -116,3 +141,19 @@ def verify_splice(source_bytes, output_bytes, dirty_by_part, baselines=None,
                     "corruption inside the safety tooling; the save output "
                     "must not be trusted.".format(
                         part, sorted(rogue_regions)))
+
+            rows_before = _sheet_rows(baseline)
+            rows_after = _sheet_rows(output)
+            allowed_rows = {str(r) for (r, _c) in dirty} \
+                | {str(r) for r in row_claims.get(part, set())}
+            rogue_rows = {
+                ref for ref in set(rows_before) | set(rows_after)
+                if rows_before.get(ref) != rows_after.get(ref)
+                and ref not in allowed_rows}
+            if rogue_rows:
+                raise LedgerCrossCheckError(
+                    "ledger cross-check FAILED for {0}: the splice changed "
+                    "row(s) {1} (attributes or multiplicity) that the "
+                    "ledger never claimed. This is corruption inside the "
+                    "safety tooling; the save output must not be "
+                    "trusted.".format(part, sorted(rogue_rows)))
