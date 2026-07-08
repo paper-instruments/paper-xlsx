@@ -399,6 +399,34 @@ refuted) confirmed 34 defects. ALL are fixed and regression-tested
 
 Post-review suite: 2857 passed, 7 skipped, 7 xfailed.
 
+## Scanner fast paths (2026-07-08)
+
+CI measured the splice save at 2.002-2.005x the stock save on GitHub's
+shared runners — over D4's 2x budget by the width of a hair (locally it
+measured 1.87x). Rather than amend D4 a second time, the worksheet byte
+scanner gained guard-equivalent fast paths for the three hot shapes
+(`<c ...>` under a main-namespace row, text-only `<v>`, `</c>`); cell
+attributes now decode lazily (only cells an edit actually touches pay).
+Anything unusual — namespace declarations, CDATA, nested markup, decoy
+end tags — falls through to the untouched generic machinery. Measured:
+1.19x locally (was 1.79x), scan cost cut ~4x.
+
+Because this touches the most safety-critical hot path, the change was
+differentially verified against the previous scanner: 1,352 fuzz cases
+(fixture corpus, 82 crafted hazards, 1,241 seeded mutations) plus a
+three-lens adversarial review. The verification caught one real bug in
+the first draft — a quote-blind r-attribute regex that an ` r="B9"`
+lookalike inside another attribute's quoted value could hijack (openpyxl
+loads such files; the splice would have keyed the cell at the wrong
+column). Fixed by tokenizing the attribute blob with the same regex the
+generic path uses; regression test in test_splice.py
+(`test_attr_value_r_decoy_scans_true_column`). Sole remaining
+divergence, accepted and documented: invalid UTF-8 in a cell attribute
+value (unloadable by any XML parser, so unreachable post-load) now
+raises its UnicodeDecodeError at first attrs access during edit
+planning instead of at scan time — still strictly before any output is
+written.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

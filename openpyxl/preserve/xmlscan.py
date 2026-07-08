@@ -36,7 +36,7 @@ class ScanRefusal(UnsupportedStructureError):
 
 
 class CellSpan:
-    __slots__ = ("row", "column", "start", "end", "attrs",
+    __slots__ = ("row", "column", "start", "end", "_attr_blob", "_attrs",
                  "shared_si", "shared_ref", "array_ref", "has_extlst")
 
     def __init__(self, row, column, start):
@@ -44,11 +44,28 @@ class CellSpan:
         self.column = column
         self.start = start
         self.end = None
-        self.attrs = {}
+        self._attr_blob = b""
+        self._attrs = None
         self.shared_si = None
         self.shared_ref = None
         self.array_ref = None
         self.has_extlst = False
+
+    @property
+    def attrs(self):
+        # decoded on demand: only the cells an edit actually touches pay
+        # for attribute parsing (the splice reads a handful of dirty cells
+        # out of the whole sheet)
+        if self._attrs is None:
+            attrs = {}
+            for m in _ATTR_RE.finditer(self._attr_blob):
+                key = m.group(1)
+                if key == b"xmlns" or key.startswith(b"xmlns:"):
+                    continue
+                value = m.group(3) if m.group(3) is not None else m.group(4)
+                attrs[key.decode("latin-1")] = value.decode("utf-8")
+            self._attrs = attrs
+        return self._attrs
 
 
 class RowSpan:
@@ -129,6 +146,89 @@ def scan_sheet(data):
         if lt == -1:
             break
         nxt = data[lt + 1]
+
+        # fast paths for the sheetData hot loop. Guard-equivalent by
+        # construction: anything but the three plain shapes — '<c' with an
+        # r attribute and no namespace declarations, text-only '<v>',
+        # an exact '</c>' closing the open cell — falls through to the
+        # generic machinery below, refusals and all.
+        if current_cell is not None:
+            if nxt == 0x76 and lt + 2 < n and data[lt + 2] == 0x3E:  # <v>
+                close = data.find(b"<", lt + 3)
+                if close != -1 and data.startswith(b"</v>", close):
+                    # text-only content: a raw '<' cannot appear in
+                    # well-formed character data, so this IS the end tag;
+                    # CDATA/comments/nested markup miss the check and take
+                    # the generic path
+                    pos = close + 4
+                    continue
+            elif nxt == 0x2F and data.startswith(b"</c>", lt) \
+                    and stack[-1][5] is current_cell:
+                stack.pop()
+                current_cell.end = lt + 4
+                current_cell = None
+                pos = lt + 4
+                continue
+        elif (nxt == 0x63 and current_row is not None  # '<c'
+                and lt + 2 < n and data[lt + 2] in b" \t\r\n/>"
+                and stack[-1][5] is current_row
+                and stack[-1][2] == main):
+            gt = _find_tag_end(data, lt)
+            self_closing = data[gt - 1] == 0x2F
+            attr_blob = data[lt + 2: gt - 1 if self_closing else gt]
+            if b"xmlns" not in attr_blob:
+                # r extraction MUST tokenize the whole blob (quoted values
+                # consumed in order, last r wins) — a bare ' r="..."'
+                # pattern search would match decoys inside OTHER
+                # attributes' values, on files openpyxl loads fine
+                rb = None
+                for m in _ATTR_RE.finditer(attr_blob):
+                    if m.group(1) == b"r":
+                        rb = m.group(3) if m.group(3) is not None \
+                            else m.group(4)
+                if rb is None:
+                    raise ScanRefusal(
+                        "cannot splice: a <c> element carries no r "
+                        "attribute (implicit cell numbering); editing such "
+                        "sheets is not supported in v0")
+                coord = rb.decode("ascii")
+                col = 0
+                i = 0
+                n_rb = len(rb)
+                while i < n_rb:
+                    b0 = rb[i]
+                    if 65 <= b0 <= 90:
+                        col = col * 26 + (b0 - 64)
+                    elif 97 <= b0 <= 122:
+                        col = col * 26 + (b0 - 96)
+                    else:
+                        break
+                    i += 1
+                if col == 0:
+                    raise ScanRefusal(
+                        "cannot splice: malformed cell reference "
+                        "{0!r}".format(coord))
+                while i < n_rb and (rb[i] == 36 or 65 <= rb[i] <= 90
+                                    or 97 <= rb[i] <= 122):
+                    i += 1
+                digits = coord[i:]
+                if digits and int(digits) != current_row.index:
+                    raise ScanRefusal(
+                        "cannot splice: cell {0!r} sits inside row {1} "
+                        "(its own reference disagrees with its parent "
+                        "row)".format(coord, current_row.index))
+                cell = CellSpan(current_row.index, col, lt)
+                cell._attr_blob = attr_blob
+                if self_closing:
+                    cell.end = gt + 1
+                else:
+                    current_cell = cell
+                    stack.append([main, b"c", stack[-1][2], stack[-1][3],
+                                  lt, cell])
+                current_row.cells[col] = cell
+                pos = gt + 1
+                continue
+
         if nxt == 0x3F:  # '?': processing instruction
             end = data.find(b"?>", lt)
             if end == -1:
@@ -308,8 +408,8 @@ def scan_sheet(data):
                     "reference disagrees with its parent row)".format(
                         coord, current_row.index))
             cell = CellSpan(current_row.index, col, lt)
-            cell.attrs = {k.decode("latin-1"): v.decode("utf-8")
-                          for k, v in attrs.items()}
+            cell._attrs = {k.decode("latin-1"): v.decode("utf-8")
+                           for k, v in attrs.items()}
             if self_closing:
                 cell.end = tag_end
             current_row.cells[col] = cell

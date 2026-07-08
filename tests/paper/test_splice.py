@@ -369,6 +369,36 @@ class TestProducerGuards:
         with pytest.raises(UnsupportedStructureError, match="no r attribute"):
             wb.save(str(tmp_path / "o.xlsx"))
 
+    def test_attr_value_r_decoy_scans_true_column(
+            self, fixture_copy, tmp_path):
+        # a ' r="B9"' lookalike INSIDE another attribute's quoted value must
+        # not hijack cell keying: openpyxl loads such files fine, and a
+        # quote-blind r extraction would key the cell at the decoy's column
+        # (silent duplicate-reference splice)
+        surgical = self._surgery(
+            fixture_copy, tmp_path,
+            lambda p: p.replace(b'<c r="B2"',
+                                b'<c r="B2" foo=\'x r="B9" y\'', 1))
+        with zipfile.ZipFile(surgical) as z:
+            payload = next(z.read(n) for n in z.namelist()
+                           if n.startswith("xl/worksheets/sheet"))
+        from openpyxl.preserve.xmlscan import scan_sheet
+
+        scan = scan_sheet(payload)
+        spans = [c for row in scan.rows.values()
+                 for c in row.cells.values() if c.attrs.get("r") == "B2"]
+        assert len(spans) == 1
+        assert spans[0].column == 2
+
+        wb = load_workbook(surgical, preserve=True)
+        wb["Sheet1"]["B2"] = 42
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        assert sheet.count(b'<c r="B2"') == 1
+        assert load_workbook(out)["Sheet1"]["B2"].value == 42
+
     def test_doctype_refuses(self, fixture_copy, tmp_path):
         surgical = self._surgery(
             fixture_copy, tmp_path,
