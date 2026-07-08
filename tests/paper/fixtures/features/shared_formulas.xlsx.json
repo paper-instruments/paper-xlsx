@@ -1,0 +1,31 @@
+{
+  "fixture": "shared_formulas.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 + zip surgery",
+    "version": "",
+    "notes": "shared-formula group B2:B6 (host + 4 si-followers, the real-Excel filled-range shape, via surgery) + a genuine openpyxl array formula D2:D4. Gates splice shared-group handling (OPEN-QUESTIONS G1)."
+  },
+  "features": [
+    "shared_formulas",
+    "array_formula",
+    "formulas"
+  ],
+  "ground_truth": {
+    "shared_groups": [
+      {
+        "si": 0,
+        "ref": "B2:B6",
+        "host": "B2"
+      }
+    ],
+    "array_formulas": [
+      {
+        "ref": "D2:D4"
+      }
+    ],
+    "formula_count": 6,
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

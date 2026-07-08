@@ -1,0 +1,18 @@
+{
+  "fixture": "datavalidation.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "list dropdown + whole-number DV"
+  },
+  "features": [
+    "data_validation"
+  ],
+  "ground_truth": {
+    "dv_count": 2,
+    "formula_count": 0,
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

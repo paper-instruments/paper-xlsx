@@ -1,0 +1,14 @@
+{
+  "fixture": "truncated.xlsx",
+  "provenance": {
+    "app": "zip surgery",
+    "version": "",
+    "notes": "first 1000 bytes of minimal_clean.xlsx (truncated central directory)"
+  },
+  "features": [
+    "corrupt"
+  ],
+  "ground_truth": {},
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

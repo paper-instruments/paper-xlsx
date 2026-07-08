@@ -64,7 +64,7 @@ else:
 setup(
     name='paper-xlsx',
     packages=find_packages(".",
-        exclude=["*.tests", "scratchpad*", "*.c",]
+        exclude=["*.tests", "tests", "tests.*", "scratchpad*", "*.c",]
         ),
     ext_modules=ext_modules,
     package_dir={},

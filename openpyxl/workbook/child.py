@@ -3,6 +3,7 @@
 import re
 import warnings
 
+from openpyxl.preserve.ledger import refuse_rename as _refuse_rename
 from openpyxl.worksheet.header_footer import HeaderFooter
 
 """
@@ -93,6 +94,7 @@ class _WorkbookChild:
             raise ValueError(msg)
 
         if self.title is not None and self.title != value:
+            _refuse_rename(self)
             value = avoid_duplicate_name(self.parent.sheetnames, value)
 
         if len(value) > 31:

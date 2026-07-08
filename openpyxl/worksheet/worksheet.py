@@ -52,6 +52,38 @@ from .views import (
 )
 from .cell_range import MultiCellRange, CellRange
 from .merge import MergedCellRange
+from openpyxl.preserve.ledger import (
+    finish_structural_edit as _finish_structural_edit,
+    mark_cell_dirty as _mark_cell_dirty,
+    mark_deleted_cell as _mark_deleted_cell,
+    refuse_chart_or_image_add as _refuse_chart_or_image_add,
+    refuse_structural_edit as _refuse_structural_edit,
+)
+
+
+def _structural_guard(ws, operation, index, amount=1):
+    """Preserve mode: fully-modeled sheets get Excel-semantics reference
+    rewriting (Phase 6b, returns True so the caller runs the fixups);
+    unmodeled range-bearing content refuses with the victim analysis
+    (Phase 6a). Stock mode on a LOADED workbook: loud warning — the shift
+    updates nothing that points at the moved cells."""
+    wb = getattr(ws, "parent", None)
+    led = getattr(wb, "_paper_ledger", None) if wb is not None else None
+    if led is not None and led.armed:
+        if operation == "move_range":
+            _refuse_structural_edit(ws, operation, index)
+            return False
+        from openpyxl.preserve.ledger import begin_structural_edit
+        return begin_structural_edit(ws, operation, index, amount)
+    if wb is not None and getattr(wb, "_paper_loss_inventory", None) is not None:
+        import warnings as _warnings
+
+        from openpyxl.errors import StructuralShiftWarning
+        from openpyxl.preserve.structural import STOCK_WARNING
+
+        _warnings.warn(StructuralShiftWarning(STOCK_WARNING.format(operation)),
+                       stacklevel=3)
+    return False
 from .properties import WorksheetProperties
 from .pagebreak import RowBreak, ColBreak
 from .scenario import ScenarioList
@@ -324,7 +356,9 @@ class Worksheet(_WorkbookChild):
     def __delitem__(self, key):
         row, column = coordinate_to_tuple(key)
         if (row, column) in self._cells:
+            was_formula = self._cells[(row, column)].data_type == 'f'
             del self._cells[(row, column)]
+            _mark_deleted_cell(self, row, column, was_formula)
 
 
     @property
@@ -554,6 +588,7 @@ class Worksheet(_WorkbookChild):
         Add a chart to the sheet
         Optionally provide a cell for the top-left anchor
         """
+        _refuse_chart_or_image_add(self, "chart")
         if anchor is not None:
             chart.anchor = anchor
         self._charts.append(chart)
@@ -564,6 +599,7 @@ class Worksheet(_WorkbookChild):
         Add an image to the sheet.
         Optionally provide a cell for the top-left anchor
         """
+        _refuse_chart_or_image_add(self, "image")
         if anchor is not None:
             img.anchor = anchor
         self._images.append(img)
@@ -669,6 +705,9 @@ class Worksheet(_WorkbookChild):
                     cell.parent = self
                     cell.column = col_idx
                     cell.row = row_idx
+                    # pre-built cells bypass the value-setter chokepoint:
+                    # mark them here or the ledger misses the whole row
+                    _mark_cell_dirty(cell)
                 else:
                     cell = Cell(self, row=row_idx, column=col_idx, value=content)
                 self._cells[(row_idx, col_idx)] = cell
@@ -718,21 +757,28 @@ class Worksheet(_WorkbookChild):
         """
         Insert row or rows before row==idx
         """
+        fixup = _structural_guard(self, "insert_rows", idx, amount)
         self._move_cells(min_row=idx, offset=amount, row_or_col="row")
         self._current_row = self.max_row
+        if fixup:
+            _finish_structural_edit(self, "insert_rows", idx, amount)
 
 
     def insert_cols(self, idx, amount=1):
         """
         Insert column or columns before col==idx
         """
+        fixup = _structural_guard(self, "insert_cols", idx, amount)
         self._move_cells(min_col=idx, offset=amount, row_or_col="column")
+        if fixup:
+            _finish_structural_edit(self, "insert_cols", idx, amount)
 
 
     def delete_rows(self, idx, amount=1):
         """
         Delete row or rows from row==idx
         """
+        fixup = _structural_guard(self, "delete_rows", idx, amount)
 
         remainder = _gutter(idx, amount, self.max_row)
 
@@ -748,12 +794,15 @@ class Worksheet(_WorkbookChild):
         self._current_row = self.max_row
         if not self._cells:
             self._current_row = 0
+        if fixup:
+            _finish_structural_edit(self, "delete_rows", idx, amount)
 
 
     def delete_cols(self, idx, amount=1):
         """
         Delete column or columns from col==idx
         """
+        fixup = _structural_guard(self, "delete_cols", idx, amount)
 
         remainder = _gutter(idx, amount, self.max_column)
 
@@ -767,6 +816,8 @@ class Worksheet(_WorkbookChild):
                 if (row, col) in self._cells:
                     del self._cells[row, col]
 
+        if fixup:
+            _finish_structural_edit(self, "delete_cols", idx, amount)
 
     def move_range(self, cell_range, rows=0, cols=0, translate=False):
         """
@@ -782,6 +833,7 @@ class Worksheet(_WorkbookChild):
             raise ValueError("Only CellRange objects can be moved")
         if not rows and not cols:
             return
+        _structural_guard(self, "move_range", None)
 
         down = rows > 0
         right = cols > 0

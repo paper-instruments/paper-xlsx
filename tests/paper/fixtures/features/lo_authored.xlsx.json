@@ -1,0 +1,19 @@
+{
+  "fixture": "lo_authored.xlsx",
+  "provenance": {
+    "app": "LibreOffice (headless convert)",
+    "version": "",
+    "notes": "chart_image.xlsx re-authored by LibreOffice: XML declarations, t=\"s\" shared strings (sst present), LO attribute order, xdr-prefixed drawing \u2014 producer-variance fixture"
+  },
+  "features": [
+    "lo_producer",
+    "chart",
+    "image",
+    "shared_strings"
+  ],
+  "ground_truth": {
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}
