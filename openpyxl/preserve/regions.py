@@ -256,7 +256,13 @@ def snapshot_row_attrs(ws):
 
 
 def diff_regions(ws, armed_snapshot):
-    """Return {tag: new_serialization} for regions the user changed."""
+    """Return {tag: new_serialization} for regions the user changed.
+
+    Rendered twice, second pass kept: the arm snapshot is the settled
+    render (ledger double-render, PLAN-v0.1 0.3), so the comparison must
+    be settled-vs-settled or an impure serializer's first-pass output
+    false-dirties the region."""
+    snapshot_regions(ws)
     current = snapshot_regions(ws)
     changed = {}
     for tag, rendered in current.items():

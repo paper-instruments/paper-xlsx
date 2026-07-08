@@ -43,7 +43,7 @@ class DirtyLedger:
                  "added_sheets", "loaded_sheet_titles", "_style_lengths",
                  "_style_fingerprint", "region_snapshots", "row_attr_snapshots",
                  "comment_snapshots", "workbook_snapshot", "core_snapshot",
-                 "custom_snapshot", "chartsheet_snapshots",
+                 "custom_snapshot", "chartsheet_snapshots", "pinned_regions",
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag")
@@ -67,6 +67,7 @@ class DirtyLedger:
         self.core_snapshot = None
         self.custom_snapshot = None
         self.chartsheet_snapshots = {} # chartsheet -> rendered
+        self.pinned_regions = {}       # ws -> {tag}: impure serializers
         self.orig_cell_styles_len = 0
         self.rich_text_mode = False
         self.sheet_states = {}         # title -> state at arm (all sheets)
@@ -85,7 +86,18 @@ class DirtyLedger:
         led.loaded_sheet_titles = frozenset(wb.sheetnames)
         led._style_lengths, led._style_fingerprint = _style_fingerprint(wb)
         for ws in wb.worksheets:
-            led.region_snapshots[ws] = snapshot_regions(ws)
+            # double-render (PLAN-v0.1 0.3): a serializer with render-time
+            # side effects disagrees with itself across passes. Regions
+            # where that happens are PINNED — the snapshot keeps the
+            # settled second pass, and the saver refuses edits to them
+            # rather than trusting an untrustworthy render (an impure
+            # serializer must land in "pinned", never in "false dirty")
+            first = snapshot_regions(ws)
+            settled = snapshot_regions(ws)
+            led.pinned_regions[ws] = {
+                tag for tag, rendered in settled.items()
+                if first.get(tag) != rendered}
+            led.region_snapshots[ws] = settled
             led.row_attr_snapshots[ws] = snapshot_row_attrs(ws)
             led.comment_snapshots[ws] = _comment_snapshot(ws)
         for cs in wb.chartsheets:

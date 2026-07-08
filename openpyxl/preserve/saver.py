@@ -147,6 +147,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     # ---- loaded-sheet plans ----------------------------------------------
     plan = {}
     dirty_by_part = {}
+    region_claims = {}        # part -> region tags knowingly rewritten
     baselines = {}            # part -> shifted baseline bytes (Phase 6b)
     sheet_rels_updates = {}   # part_name -> new payload
     for ws in workbook.worksheets:
@@ -154,6 +155,19 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             continue
         ledger_dirty = led.dirty_coordinates(ws)
         all_region_changes = diff_regions(ws, led.region_snapshots.get(ws, {}))
+        pinned_hits = sorted(
+            led.pinned_regions.get(ws, set()) & set(all_region_changes))
+        if pinned_hits:
+            # the region's serializer disagreed with itself at arm time
+            # (render-time side effects): its output cannot be trusted to
+            # express only the user's edit, so splicing it risks silent
+            # drift — refuse instead (PLAN-v0.1 0.3)
+            _refuse(
+                "region(s) {0} changed on sheet {1!r}, but their "
+                "serializers are impure (arm-time renders disagreed with "
+                "themselves), so the model render cannot be spliced "
+                "faithfully. Reopen without preserve=True to rewrite the "
+                "sheet lossily.".format(", ".join(pinned_hits), ws.title))
         row_changes = diff_row_attrs(ws, led.row_attr_snapshots.get(ws, {}))
         comments_changed = _comments_changed(ws, led)
         shift_ops = led.shifts.get(ws, [])
@@ -255,6 +269,12 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             hyperlinks_replacement=hyperlinks_replacement,
             style_resolver=translator.resolver() if translator else None)
         dirty_by_part[part] = dirty
+        claims = set(region_changes)
+        if cf_replacement is not None:
+            claims.add("conditionalFormatting")
+        if hyperlinks_replacement is not None:
+            claims.add("hyperlinks")
+        region_claims[part] = claims
 
     # ---- calcChain cascade (D13) ------------------------------------------
     drop_calcchain = led.formulas_changed and _CALC_CHAIN in names
@@ -356,7 +376,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
     if os.environ.get("PAPER_LEDGER_CROSSCHECK") == "1" and plan:
         from .crosscheck import verify_splice
-        verify_splice(source, data, dirty_by_part, baselines=baselines)
+        verify_splice(source, data, dirty_by_part, baselines=baselines,
+                      region_claims=region_claims)
 
     zipio.deliver(data, target)
     return True
