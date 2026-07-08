@@ -269,6 +269,32 @@ stable release tag.
   references (unresolved => intersects everything) — the Phase 6a guard input.
 - Full suite: 2782 passed, 6 skipped, 7 xfailed.
 
+## Phase 5 — The LibreOffice oracle (2026-07-08)
+
+- `openpyxl/oracle.py`: driver per the measured Q10 rules — temp copies only
+  (tested invariant: the caller's path never appears in the soffice argv),
+  per-invocation `-env:UserInstallation` profiles, success = rc 0 AND output
+  exists, stderr never parsed, process-group kill on timeout
+  (`OracleTimeoutError`), typed absence (`OracleUnavailableError`, detection
+  soffice -> libreoffice -> macOS app bundle).
+- `recalc(source, *, output_path/in_place, timeout)` -> `RecalcResult`
+  (schema `oracle_recalc` v1, skill-compatible shape: status/cells_scanned/
+  formula_cells/error_cells/errors with sheet+cell+token).
+- `certify(source)` -> CERTIFIED / DIVERGED (addresses + both values) /
+  BASELINE_UNVERIFIABLE (empty `<v></v>` counts as absent), tolerance
+  rel 1e-9 / abs 1e-11, text and errors exact; cells downstream of
+  NOW/TODAY/RAND/RANDBETWEEN excluded via a taint fixpoint over the
+  dependency sketch; INDIRECT/OFFSET stay in (pinned §3.7).
+- **Operational discovery beyond Phase 0:** LibreOffice's headless converter
+  does NOT honor calcPr fullCalcOnLoad/forceFullCalc for cells that already
+  carry cached values — a tampered-cache fixture "certified" against its own
+  tamper. The driver now (a) byte-patches calcPr on the temp copy and
+  (b) pre-seeds each fresh profile with OOXMLRecalcMode=0 ("always
+  recalculate on load") via registrymodifications.xcu — measured to recompute
+  over existing caches. Without (b) the oracle premise silently fails.
+- Custody never depends on this module (absence only affects oracle APIs).
+- Full suite: 2796 passed, 6 skipped, 7 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment
