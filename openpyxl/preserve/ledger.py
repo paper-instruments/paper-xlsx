@@ -259,11 +259,12 @@ def allow_sheet_removal(wb, ws):
     return False
 
 
-def refuse_structural_edit(ws, operation):
-    """Row/column shifts under preserve are refused in v0: the shift would
-    silently strand formulas, defined names, CF/DV ranges, merges, tables,
-    and chart series that reference the shifted cells (PR-0 D8; Phase 6
-    adds reference-aware handling). Raised BEFORE any mutation."""
+def refuse_structural_edit(ws, operation, index=None):
+    """Row/column shifts under preserve are refused in v0, with the precise
+    list of what the shift would strand (PLAN Phase 6a): formulas (cross-
+    sheet included), defined names, CF/DV ranges, merges, tables, and
+    series ranges inside preserved chart bytes. Raised BEFORE any mutation;
+    Phase 6b upgrades refusal to a correct rewrite."""
     led = _armed_ledger_for_ws(ws)
     if led is None:
         return
@@ -271,15 +272,20 @@ def refuse_structural_edit(ws, operation):
         # sheets created in-session are generated whole at save: the
         # original package holds nothing they could corrupt
         return
+    impacts = []
+    if index is not None:
+        from .structural import analyze_shift
+        impacts = analyze_shift(ws, operation, index)
+    lines = "".join("\n  - " + line for line in impacts) or (
+        "\n  - (no intersecting references found, but row/column shifts "
+        "also renumber every cell address below/right of the edit)")
     raise UnsupportedStructureError(
-        "{0}() is not supported on preserved sheet {1!r}: shifting rows or "
-        "columns silently corrupts formulas, defined names, conditional "
-        "formatting, merged ranges, tables and chart references that point "
-        "at the shifted cells. Nothing was changed. Options: perform the "
-        "edit without preserve=True (stock behavior: references are NOT "
-        "updated — the numbers will look plausible and be wrong), or "
-        "restructure the change to avoid shifting.".format(
-            operation, ws.title)
+        "{0}() on preserved sheet {1!r} would silently corrupt:{2}\n"
+        "Nothing was changed. Options: restructure the edit to avoid "
+        "shifting (e.g. write into empty rows), or perform it without "
+        "preserve=True and accept stock behavior (references are NOT "
+        "updated — the numbers will look plausible and be wrong).".format(
+            operation, ws.title, lines)
     )
 
 

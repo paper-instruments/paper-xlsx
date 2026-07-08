@@ -295,6 +295,24 @@ stable release tag.
 - Custody never depends on this module (absence only affects oracle APIs).
 - Full suite: 2796 passed, 6 skipped, 7 xfailed.
 
+## Phase 6a — The structural-edit guard (2026-07-08)
+
+- `openpyxl/preserve/structural.py`: `analyze_shift` enumerates what a
+  row/column shift would strand — formulas via the dependency sketch
+  (cross-sheet included), defined names via destinations, merged ranges,
+  CF/DV sqrefs, table extents, and series ranges inside PRESERVED chart
+  bytes (byte-scan of retained chart parts for the sheet name — raw-copied
+  charts cannot be rewritten, so refusal is the only honest v0 answer).
+- The preserve-mode refusal (in place since 2b) is now informative: it names
+  every victim by address (e.g. 'Schedule'!B12, 'Summary'!B1, defined name
+  Growth — exactly Q11's measured 1100/6399/5400-vs-7499/6500 corruption
+  set) and the options. Battery job 3 stays green-by-refusal.
+- Stock path: loaded workbooks now get `StructuralShiftWarning` on
+  insert/delete rows/cols and move_range ("moves cells but updates
+  NOTHING that points at them"); fresh Workbook() construction stays
+  silent; stock behavior itself is unchanged.
+- Full suite: 2803 passed, 6 skipped, 7 xfailed.
+
 ## Release Safety
 
 The repository is private. The release workflow targets the `pypi` environment

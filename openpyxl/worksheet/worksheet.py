@@ -56,6 +56,25 @@ from openpyxl.preserve.ledger import (
     mark_deleted_cell as _mark_deleted_cell,
     refuse_structural_edit as _refuse_structural_edit,
 )
+
+
+def _structural_guard(ws, operation, index):
+    """Preserve mode: typed refusal with the stranded-reference analysis
+    (Phase 6a). Stock mode on a LOADED workbook: loud warning — the shift
+    updates nothing that points at the moved cells."""
+    wb = getattr(ws, "parent", None)
+    led = getattr(wb, "_paper_ledger", None) if wb is not None else None
+    if led is not None and led.armed:
+        _refuse_structural_edit(ws, operation, index)
+        return
+    if wb is not None and getattr(wb, "_paper_loss_inventory", None) is not None:
+        import warnings as _warnings
+
+        from openpyxl.errors import StructuralShiftWarning
+        from openpyxl.preserve.structural import STOCK_WARNING
+
+        _warnings.warn(StructuralShiftWarning(STOCK_WARNING.format(operation)),
+                       stacklevel=3)
 from .properties import WorksheetProperties
 from .pagebreak import RowBreak, ColBreak
 from .scenario import ScenarioList
@@ -724,7 +743,7 @@ class Worksheet(_WorkbookChild):
         """
         Insert row or rows before row==idx
         """
-        _refuse_structural_edit(self, "insert_rows")
+        _structural_guard(self, "insert_rows", idx)
         self._move_cells(min_row=idx, offset=amount, row_or_col="row")
         self._current_row = self.max_row
 
@@ -733,7 +752,7 @@ class Worksheet(_WorkbookChild):
         """
         Insert column or columns before col==idx
         """
-        _refuse_structural_edit(self, "insert_cols")
+        _structural_guard(self, "insert_cols", idx)
         self._move_cells(min_col=idx, offset=amount, row_or_col="column")
 
 
@@ -741,7 +760,7 @@ class Worksheet(_WorkbookChild):
         """
         Delete row or rows from row==idx
         """
-        _refuse_structural_edit(self, "delete_rows")
+        _structural_guard(self, "delete_rows", idx)
 
         remainder = _gutter(idx, amount, self.max_row)
 
@@ -763,7 +782,7 @@ class Worksheet(_WorkbookChild):
         """
         Delete column or columns from col==idx
         """
-        _refuse_structural_edit(self, "delete_cols")
+        _structural_guard(self, "delete_cols", idx)
 
         remainder = _gutter(idx, amount, self.max_column)
 
@@ -792,7 +811,7 @@ class Worksheet(_WorkbookChild):
             raise ValueError("Only CellRange objects can be moved")
         if not rows and not cols:
             return
-        _refuse_structural_edit(self, "move_range")
+        _structural_guard(self, "move_range", None)
 
         down = rows > 0
         right = cols > 0

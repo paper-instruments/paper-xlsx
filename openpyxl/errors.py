@@ -53,6 +53,12 @@ class OracleTimeoutError(PaperRefusal):
     """The LibreOffice oracle did not finish within the allowed time."""
 
 
+class StructuralShiftWarning(UserWarning):
+    """A row/column shift on a loaded workbook: the cells move but nothing
+    that references them is updated — formulas, defined names and chart
+    ranges keep pointing at the old cells."""
+
+
 class LossySaveWarning(UserWarning):
     """Loud warning on a save path that is about to rebuild or drop content
     it cannot preserve.
