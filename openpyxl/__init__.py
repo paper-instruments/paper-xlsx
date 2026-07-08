@@ -17,3 +17,4 @@ __license__ = constants.__license__
 __maintainer_email__ = constants.__maintainer_email__
 __url__ = constants.__url__
 __version__ = constants.__version__
+__paper_version__ = "0.1.0"

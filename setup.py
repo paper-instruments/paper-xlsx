@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-"""Setup script for packaging openpyxl.
+"""Setup script for packaging paper-xlsx.
 
 To build a package for distribution:
     python setup.py sdist
@@ -39,6 +39,8 @@ __url__ = constants.__url__
 __version__ = constants.__version__
 __python__ = constants.__python__
 
+PAPER_VERSION = "0.1.0"
+
 def cythonize_modules():
     from Cython.Build import cythonize
     return cythonize([
@@ -60,28 +62,30 @@ else:
 
 
 setup(
-    name='openpyxl',
+    name='paper-xlsx',
     packages=find_packages(".",
         exclude=["*.tests", "scratchpad*", "*.c",]
         ),
     ext_modules=ext_modules,
     package_dir={},
     # metadata
-    version=__version__,
+    version=PAPER_VERSION,
     description="A Python library to read/write Excel 2010 xlsx/xlsm files",
     long_description=README,
-    author=__author__,
+    author=f"{__author__}; Paper Instruments",
     author_email=__author_email__,
-    url=__url__,
+    url="https://github.com/The-LLM-Data-Company/paper-xlsx",
     license=__license__,
+    maintainer="Paper Instruments",
     python_requires=f">={__python__}",
     install_requires=[
         'et_xmlfile',
         ],
     project_urls={
         'Documentation': 'https://openpyxl.readthedocs.io/en/stable/',
-        'Source': 'https://foss.heptapod.net/openpyxl/openpyxl',
-        'Tracker': 'https://foss.heptapod.net/openpyxl/openpyxl/-/issues',
+        'Source': 'https://github.com/The-LLM-Data-Company/paper-xlsx',
+        'Tracker': 'https://github.com/The-LLM-Data-Company/paper-xlsx/issues',
+        'Upstream': 'https://foss.heptapod.net/openpyxl/openpyxl',
     },
     classifiers=[
                  'Development Status :: 5 - Production/Stable',

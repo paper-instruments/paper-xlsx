@@ -1,59 +1,49 @@
-.. image:: https://coveralls.io/repos/bitbucket/openpyxl/openpyxl/badge.svg?branch=default
-    :target: https://coveralls.io/bitbucket/openpyxl/openpyxl?branch=default
-    :alt: coverage status
+paper-xlsx
+==========
 
-Introduction
-------------
+``paper-xlsx`` is Paper Instruments' hard fork of ``openpyxl``, the standard
+Python library for reading and writing Excel ``.xlsx``, ``.xlsm``, ``.xltx``,
+and ``.xltm`` files.
 
-openpyxl is a Python library to read/write Excel 2010 xlsx/xlsm/xltx/xltm files.
+This fork starts from upstream ``openpyxl`` tag ``3.1.5``. The package is
+renamed for distribution, but the Python import name remains ``openpyxl``.
+That mismatch is intentional and must not be "fixed": this package is meant to
+be a drop-in replacement for existing code that says ``import openpyxl``.
 
-It was born from lack of existing library to read/write natively from Python
-the Office Open XML format.
-
-All kudos to the PHPExcel team as openpyxl was initially based on PHPExcel.
-
-
-Security
+Name map
 --------
 
-By default openpyxl does not guard against quadratic blowup or billion laughs
-xml attacks. To guard against these attacks install defusedxml.
+* GitHub repository: ``paper-xlsx``
+* PyPI distribution: ``paper-xlsx``
+* Built wheel/sdist names: ``paper_xlsx-*``
+* Python import: ``openpyxl``
+* Fork sentinel: ``openpyxl.__paper_version__``
 
-Mailing List
+Installation
 ------------
 
-The user list can be found on http://groups.google.com/group/openpyxl-users
+From PyPI::
 
+    pip install paper-xlsx
 
-Sample code::
+From the repository::
 
-    from openpyxl import Workbook
-    wb = Workbook()
+    pip install "paper-xlsx @ git+https://github.com/The-LLM-Data-Company/paper-xlsx.git@main"
 
-    # grab the active worksheet
-    ws = wb.active
+Verification
+------------
 
-    # Data can be assigned directly to cells
-    ws['A1'] = 42
+::
 
-    # Rows can also be appended
-    ws.append([1, 2, 3])
+    python -c "import openpyxl; print(openpyxl.__paper_version__)"
 
-    # Python types will automatically be converted
-    import datetime
-    ws['A2'] = datetime.datetime.now()
+Expected output::
 
-    # Save the file
-    wb.save("sample.xlsx")
+    0.1.0
 
+Fork ledger
+-----------
 
-Documentation
--------------
-
-The documentation is at: https://openpyxl.readthedocs.io
-
-* installation methods
-* code examples
-* instructions for contributing
-
-Release notes: https://openpyxl.readthedocs.io/en/stable/changes.html
+``PAPER.md`` records the upstream base tag, conversion notes, baseline test
+results, sanctioned deviations, release safety notes, and future upstream merge
+policy.
