@@ -583,6 +583,45 @@ all fixed and fixtured (tests/paper/test_gate_regressions.py):
   rebuild per save is uncached (0.5s on 50k formulas — revisit only with
   a measured case, Appendix-A-5 spirit).
 
+## Batch 2 — The part-lifecycle engine and its unlocks (2026-07-08, PLAN-v0.1)
+
+- **The engine (PR-1 1.1):** openpyxl/preserve/lifecycle.py —
+  PartPlan.add_part/remove_part: part + content-type (Override AND
+  Default) + relationship planned in lockstep, applied by the build loop
+  after ALL registrations (an ordering bug caught mid-batch: plans
+  composed before the custom-props registration silently dropped its CT
+  entry). reserve_rid gives every planner touching one rels part a shared
+  sequential allocator (two independent next_rid computations collide).
+  First consumers: the calcChain cascade (migrated), custom-props
+  creation AND deletion (both were v0 refusals), styles.xml creation for
+  styled writes into styles-less packages (cells write model indices —
+  a fresh part shares the model numbering), and wb.replace_part(name,
+  bytes) — the raw media-swap escape hatch with call-time guards.
+- **Tables (PR-1 1.2):** loaded-table mutation re-renders the part from
+  the fully-modeled Table, located by displayName through the ORIGINAL
+  sheet rels; geometry guards (anchor fixed, data region non-empty,
+  column count == tableColumns, autoFilter inside ref). Add/remove via
+  the engine with the sheet tableParts element rebuilt as saver-crafted
+  bytes riding the region splice (per-element xmlns:r; surviving
+  originals keep their rIds verbatim). preserve.tables.append_row: totals
+  row stays last (cells move down), calculated columns re-derive
+  (explicit formula or the column pattern via Translator), autoFilter
+  synced, ref extended; refuses content below the table. Battery jobs 10
+  and 18: CORRECT. Mid-batch catch: a table-mutation-only session
+  initially skipped the saver's work gate — the silent fourth outcome
+  resurrected for exactly one edit shape; fixed and battery-tested.
+- **Comments (PR-1 1.3):** creation on comment-free sheets — comments
+  part + legacy-VML part generated whole (CommentSheet/from_cell, the
+  stock writer's own machinery), one <legacyDrawing r:id> spliced;
+  vml Default appended to [Content_Types] when absent. Sheets already
+  carrying comment machinery keep refusing (editing preserved VML is
+  Batch-4-class work). Battery job 19: CORRECT.
+- Scope refusals kept honest: comments/tables + hyperlink changes on the
+  same sheet in one save refuse (the hyperlink planner allocates rIds
+  outside the engine); comments+tables coexist via reserve_rid (tested).
+
+Suite: 2975 both arms.
+
 ## Pinned-surface debt ledger
 
 Debts are pinned surface not yet produced-and-tested; each names its

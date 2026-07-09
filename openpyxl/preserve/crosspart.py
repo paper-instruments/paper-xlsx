@@ -196,6 +196,17 @@ def ct_append_overrides(data, overrides):
     return apply_edits(data, [_insert_into(root, data, payload)])
 
 
+def ct_append_defaults(data, defaults):
+    """Append Default entries; ``defaults`` = [(extension, content_type)].
+    Callers check for existing extensions first (duplicates are illegal)."""
+    root = scan_small(data, "Types", max_depth=1)
+    payload = b"".join(
+        b'<Default Extension="%s" ContentType="%s"/>' % (
+            _escape(ext), _escape(ctype))
+        for ext, ctype in defaults)
+    return apply_edits(data, [_insert_into(root, data, payload)])
+
+
 def ct_remove_override(data, part_name):
     """Remove the Override for ``part_name``; no-op when absent."""
     root = scan_small(data, "Types", max_depth=1)

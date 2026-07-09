@@ -609,17 +609,32 @@ class TestBatteryToday:
         assert wb2["Sheet1"].tables["New"].ref == "A1:B3"
         assert wb2["Sheet1"]["B2"].value is not None   # data intact
 
-    # job 19 — today: refuse at save. Batch 2 flips to correct.
-    def test_job19_comment_on_comment_free_sheet_refuses(
+    # job 19 — Batch-2 state: CORRECT (comment creation on comment-free
+    # sheets via the lifecycle engine; was a save-time refusal).
+    def test_job19_comment_on_comment_free_sheet_is_correct(
             self, fixture_copy, tmp_path):
         from openpyxl.comments import Comment
-        from openpyxl.errors import UnsupportedStructureError
 
-        wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"),
-                           preserve=True)
-        wb["Sheet1"]["B2"].comment = Comment("note", "paper")
-        with pytest.raises(UnsupportedStructureError, match="comment"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"]["B2"].comment = Comment("reviewed: ok", "paper")
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        parts = part_payloads(out)
+        comments_part = next(p for n, p in parts.items()
+                             if "comment" in n and n.endswith(".xml"))
+        assert b"reviewed: ok" in comments_part
+        vml_part = next(p for n, p in parts.items() if n.endswith(".vml"))
+        assert vml_part
+        sheet = next(p for n, p in parts.items()
+                     if n.startswith("xl/worksheets/"))
+        assert b"<legacyDrawing" in sheet
+        assert b'Extension="vml"' in parts["[Content_Types].xml"]
+        wb2 = load_workbook(out)
+        comment = wb2["Sheet1"]["B2"].comment
+        assert comment is not None
+        assert "reviewed: ok" in comment.text
+        assert wb2["Sheet1"]["B2"].value is not None   # cell data intact
 
     # job 20 — today: refuse (x14 twin desync gate). Batch 3 flips to
     # correct twin-sync.

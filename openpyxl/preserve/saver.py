@@ -223,9 +223,6 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 or comments_changed or shift_ops or led.rich_text_mode
                 or table_changes):
             continue
-        if comments_changed:
-            _refuse("comments changed on sheet {0!r}; comment-part editing "
-                    "is not supported in v0.".format(ws.title))
         table_lifecycle = "tableParts" in all_region_changes
 
         part = sheet_parts.get(ws.title)
@@ -240,6 +237,22 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
             tables_mod.plan_table_mutations(
                 workbook, ws, part, zin, table_changes, plan)
+        legacy_drawing_bytes = None
+        if comments_changed:
+            from . import comments as comments_mod
+
+            if comments_mod.sheet_has_comment_machinery(zin, part, names):
+                _refuse("comments changed on sheet {0!r}, which already "
+                        "carries comment parts; editing preserved comment/"
+                        "VML machinery is not supported yet (comment "
+                        "CREATION on comment-free sheets is).".format(
+                            ws.title))
+            if led.comment_snapshots.get(ws):
+                _refuse("internal: comment snapshot mismatch on a sheet "
+                        "without comment machinery ({0!r}).".format(
+                            ws.title))
+            legacy_drawing_bytes = comments_mod.plan_comment_creation(
+                workbook, ws, part, zin, part_plan, names)
         table_parts_bytes = _UNSET = object()
         if table_lifecycle:
             # Batch 2 (PR-1 1.2): table ADD/REMOVE via the lifecycle
@@ -281,6 +294,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                           if tag not in _CUSTOM_REGIONS}
         if table_lifecycle and table_parts_bytes is not _UNSET:
             region_changes["tableParts"] = table_parts_bytes
+        if legacy_drawing_bytes is not None:
+            region_changes["legacyDrawing"] = legacy_drawing_bytes
 
         # PR-0 D2 applies to ROW and COLUMN styles too: dict(RowDimension)
         # and ColumnDimension.to_tree() carry MODEL style indices — every

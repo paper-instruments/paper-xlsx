@@ -297,8 +297,7 @@ def plan_table_lifecycle(wb, ws, sheet_part, zin, armed_names, plan,
 
     # additions: engine creates the part + CT + rel (explicit rIds so the
     # tablePart elements can reference them now)
-    next_rid = crosspart.rels_next_rid(zin.read(rels_part)) \
-        if rels_part in names else 1
+    rels_payload = zin.read(rels_part) if rels_part in names else None
     existing_ids = set()
     existing_numbers = []
     for n in names:
@@ -323,7 +322,7 @@ def plan_table_lifecycle(wb, ws, sheet_part, zin, armed_names, plan,
         if not payload.startswith(b"<?xml"):
             payload = (b'<?xml version="1.0" encoding="UTF-8" '
                        b'standalone="yes"?>\n' + payload)
-        rid = "rId{0}".format(next_rid + i)
+        rid = part_plan.reserve_rid(rels_part, rels_payload)
         part_plan.add_part(part_name, payload,
                            content_type=TABLE_CONTENT_TYPE,
                            relate_from=sheet_part,

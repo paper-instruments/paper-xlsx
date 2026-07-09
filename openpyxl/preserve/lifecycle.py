@@ -35,9 +35,27 @@ class PartPlan:
         self.added = {}          # name -> payload
         self.dropped = set()     # names omitted from the copy loop
         self.ct_overrides = []   # (part_name, content_type)
+        self.ct_defaults = []    # (extension, content_type)
         self.ct_removals = []    # part_names
         self.rel_appends = {}    # rels_part -> [(rid, type, target, mode)]
         self.rel_removals = {}   # rels_part -> [target suffix]
+        self._rid_base = {}      # rels_part -> first reserved number
+        self._rid_reserved = {}  # rels_part -> count reserved
+
+    def reserve_rid(self, rels_part, existing_payload):
+        """Sequential rId allocation shared by every planner touching one
+        rels part (two independent next_rid computations collide)."""
+        base = self._rid_base.get(rels_part)
+        if base is None:
+            base = crosspart.rels_next_rid(existing_payload) \
+                if existing_payload else 1
+            self._rid_base[rels_part] = base
+        n = self._rid_reserved.get(rels_part, 0)
+        self._rid_reserved[rels_part] = n + 1
+        return "rId{0}".format(base + n)
+
+    def add_default(self, extension, content_type):
+        self.ct_defaults.append((extension, content_type))
 
     # -- the two verbs ---------------------------------------------------
 
@@ -93,6 +111,11 @@ class PartPlan:
         if self.ct_overrides:
             payload = crosspart.ct_append_overrides(payload,
                                                     self.ct_overrides)
+        for ext, ctype in self.ct_defaults:
+            marker = b'Extension="%s"' % ext.encode("ascii")
+            if marker not in payload:
+                payload = crosspart.ct_append_defaults(
+                    payload, [(ext, ctype)])
         return payload
 
     def apply_rels(self, rels_part, payload):
@@ -109,11 +132,18 @@ class PartPlan:
         if appends:
             if payload is None:
                 payload = crosspart.render_rels_document([])
+            base = self._rid_base.get(rels_part)
+            reserved = self._rid_reserved.get(rels_part, 0)
             next_rid = crosspart.rels_next_rid(payload)
+            if base is not None:
+                next_rid = max(next_rid, base + reserved)
+            auto = 0
             resolved = []
-            for i, (rid, rel_type, target, mode) in enumerate(appends):
-                resolved.append((rid or "rId{0}".format(next_rid + i),
-                                 rel_type, target, mode))
+            for (rid, rel_type, target, mode) in appends:
+                if rid is None:
+                    rid = "rId{0}".format(next_rid + auto)
+                    auto += 1
+                resolved.append((rid, rel_type, target, mode))
             payload = crosspart.rels_append(payload, resolved)
         return payload
 

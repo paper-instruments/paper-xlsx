@@ -234,3 +234,54 @@ class TestTableLifecycle:
         ws["A8"] = "in the way"
         with pytest.raises(UnsupportedStructureError, match="below"):
             append_row(ws, "RegionTable", ["X", 1])
+
+
+class TestCommentCreation:
+
+    def test_comment_edit_and_remove_before_save(self, fixture_copy,
+                                                  tmp_path):
+        from openpyxl.comments import Comment
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Sheet1"]
+        ws["A1"].comment = Comment("draft", "paper")
+        ws["A1"].comment = Comment("final", "paper")   # replaced pre-save
+        ws["B2"].comment = Comment("gone", "paper")
+        ws["B2"].comment = None                        # removed pre-save
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert "final" in wb2["Sheet1"]["A1"].comment.text
+        assert wb2["Sheet1"]["B2"].comment is None
+
+    def test_comment_on_sheet_with_existing_machinery_refuses(
+            self, fixture_copy, tmp_path):
+        from openpyxl.comments import Comment
+        from openpyxl.errors import UnsupportedStructureError
+
+        src = fixture_copy("gauntlet/gauntlet.xlsx")   # Model has comments
+        with open(src, "rb") as f:
+            before = f.read()
+        wb = load_workbook(src, preserve=True)
+        wb["Model"]["G1"].comment = Comment("new", "paper")
+        with pytest.raises(UnsupportedStructureError, match="already"):
+            wb.save(str(tmp_path / "o.xlsx"))
+        with open(src, "rb") as f:
+            assert f.read() == before
+
+    def test_comments_and_new_table_coexist_via_reserved_rids(
+            self, fixture_copy, tmp_path):
+        from openpyxl.comments import Comment
+        from openpyxl.worksheet.table import Table
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Sheet1"]
+        ws["A1"].comment = Comment("note", "paper")
+        ws.add_table(Table(displayName="T", ref="A1:B3"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Sheet1"]["A1"].comment is not None
+        assert "T" in wb2["Sheet1"].tables
