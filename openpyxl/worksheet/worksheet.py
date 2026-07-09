@@ -786,6 +786,15 @@ class Worksheet(_WorkbookChild):
     def insert_rows(self, idx, amount=1):
         """
         Insert row or rows before row==idx
+
+        Under ``preserve=True`` on a loaded sheet the fork rewrites every
+        reference that points into the shifted range (formulas, defined
+        names, chart series) and returns an ``AddressRemap`` so pre-edit
+        addresses can be remapped; a shift that would strand a reference it
+        cannot rewrite refuses with ``UnsupportedStructureError`` and
+        changes nothing. Stock loads and in-session-added sheets keep the
+        upstream behaviour — references are NOT updated — and return
+        ``None``.
         """
         fixup = _structural_guard(self, "insert_rows", idx, amount)
         self._move_cells(min_row=idx, offset=amount, row_or_col="row")
@@ -797,6 +806,12 @@ class Worksheet(_WorkbookChild):
     def insert_cols(self, idx, amount=1):
         """
         Insert column or columns before col==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a shift that would strand a reference refuses with
+        ``UnsupportedStructureError`` and changes nothing. Stock loads and
+        added sheets keep upstream behaviour and return ``None``.
         """
         fixup = _structural_guard(self, "insert_cols", idx, amount)
         self._move_cells(min_col=idx, offset=amount, row_or_col="column")
@@ -807,6 +822,13 @@ class Worksheet(_WorkbookChild):
     def delete_rows(self, idx, amount=1):
         """
         Delete row or rows from row==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a delete that would strand a reference (or drop cells a chart or
+        name still points at) refuses with ``UnsupportedStructureError``
+        and changes nothing. Stock loads and added sheets keep upstream
+        behaviour and return ``None``.
         """
         fixup = _structural_guard(self, "delete_rows", idx, amount)
 
@@ -831,6 +853,12 @@ class Worksheet(_WorkbookChild):
     def delete_cols(self, idx, amount=1):
         """
         Delete column or columns from col==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a delete that would strand a reference refuses with
+        ``UnsupportedStructureError`` and changes nothing. Stock loads and
+        added sheets keep upstream behaviour and return ``None``.
         """
         fixup = _structural_guard(self, "delete_cols", idx, amount)
 
@@ -856,6 +884,12 @@ class Worksheet(_WorkbookChild):
         right if cols > 0 and left if cols < 0
         Existing cells will be overwritten.
         Formulae and references will not be updated.
+
+        Under ``preserve=True`` the move lands as tracked cell edits and
+        refuses with ``UnsupportedStructureError`` (changing nothing) when
+        it cannot keep the sheet coherent — e.g. merged ranges, tables,
+        conditional formatting or data validation intersecting either
+        rectangle, or outside formulas that reference the moved block.
         """
         if isinstance(cell_range, str):
             cell_range = CellRange(cell_range)

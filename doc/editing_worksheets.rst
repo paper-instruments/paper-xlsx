@@ -33,6 +33,17 @@ To delete the columns ``F:H``::
     As a result, client code **must** implement the functionality required in
     any particular use case.
 
+.. note::
+
+    This out-of-scope stance is the stock behaviour. Under **paper-xlsx
+    preserve mode** (``load_workbook(path, preserve=True)``) a row/column
+    shift *does* manage those dependencies: formulae, defined names and
+    chart series that point into the shifted range are rewritten, and the
+    method returns an ``AddressRemap`` for remapping pre-edit addresses.
+    A shift that would strand a reference it cannot rewrite refuses with a
+    typed ``UnsupportedStructureError`` — enumerating exactly what would
+    break — rather than silently corrupting the sheet. See :doc:`paper`.
+
 
 Moving ranges of cells
 ----------------------

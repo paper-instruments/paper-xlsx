@@ -380,6 +380,15 @@ You can use the :func:`openpyxl.load_workbook` to open an existing workbook::
     shapes will be lost from existing files if they are opened and saved with
     the same name.
 
+.. note ::
+
+    This loss applies to the stock save path. Under **paper-xlsx preserve
+    mode** (``load_workbook(path, preserve=True)``) the original package
+    bytes are the source of truth, so unmodelled content — shapes, charts,
+    pivots, VBA, formatting — survives a save byte-identical, and edits
+    that cannot be made safely refuse rather than silently drop it. See
+    :doc:`paper`.
+
 
 Errors loading workbooks
 ------------------------
