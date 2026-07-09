@@ -164,7 +164,9 @@ def analyze_shift(ws, kind, index):
     # preserved charts: their XML is raw retained bytes — a shift makes them
     # point at wrong rows with no error anywhere (PR-0 §8: refusal is the
     # only honest v0 answer on chart-referenced sheets)
-    charts = _charts_referencing(wb, ws.title)
+    led_ref = getattr(wb, "_paper_ledger", None)
+    chart_title = led_ref.renames.get(ws, ws.title) if led_ref else ws.title
+    charts = _charts_referencing(wb, chart_title)
     if charts:
         impacts.append(
             "preserved chart(s) ({0}) reference this sheet; their series "
@@ -245,7 +247,9 @@ def shift_blockers(ws, operation, index, amount=1):
     # rebases run at edit time in order, the byte renumber replays the
     # recorded ops in order at save (PLAN-v0.1 3.3 retired the
     # one-shift-per-session refusal)
-    part_payload = _sheet_payload(wb, ws.title)
+    led_ref = getattr(wb, "_paper_ledger", None)
+    lookup_title = led_ref.renames.get(ws, ws.title) if led_ref else ws.title
+    part_payload = _sheet_payload(wb, lookup_title)
     if part_payload is None:
         blockers.append("the sheet's package part could not be located")
         return blockers
@@ -256,6 +260,11 @@ def shift_blockers(ws, operation, index, amount=1):
     if b"t=\"array\"" in part_payload or b"t='array'" in part_payload:
         blockers.append("the sheet carries array formulas (ref rewriting "
                         "for spill ranges is not supported in v0)")
+    if b"t=\"dataTable\"" in part_payload \
+            or b"t='dataTable'" in part_payload:
+        blockers.append("the sheet carries what-if data tables; their "
+                        "ref/r1/r2 inputs live in unmodeled bytes and "
+                        "would silently mis-shift (Batch-3 gate)")
     if any(cell._comment is not None for cell in ws._cells.values()):
         blockers.append("the sheet carries comments; their anchors live in "
                         "comment/VML parts the shift cannot rewrite")

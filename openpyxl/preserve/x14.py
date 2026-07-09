@@ -83,22 +83,27 @@ def plan_cf_composed(wb, ws, scan, original, armed_blocks):
     new_blocks = []
     sqref_patches = {}                    # guid -> new sqref bytes
 
-    for cur, cur_sig in zip(current, current_sigs):
-        matched = None
+    def _match(cur, cur_sig, position):
+        # ORDER-PRESERVING: prefer the same position, then the earliest
+        # unconsumed match (byte-identical blocks must never cross-steal
+        # each other's twins — Batch-3 gate)
+        if position < len(armed_blocks) and not consumed[position] \
+                and armed_blocks[position] == cur:
+            return ("same", position)
         for j, armed in enumerate(armed_blocks):
             if not consumed[j] and armed == cur:
-                matched = ("same", j)
-                break
+                return ("same", j)
+        if position < len(armed_blocks) and not consumed[position] \
+                and armed_sigs[position] == cur_sig:
+            return ("sqref", position)
+        for j, sig in enumerate(armed_sigs):
+            if not consumed[j] and sig == cur_sig:
+                return ("sqref", j)
+        return None
+
+    for pos, (cur, cur_sig) in enumerate(zip(current, current_sigs)):
+        matched = _match(cur, cur_sig, pos)
         if matched is None:
-            for j, sig in enumerate(armed_sigs):
-                if not consumed[j] and sig == cur_sig:
-                    matched = ("sqref", j)
-                    break
-        if matched is None:
-            if b"<extLst" in cur:
-                _refuse("cannot sync conditional formatting on sheet "
-                        "{0!r}: a new or modified rule carries extension "
-                        "content.".format(ws.title))
             new_blocks.append(cur)
             continue
         kind, j = matched
@@ -118,10 +123,25 @@ def plan_cf_composed(wb, ws, scan, original, armed_blocks):
             for guid in _X14_ID_RE.findall(original_bytes[j]):
                 sqref_patches[guid] = new_sqref
 
+    # an unconsumed twin-bearing block whose range a NEW block claims is a
+    # MODIFICATION, not a deletion: re-rendering would lose the <x14:id>
+    # pointer, so it refuses (Batch-3 gate: modification silently deleted
+    # the twin — the exact battery-job-1 carnage this module prevents)
+    new_sqrefs = {_block_sqref(nb) for nb in new_blocks}
     deleted_guids = set()
     for j, used in enumerate(consumed):
         if not used:
-            deleted_guids.update(_X14_ID_RE.findall(original_bytes[j]))
+            guids = _X14_ID_RE.findall(original_bytes[j])
+            if guids and _block_sqref(armed_blocks[j]) in new_sqrefs:
+                _refuse("cannot sync conditional formatting on sheet "
+                        "{0!r}: a rule carrying an x14 twin (range {1}) "
+                        "was MODIFIED; re-rendering it would orphan the "
+                        "twin. Delete and recreate the rule, or edit "
+                        "without preserve=True.".format(
+                            ws.title,
+                            _block_sqref(armed_blocks[j]).decode("ascii",
+                                                                 "replace")))
+            deleted_guids.update(guids)
             # a deleted block with NO twin needs no extLst work; blocks
             # with twins get their entries removed below
 
@@ -159,10 +179,16 @@ def _patch_twins(ws, ext_bytes, sqref_patches, deleted_guids):
         out.append(ext_bytes[pos:m.start()])
         entry = m.group(0)
         guids = set(_X14_ID_RE.findall(entry)) or set(
-            re.findall(br'\sid="(\{[^}]+\})"', entry))
+            g1 or g2 for g1, g2 in re.findall(
+                br'\sid=(?:"(\{[^}]+\})"|\'(\{[^}]+\})\')', entry))
         if guids and guids <= deleted_guids:
             pos = m.end()
             continue                          # twin removed with its rule
+        if guids & deleted_guids:
+            _refuse("cannot sync x14 twins on sheet {0!r}: a twin entry "
+                    "carries rules for BOTH deleted and surviving classic "
+                    "blocks; per-rule twin surgery is not "
+                    "supported.".format(ws.title))
         patch_guids = guids & set(sqref_patches)
         if patch_guids:
             new_sqref = sqref_patches[next(iter(patch_guids))]
@@ -194,8 +220,12 @@ def check_dv_coexistence(ws, scan, original):
     x14_refs = []
     for span in scan.regions.get("extLst", []):
         blob = original[span.start:span.end]
-        if b"dataValidations" not in blob:
+        dv_m = re.search(
+            br"<(\w+):dataValidations\b.*?</\1:dataValidations>", blob,
+            re.S)
+        if dv_m is None:
             continue
+        blob = dv_m.group(0)                 # only the DV ext's sqrefs
         for m in _XM_SQREF_RE.finditer(blob):
             for ref in m.group(1).decode("utf-8", "replace").split():
                 try:

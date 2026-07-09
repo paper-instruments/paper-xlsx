@@ -46,7 +46,7 @@ class DirtyLedger:
                  "custom_snapshot", "chartsheet_snapshots", "pinned_regions",
                  "object_snapshots", "external_links_snapshot",
                  "protection_warned", "replaced_parts", "renames",
-                 "sheet_order", "removed_sheets",
+                 "sheet_order", "removed_sheets", "value_overwrites",
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag")
@@ -78,6 +78,7 @@ class DirtyLedger:
         self.renames = {}                # ws -> ORIGINAL title (3.2)
         self.sheet_order = []            # _sheets titles at arm (3.2)
         self.removed_sheets = []         # ORIGINAL titles removed (3.2)
+        self.value_overwrites = {}       # ws -> coords whose VALUE changed
         self.orig_cell_styles_len = 0
         self.rich_text_mode = False
         self.sheet_states = {}         # title -> state at arm (all sheets)
@@ -380,9 +381,12 @@ def _armed_ledger_for_ws(ws):
     return _armed_ledger_for_wb(wb)
 
 
-def mark_cell_dirty(cell, formula_involved=False):
+def mark_cell_dirty(cell, formula_involved=False, value_change=False):
     """Called from Cell mutation chokepoints (value bind, style set,
-    hyperlink/comment/data_type assignment)."""
+    hyperlink/comment/data_type assignment). ``value_change`` marks the
+    coordinate as a VALUE overwrite — the only case where a cell's cm/vm
+    rich-value metadata may drop (Batch-3 gate: style-only re-emissions
+    and dissolution re-emits must carry it)."""
     ws = cell.parent
     if ws is None or cell.row is None or cell.column is None:
         # standalone cells (write-only compatibility) have no coordinates
@@ -392,6 +396,9 @@ def mark_cell_dirty(cell, formula_involved=False):
     if led is None:
         return
     led.mark_cell(ws, cell.row, cell.column)
+    if value_change:
+        led.value_overwrites.setdefault(ws, set()).add(
+            (cell.row, cell.column))
     if formula_involved:
         led.formulas_changed = True
 
@@ -461,6 +468,7 @@ def mark_deleted_cell(ws, row, column, was_formula):
     if led is None:
         return
     led.mark_cell(ws, row, column)
+    led.value_overwrites.setdefault(ws, set()).add((row, column))
     if was_formula:
         led.formulas_changed = True
 
@@ -821,6 +829,27 @@ class RemovalReport:
             len(self.removed_parts), self.remapped_names)
 
 
+def _victim_exclusive_parts(wb, original_title):
+    """Package parts that die WITH the sheet if it is removed (its
+    exclusive relationship closure) — references from these parts back at
+    the sheet strand nothing."""
+    source = getattr(wb, "_paper_source", None)
+    if not source:
+        return frozenset()
+    import io
+    import zipfile
+
+    from .saver import _exclusive_closure, _package_info
+
+    with zipfile.ZipFile(io.BytesIO(source)) as zin:
+        names = set(zin.namelist())
+        _wb_part, mapping = _package_info(zin)
+        part = mapping.get(original_title)
+        if part is None:
+            return frozenset()
+        return frozenset(_exclusive_closure(zin, names, part))
+
+
 def audit_sheet_removal(wb, ws):
     """The reference audit before a LOADED sheet may be removed
     (PLAN-v0.1 3.2): anything on ANOTHER sheet pointing at the victim
@@ -833,6 +862,13 @@ def audit_sheet_removal(wb, ws):
     from .structural import _charts_referencing, _pivots_referencing
 
     title = ws.title
+    led = _armed_ledger_for_wb(wb)
+
+    def _refs_victim(formula):
+        probe = formula if formula.startswith("=") else "=" + formula
+        _, refs_it = rename_sheet_in_formula(probe, title, title + "_")
+        return refs_it
+
     victims = []
     for other in wb.worksheets:
         if other is ws:
@@ -842,20 +878,48 @@ def audit_sheet_removal(wb, ws):
                 continue
             # a reference the rename machinery could rewrite is exactly a
             # reference the delete would strand
-            _, refs_it = rename_sheet_in_formula(cell._value, title, title + "_")
-            if refs_it or title_in_string_literals(cell._value, title):
+            if (_refs_victim(cell._value)
+                    or title_in_string_literals(cell._value, title)):
                 victims.append("{0}!{1}".format(other.title,
                                                 cell.coordinate))
+        # sheet-scoped names, CF rule formulas and DV formulas on a
+        # SURVIVING sheet all strand exactly like cell formulas do
+        # (Batch-3 gate: the audit only walked workbook-level names)
+        for name in list(other.defined_names):
+            dn = other.defined_names[name]
+            if dn.value and _refs_victim(dn.value):
+                victims.append("defined name {0!r} (scoped to sheet "
+                               "{1!r})".format(name, other.title))
+        for cf in other.conditional_formatting:
+            for rule in cf.rules:
+                for f in (rule.formula or []):
+                    if isinstance(f, str) and _refs_victim(f):
+                        victims.append(
+                            "conditional-formatting rule on {0}!{1}".format(
+                                other.title, cf.sqref))
+                        break
+        for dv in other.data_validations.dataValidation:
+            for f in (dv.formula1, dv.formula2):
+                if isinstance(f, str) and f and _refs_victim(f):
+                    victims.append(
+                        "data validation on {0}!{1}".format(
+                            other.title, dv.sqref))
+                    break
     for name in list(wb.defined_names):
         dn = wb.defined_names[name]
-        if dn.value:
-            _, refs_it = rename_sheet_in_formula("=" + dn.value, title,
-                                                 title + "_")
-            if refs_it:
-                victims.append("defined name {0!r}".format(name))
-    for part in _charts_referencing(wb, title):
-        victims.append("chart part {0}".format(part))
-    if _pivots_referencing(wb, title):
+        if dn.value and _refs_victim(dn.value):
+            victims.append("defined name {0!r}".format(name))
+    # byte-level searches run against the ORIGINAL package, so they must
+    # use the sheet's original title when it was renamed this session
+    original_title = led.renames.get(ws, ws.title) if led else ws.title
+    own_parts = _victim_exclusive_parts(wb, original_title)
+    for part in _charts_referencing(wb, original_title):
+        # a chart anchored ON the victim dies with it in the exclusive
+        # closure — its self-references strand nothing (Batch-3 gate:
+        # own-exclusive-chart false refusal)
+        if part not in own_parts:
+            victims.append("chart part {0}".format(part))
+    if _pivots_referencing(wb, original_title):
         victims.append("pivot parts")
     if victims:
         raise UnsupportedStructureError(
@@ -909,6 +973,15 @@ def begin_move_range(ws, move_spec):
         raise UnsupportedStructureError(
             "move_range would move cells before column A / row 1. "
             "Nothing was changed.")
+    from .structural import EXCEL_MAX_COL, EXCEL_MAX_ROW
+
+    if dst[2] > EXCEL_MAX_COL or dst[3] > EXCEL_MAX_ROW:
+        from openpyxl.errors import BoundaryViolationError
+
+        raise BoundaryViolationError(
+            "move_range would move cells past the sheet limits "
+            "(XFD/1048576). Nothing was changed.")
+    _check_sheet_protection_for_shift(ws, led, "move_range")
 
     problems = []
     for rng in ws.merged_cells.ranges:
@@ -932,6 +1005,44 @@ def begin_move_range(ws, move_spec):
         if _ref_hit(ref, src) or _ref_hit(ref, dst):
             problems.append("table {0!r}".format(name))
 
+    from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+
+    from .structural import _charts_referencing
+
+    original_title = led.renames.get(ws, ws.title)
+    if _charts_referencing(ws.parent, original_title):
+        problems.append("preserved chart(s) reference this sheet; their "
+                        "series ranges cannot follow a rectangular move")
+    for r in range(src[1], src[3] + 1):
+        for c in range(src[0], src[2] + 1):
+            cell = ws._cells.get((r, c))
+            if cell is not None and isinstance(
+                    cell._value, (ArrayFormula, DataTableFormula)):
+                problems.append(
+                    "array/data-table formula at {0} inside the moved "
+                    "block".format(cell.coordinate))
+    # defined names pointing INTO either rectangle (Excel cut-paste
+    # follows them; we do not rewrite names on moves — Batch-3 gate)
+    from openpyxl.utils.cell import range_boundaries as _rb
+
+    holders = [ws.parent.defined_names] + [
+        w.defined_names for w in ws.parent.worksheets]
+    for names_holder in holders:
+        for nm in list(names_holder):
+            dn = names_holder[nm]
+            try:
+                for dest_sheet, dest_ref in dn.destinations:
+                    if dest_sheet is None \
+                            or dest_sheet.casefold() != ws.title.casefold():
+                        continue
+                    b = _rb(dest_ref.replace("$", ""))
+                    if _intersects(b, *src) or _intersects(b, *dst):
+                        problems.append(
+                            "defined name {0!r} points into the moved/"
+                            "target block".format(nm))
+            except Exception:
+                continue
+
     sketch = dependency_sketch(ws.parent)
     inside = set()
     for r in range(src[1], src[3] + 1):
@@ -939,7 +1050,8 @@ def begin_move_range(ws, move_spec):
             inside.add((r, c))
     from openpyxl.utils.cell import coordinate_to_tuple
 
-    for address in sketch.cells_referencing(ws.title, src):
+    for address in (set(sketch.cells_referencing(ws.title, src))
+                    | set(sketch.cells_referencing(ws.title, dst))):
         title, _, coord = address.rpartition("!")
         bare = title.strip("'").replace("''", "'")
         try:
@@ -948,7 +1060,7 @@ def begin_move_range(ws, move_spec):
             problems.append("formula {0}".format(address))
             continue
         if bare.casefold() != ws.title.casefold() or rc not in inside:
-            problems.append("formula {0} references the moved "
+            problems.append("formula {0} references the moved or target "
                             "block".format(address))
     if problems:
         raise UnsupportedStructureError(
@@ -965,4 +1077,8 @@ def begin_move_range(ws, move_spec):
     for r in range(dst[1], dst[3] + 1):
         for c in range(dst[0], dst[2] + 1):
             led.mark_cell(ws, r, c)
+            led.value_overwrites.setdefault(ws, set()).add((r, c))
+    for r in range(src[1], src[3] + 1):
+        for c in range(src[0], src[2] + 1):
+            led.value_overwrites.setdefault(ws, set()).add((r, c))
     led.formulas_changed = True          # moved formulas re-anchor

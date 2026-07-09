@@ -285,8 +285,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 # re-planned from the source (the earlier rewrite would be
                 # silently discarded)
                 chart_plans, chart_blockers = plan_chart_updates(
-                    workbook, ws.title, op, op_idx, op_amount,
-                    overrides=plan)
+                    workbook, led.renames.get(ws, ws.title), op, op_idx,
+                    op_amount, overrides=plan)
                 if chart_blockers:
                     _refuse("chart parts referencing sheet {0!r} cannot be "
                             "patched: {1}.".format(
@@ -380,7 +380,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             ws, original, dirty, region_changes, row_changes, scan=scan,
             cf_replacement=cf_replacement,
             hyperlinks_replacement=hyperlinks_replacement,
-            style_resolver=resolver)
+            style_resolver=resolver,
+            value_overwrites=led.value_overwrites.get(ws, frozenset()))
         dirty_by_part[part] = dirty
         claims = set(region_changes)
         if cf_replacement is not None:
@@ -404,17 +405,22 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 continue
             part_plan.remove_part(child_part)
 
-    # ---- rename cascade: chart parts referencing old titles (3.2) ---------
-    for ws_obj, original_title in led.renames.items():
-        if ws_obj.title == original_title:
-            continue
-        from .chartpatch import patch_chart_rename
+    # ---- rename cascade: chart parts, ONE simultaneous mapping ------------
+    # (sequential pairwise patching merges reference classes on title
+    # SWAPS — Batch-3 gate)
+    rename_map = {orig: ws_obj.title
+                  for ws_obj, orig in led.renames.items()
+                  if ws_obj.title != orig}
+    if rename_map:
+        from .chartpatch import patch_chart_renames
         from .structural import _charts_referencing
 
-        for chart_part in _charts_referencing(workbook, original_title):
+        chart_targets = set()
+        for orig in rename_map:
+            chart_targets |= set(_charts_referencing(workbook, orig))
+        for chart_part in sorted(chart_targets):
             payload = plan.get(chart_part, zin.read(chart_part))
-            patched = patch_chart_rename(payload, original_title,
-                                         ws_obj.title)
+            patched = patch_chart_renames(payload, rename_map)
             if patched is not None:
                 plan[chart_part] = patched
 
@@ -459,6 +465,15 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     if led.removed_sheets or loaded_now != armed_minus_removed:
         # localSheetId and activeTab are position-derived: re-render both
         # workbook elements whenever positions changed (PLAN-v0.1 3.2)
+        if workbook.chartsheets and any(
+                ws_.defined_names for ws_ in workbook.worksheets):
+            # upstream's writer numbers localSheetId over WORKSHEETS only
+            # while readers index the full sheet list: a forced re-render
+            # on a chartsheet-bearing book mis-scopes every local name
+            # (Batch-3 gate) — refuse until the writer is fixed
+            _refuse("sheet removal/reorder on a workbook with chartsheets "
+                    "AND sheet-scoped defined names would mis-scope the "
+                    "names (writer numbering skew).")
         force_tags += ["definedNames", "bookViews"]
     wb_xml_plan = crosspart.plan_workbook_xml(
         workbook, led, zin.read(wb_part), new_sheet_entries,

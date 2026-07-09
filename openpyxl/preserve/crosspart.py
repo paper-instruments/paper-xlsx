@@ -420,11 +420,14 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
     # bytes (PLAN-v0.1 3.2); the per-entry patch path handles the rest
     removed = set(getattr(led, "removed_sheets", ()))
     current_originals = []
+    added = getattr(led, "added_sheets", set())
     for sheet in wb._sheets:
-        title = sheet.title
-        orig = getattr(led, "renames", {}).get(sheet, title)
-        if orig in led.sheet_order or title in led.sheet_order:
-            current_originals.append(orig)
+        if sheet in added:
+            continue          # membership by OBJECT: a freed title reused
+                              # by create_sheet is NOT a loaded sheet
+                              # (Batch-3 gate: duplicate/dangling entries)
+        orig = getattr(led, "renames", {}).get(sheet, sheet.title)
+        current_originals.append(orig)
     armed_order = [t for t in getattr(led, "sheet_order", ())
                    if t not in removed]
     rebuild = bool(removed) or current_originals != armed_order
@@ -466,17 +469,22 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
         for entry in sheets_node.children:
             if entry.local() != "sheet":
                 continue
+            # the entry still carries the ORIGINAL name bytes; the state
+            # key (led re-keyed at rename time) is the NEW one. Both
+            # changes compose into ONE whole-entry edit — two _patch_attr
+            # edits span the same start tag and trip the overlap guard
+            # (Batch-3 gate: rename+state in one session)
             name = entry.attrs.get("name")
-            if name in renamed:
-                # the entry still carries the ORIGINAL name bytes; the
-                # state key (led re-keyed at rename time) is the NEW one
-                edits.append(_patch_attr(original, entry, "name",
-                                         renamed[name]))
             effective = renamed.get(name, name)
-            if effective in state_changes:
-                edits.append(_patch_attr(original, entry, "state",
-                                         state_changes[effective],
-                                         drop_value="visible"))
+            new_state = state_changes.get(effective)
+            if name not in renamed and new_state is None:
+                continue
+            blob = original[entry.start:entry.end]
+            if name in renamed:
+                blob = _rename_entry_name(blob, renamed[name])
+            if new_state is not None:
+                blob = _repatch_entry_state(blob, new_state)
+            edits.append((entry.start, entry.end, blob))
     if new_sheet_entries:
         payload = b"".join(
             _render_sheet_entry(title, sheet_id, rid, state)

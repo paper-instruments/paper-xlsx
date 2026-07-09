@@ -220,6 +220,48 @@ def shift_cell_range(cell_range, axis, index, amount, is_delete):
 _RENAME_PREFIX_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([^'!]+))!(.+)$")
 
 
+def rename_sheets_in_formula(formula, mapping):
+    """Simultaneous multi-title rewrite: every sheet component maps
+    through ``mapping`` (casefold keys resolved per component) exactly
+    once — a swap can never cascade."""
+    folded = {k.casefold(): v for k, v in mapping.items()}
+
+    from openpyxl.formula import Tokenizer
+    from openpyxl.utils.cell import quote_sheetname
+
+    if not formula.startswith("="):
+        return formula, False
+    try:
+        tok = Tokenizer(formula)
+    except Exception:
+        return formula, False
+    changed = False
+    for token in tok.items:
+        if token.type != "OPERAND" or token.subtype != "RANGE":
+            continue
+        raw = token.value
+        if "[" in raw:
+            continue
+        m = _RENAME_PREFIX_RE.match(raw)
+        if not m:
+            continue
+        sheet = m.group(1).replace("''", "'") if m.group(1) else m.group(2)
+        ref = m.group(3)
+        parts = sheet.split(":") if ":" in sheet else [sheet]
+        new_parts = [folded.get(p.casefold(), p) for p in parts]
+        if new_parts == parts:
+            continue
+        changed = True
+        if len(new_parts) == 1:
+            token.value = "{0}!{1}".format(quote_sheetname(new_parts[0]),
+                                           ref)
+        else:
+            token.value = "{0}!{1}".format(":".join(new_parts), ref)
+    if not changed:
+        return formula, False
+    return tok.render(), True
+
+
 def rename_sheet_in_formula(formula, old_title, new_title):
     """Rewrite sheet-prefixed references from ``old_title`` to
     ``new_title`` (case-insensitive, quote-aware, 3-D span endpoints
@@ -247,8 +289,9 @@ def rename_sheet_in_formula(formula, old_title, new_title):
             continue
         sheet = m.group(1).replace("''", "'") if m.group(1) else m.group(2)
         ref = m.group(3)
-        # 3-D spans: 'Sheet1:Sheet3' — rewrite matching endpoints
-        parts = sheet.split(":") if ":" in sheet and m.group(2) else [sheet]
+        # 3-D spans: 'Sheet1:Sheet3' — QUOTED spans ('My Data:Sheet3')
+        # quote the whole span, so split unconditionally (Batch-3 gate)
+        parts = sheet.split(":") if ":" in sheet else [sheet]
         new_parts = [new_title if p.casefold() == folded else p
                      for p in parts]
         if new_parts == parts:

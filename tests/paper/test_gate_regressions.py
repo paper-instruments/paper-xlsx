@@ -5,6 +5,7 @@ batch; every test here pins a fix for a live repro the gate produced.
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 
 import pytest
@@ -542,3 +543,213 @@ class TestBatch2CommentGaps:
         cell.comment.height = 999
         with pytest.raises(UnsupportedStructureError, match="comment"):
             wb.save(str(tmp_path / "o.xlsx"))
+
+
+class TestBatch3X14Gaps:
+
+    def test_modified_twin_block_refuses(self, fixture_copy, tmp_path):
+        # modification reclassified as delete+new and silently stripped
+        # the twin (gate critical): now refuses naming the range
+        from openpyxl.formatting.rule import CellIsRule
+        from openpyxl.styles import PatternFill
+
+        src = fixture_copy("gauntlet/gauntlet.xlsx")
+        with open(src, "rb") as f:
+            before = f.read()
+        wb = load_workbook(src, preserve=True)
+        # adding a rule ON the twin dataBar's range modifies that block
+        wb["Model"].conditional_formatting.add(
+            "B6:E6", CellIsRule(operator="greaterThan", formula=["1"],
+                                fill=PatternFill(start_color="FF0000",
+                                                 fill_type="solid")))
+        with pytest.raises(UnsupportedStructureError, match="MODIFIED"):
+            wb.save(str(tmp_path / "o.xlsx"))
+        with open(src, "rb") as f:
+            assert f.read() == before
+
+
+class TestBatch3LifecycleGaps:
+
+    def test_shift_plus_rename_patches_charts_correctly(
+            self, fixture_copy, tmp_path):
+        # shift+rename left charts un-renumbered / rename-then-shift
+        # falsely refused (gate criticals): both orders now work
+        src = fixture_copy("features/chart_image.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = next(w for w in wb.worksheets if w._charts)
+        ws.insert_rows(2)
+        ws.title = "ModelX"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        chart = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/charts/chart"))
+        assert b"'ModelX'!$B$3" in chart or b"ModelX!$B$3" in chart
+
+        wb2 = load_workbook(src, preserve=True)
+        ws2 = next(w for w in wb2.worksheets if w._charts)
+        ws2.title = "ModelY"                    # rename FIRST
+        ws2.insert_rows(2)                      # then shift: no refusal
+        out2 = str(tmp_path / "o2.xlsx")
+        wb2.save(out2)
+        chart2 = next(p for n, p in part_payloads(out2).items()
+                      if n.startswith("xl/charts/chart"))
+        assert b"'ModelY'!$B$3" in chart2 or b"ModelY!$B$3" in chart2
+
+    def test_title_swap_does_not_merge_chart_references(self, tmp_path):
+        # sequential pairwise rename patching merged the two reference
+        # classes on a title swap (gate critical): simultaneous mapping
+        from openpyxl import Workbook
+        from openpyxl.chart import BarChart, Reference
+
+        src = str(tmp_path / "twosheet.xlsx")
+        wb0 = Workbook()
+        wsa = wb0.active
+        wsa.title = "Alpha"
+        for i in range(1, 6):
+            wsa.cell(row=i, column=2, value=i)
+        wb0.create_sheet("Beta")
+        chart = BarChart()
+        chart.add_data(Reference(wsa, min_col=2, min_row=1, max_row=5))
+        wsa.add_chart(chart, "D2")
+        wb0.save(src)
+
+        wb = load_workbook(src, preserve=True)
+        ws, other = wb["Alpha"], wb["Beta"]
+        ws.title = "TMPSWAP"
+        other.title = "Alpha"
+        ws.title = "Beta"                       # net: Alpha<->Beta swap
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        chart_xml = next(p for n, p in part_payloads(out).items()
+                         if n.startswith("xl/charts/chart"))
+        refs = re.findall(rb"<(?:c:)?f>([^<]*)</(?:c:)?f>", chart_xml)
+        assert refs
+        # the chart charted the sheet now titled Beta: every reference
+        # must follow it there, none may leak onto the new Alpha
+        for ref in refs:
+            assert ref.startswith(b"Beta!") or ref.startswith(b"'Beta'!")
+        wb2 = load_workbook(out)
+        assert set(["Alpha", "Beta"]) <= set(wb2.sheetnames)
+
+    def test_freed_title_reuse_is_coherent(self, fixture_copy, tmp_path):
+        src = fixture_copy("features/schedule.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb.remove(wb["Summary"])
+        ws = wb.create_sheet("Summary")         # reuse the freed title
+        ws["A1"] = "fresh"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)                # no duplicate entries
+        assert wb2.sheetnames.count("Summary") == 1
+        assert wb2["Summary"]["A1"].value == "fresh"
+
+    def test_removal_audit_covers_scoped_names_and_cf_dv(
+            self, fixture_copy, tmp_path):
+        from openpyxl.workbook.defined_name import DefinedName
+
+        src = fixture_copy("features/schedule.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Summary"].defined_names["scopedref"] = DefinedName(
+            "scopedref", attr_text="Schedule!$B$2")
+        # the audit walks sheet-scoped names on SURVIVING sheets too
+        with pytest.raises(UnsupportedStructureError, match="scopedref"):
+            wb.remove(wb["Schedule"])
+
+    def test_removal_audit_covers_cf_and_dv_formulas(
+            self, fixture_copy, tmp_path):
+        from openpyxl.formatting.rule import FormulaRule
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        src = fixture_copy("features/schedule.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Summary"].conditional_formatting.add(
+            "A1:A3", FormulaRule(formula=["Schedule!$B$2>1"]))
+        with pytest.raises(UnsupportedStructureError,
+                           match="conditional-formatting"):
+            wb.remove(wb["Schedule"])
+
+        wb2 = load_workbook(src, preserve=True)
+        dv = DataValidation(type="list", formula1="=Schedule!$A$1:$A$3")
+        dv.add("C1")
+        wb2["Summary"].add_data_validation(dv)
+        with pytest.raises(UnsupportedStructureError,
+                           match="data validation"):
+            wb2.remove(wb2["Schedule"])
+
+
+class TestBatch3CmVmGaps:
+
+    def _vm_fixture(self, fixture_copy, tmp_path):
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        out = str(tmp_path / "vm.xlsx")
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/sheet"):
+                    payload = payload.replace(b'<c r="B2"',
+                                              b'<c r="B2" vm="9"', 1)
+                zout.writestr(name, payload)
+        return out
+
+    def test_style_only_edit_carries_vm(self, fixture_copy, tmp_path):
+        # style-only re-emission stripped vm (gate critical): now carried
+        from openpyxl.styles import Font
+
+        src = self._vm_fixture(fixture_copy, tmp_path)
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"]["B2"].font = Font(bold=True)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'vm="9"' in sheet               # rich-value binding kept
+
+    def test_value_overwrite_still_drops_vm(self, fixture_copy, tmp_path):
+        src = self._vm_fixture(fixture_copy, tmp_path)
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"]["B2"] = 5
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'vm="9"' not in sheet           # battery job 21 semantics
+
+    def test_datatable_formula_blocks_shift(self, fixture_copy, tmp_path):
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        crafted = str(tmp_path / "dt.xlsx")
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(crafted, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/sheet"):
+                    payload = payload.replace(
+                        b"</sheetData>",
+                        b'<row r="9"><c r="D9"><f t="dataTable" ref="D9" '
+                        b'r1="B2" dt2D="0" dtr="0"/><v>6</v></c></row>'
+                        b"</sheetData>", 1)
+                zout.writestr(name, payload)
+        wb = load_workbook(crafted, preserve=True)
+        with pytest.raises(UnsupportedStructureError, match="data table"):
+            wb["Sheet1"].insert_rows(1)
+
+    def test_move_range_refuses_on_chart_sheet(self, fixture_copy):
+        wb = load_workbook(fixture_copy("features/chart_image.xlsx"),
+                           preserve=True)
+        ws = next(w for w in wb.worksheets if w._charts)
+        with pytest.raises(UnsupportedStructureError, match="chart"):
+            ws.move_range("A2:E2", rows=5)
+
+    def test_rename_plus_hide_same_session(self, fixture_copy, tmp_path):
+        # rename + sheet_state on one entry produced two overlapping
+        # start-tag edits and died on the internal overlap guard (gate
+        # major): both changes now compose into one whole-entry edit
+        src = fixture_copy("features/schedule.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Summary"]
+        ws.title = "Overview"
+        ws.sheet_state = "hidden"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert "Overview" in wb2.sheetnames
+        assert wb2["Overview"].sheet_state == "hidden"

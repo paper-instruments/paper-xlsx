@@ -67,8 +67,9 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
             raise SpliceRefusal(
                 "cannot edit cell(s) {0} on sheet {1!r}: they are inside "
                 "the array/spill range {2} (in_spill; anchored at {3}). "
-                "Edit the anchor formula instead, or clear the whole "
-                "range. Nothing was written.".format(
+                "Array editing is not supported under preserve mode — "
+                "reopen without preserve=True to restructure the array. "
+                "Nothing was written.".format(
                     sorted(hit), ws.title, ref, anchor))
 
     # shared-formula groups: dissolve on touch. Membership comes from the
@@ -121,7 +122,8 @@ def _col_letter(col):
 
 def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                  scan=None, cf_replacement=None, hyperlinks_replacement=None,
-                 style_resolver=None):
+                 style_resolver=None,
+                 value_overwrites=frozenset()):
     """Return the new part payload for one worksheet.
 
     ``dirty_cells``: resolved coordinate set (see resolve_dirty_cells).
@@ -227,7 +229,8 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     # every insertable region, so offsets never collide with them)
     edits.extend((s, e, r, 0) for (s, e, r)
                  in _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes,
-                                     style_resolver))
+                                     style_resolver,
+                                     value_overwrites=value_overwrites))
 
     # ------- apply (sorted, non-overlapping by construction) -------------
     edits.sort(key=lambda e: (e[0], e[1], e[3]))
@@ -261,7 +264,8 @@ def _region_insert_offset(scan, tag):
     return scan.root_end_offset
 
 
-def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve):
+def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve,
+                     value_overwrites=frozenset()):
     edits = []
     by_row = {}
     for (row, col) in dirty_cells:
@@ -289,7 +293,8 @@ def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve):
     for row_index in sorted(r for r in touched_rows if r in scan.rows):
         row_span = scan.rows[row_index]
         row_edits = _row_edits(ws, row_span, by_row.get(row_index, set()),
-                               row_attr_changes.get(row_index), resolve)
+                               row_attr_changes.get(row_index), resolve,
+                               value_overwrites=value_overwrites)
         edits.extend(row_edits)
 
     # new rows: insert each before the first existing row with a larger index
@@ -344,7 +349,8 @@ def _emit_rows_block(ws, row_indices, by_row, row_attr_changes, resolve):
     return b"".join(parts)
 
 
-def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve):
+def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve,
+               value_overwrites=frozenset()):
     """Edits inside one existing row: replace/insert/delete cells, sync the
     row start tag's attributes when they changed."""
     edits = []
@@ -405,7 +411,9 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve):
         rendered = emit.emit_cell(ws, cell, resolve(cell)) \
             if cell is not None else None
         if rendered is not None and cell_span is not None:
-            rendered = emit.carry_attributes(rendered, cell_span.attrs)
+            rendered = emit.carry_attributes(
+                rendered, cell_span.attrs,
+                drop_metadata=(row_span.index, col) in value_overwrites)
 
         if cell_span is not None:
             # replace or delete an existing cell element

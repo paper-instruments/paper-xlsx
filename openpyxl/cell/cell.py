@@ -240,7 +240,8 @@ class Cell(StyleableObject):
         if paper_armed:
             _mark_cell_dirty(
                 self,
-                formula_involved='f' in (old_data_type, self._data_type))
+                formula_involved='f' in (old_data_type, self._data_type),
+                value_change=True)
 
 
     @property

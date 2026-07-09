@@ -710,6 +710,65 @@ sections):
   tables on the shifted sheet block the shift, bracketed operands are
   never rewritten (pinned by tests).
 
+## Batch 3 — adversarial gate report (2026-07-08)
+
+Four lenses, seven criticals + a major set confirmed with live repros —
+all fixed and fixtured (tests/paper/test_gate_regressions.py Batch-3
+classes):
+
+- **CRITICAL, twin modification = silent twin deletion:** editing a
+  twin-bearing CF rule reclassified it as delete+new, dropping the x14
+  twin (the exact battery-job-1 carnage the module exists to prevent).
+  An unconsumed twin block whose sqref a NEW block claims now refuses
+  as MODIFIED, naming the range.
+- **CRITICAL, byte-identical cross-steal:** two identical classic
+  blocks with different twins could consume each other's originals.
+  Matching is now order-preserving (same position first, then earliest
+  unconsumed).
+- **CRITICAL, single-quoted twin ids invisible:** `id='{...}'` twin
+  entries escaped GUID extraction — the third both-quote-styles lesson;
+  fallback added. Partial multi-GUID twin entries (rules for both
+  deleted and surviving blocks) refuse rather than half-delete.
+- **CRITICAL, title swap merged reference classes:** sequential
+  pairwise chart patching turned an A<->B swap into all-refs-A. Renames
+  now patch through ONE simultaneous mapping (charts, formulas, names).
+- **CRITICAL, shift+rename corrupted charts:** the shift's chart lookup
+  used the CURRENT title against ORIGINAL bytes; rename-then-shift also
+  false-refused. Original titles (led.renames) now thread through every
+  byte-level lookup, including the removal audit's.
+- **CRITICAL, cm/vm stripped on re-emission:** style-only edits and
+  dissolution re-emits dropped rich-value/spill metadata; only VALUE
+  changes may drop it. `value_overwrites` (bind chokepoint, deletions,
+  move src/dst) now discriminates at carry_attributes.
+- **CRITICAL, DV coexistence over-matched:** the xm:sqref scan read
+  sparkline/other ext ranges as validations (false refusals, and real
+  overlaps missable); the scan is now scoped to the dataValidations
+  ext block alone.
+- **Majors:** freed-title reuse after removal duplicated sheets entries
+  (rebuild membership is now by OBJECT, not title); rename + hide in
+  one session tripped the internal overlap guard (both compose into one
+  whole-entry edit); chartsheet + sheet-scoped names under forced
+  definedNames re-render skewed localSheetId (typed refusal); dataTable
+  formulas joined the shift blockers (t="dataTable" is positional,
+  unrewritable); move_range gained the guard set (bounds incl. Excel
+  maxima, sheet protection, charts referencing either rectangle,
+  array/dataTable values inside, defined names into src/dst, outside
+  formulas referencing src OR dst); quoted 3-D spans ('A':'B'!) were
+  invisible to the rename tokenizer (quoted spans now split
+  unconditionally); the removal audit missed sheet-SCOPED defined
+  names, CF rule formulas and DV formulas on surviving sheets (all
+  probe via the rename machinery now) and false-refused when the only
+  "reference" was a chart dying WITH the sheet (exclusive-closure
+  exemption); the in_spill refusal advised editing the anchor —
+  impossible under the same guard — and now states the honest option
+  (reopen without preserve).
+- **Accepted/noted:** crosscheck still verifies worksheet parts only —
+  the standing tooling gap, carried to Batch 4; twin-bearing CF rule
+  REORDERING (same blocks, new order) survives as verbatim originals in
+  original order, a cosmetic divergence Excel ignores.
+
+Suite: 3008 upstream+paper; 416 paper both env arms.
+
 ## Pinned-surface debt ledger
 
 Debts are pinned surface not yet produced-and-tested; each names its
