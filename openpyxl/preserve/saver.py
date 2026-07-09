@@ -84,12 +84,9 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         for part in led.parts:
             _refuse("mark_dirty({0!r}): part-level re-serialization of "
                     "non-worksheet parts is not supported in v0 (the part "
-                    "has no faithful model source).".format(part))
-    if render_custom_model(workbook) != led.custom_snapshot:
-        if ARC_CUSTOM not in _namelist(source):
-            _refuse("custom document properties changed but the package has "
-                    "no docProps/custom.xml part; part creation is not "
-                    "supported in v0.")
+                    "has no faithful model source). For raw byte swaps of "
+                    "unmanaged parts (media), use "
+                    "wb.replace_part(name, payload).".format(part))
     for cs, snap in led.chartsheet_snapshots.items():
         if _render_chartsheet(cs) != snap:
             _refuse("chartsheet {0!r} changed; chartsheet splicing is not "
@@ -116,6 +113,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
     zin = zipfile.ZipFile(io.BytesIO(source))
     names = set(zin.namelist())
+    from . import lifecycle
+    part_plan = lifecycle.PartPlan(names)
 
     wb_part, sheet_parts = _package_info(zin)
     wb_rels_part = _rels_path(wb_part)
@@ -171,6 +170,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     row_claims = {}           # part -> row indices with claimed attr edits
     baselines = {}            # part -> shifted baseline bytes (Phase 6b)
     sheet_rels_updates = {}   # part_name -> new payload
+    need_styles_part = False  # styled writes into a styles-less package
     for ws in workbook.worksheets:
         if ws in led.added_sheets:
             continue
@@ -297,17 +297,23 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 or cf_replacement is not None
                 or hyperlinks_replacement is not None):
             continue
-        if translator is None and any(
+        if translator is None:
+            # no styles.xml in the package: the part is CREATED from the
+            # model via the lifecycle engine (PR-1 1.4), and cells write
+            # MODEL indices (a fresh part shares the model's numbering)
+            styles_needed = any(
                 ws._cells[(r, c)]._style is not None
-                for (r, c) in dirty if (r, c) in ws._cells):
-            _refuse("styled cells cannot be written: the package has no "
-                    "xl/styles.xml part and part creation is not supported "
-                    "in v0.")
+                for (r, c) in dirty if (r, c) in ws._cells)
+            if styles_needed:
+                need_styles_part = True
+            resolver = _model_style_resolver
+        else:
+            resolver = translator.resolver()
         plan[part] = splice_sheet(
             ws, original, dirty, region_changes, row_changes, scan=scan,
             cf_replacement=cf_replacement,
             hyperlinks_replacement=hyperlinks_replacement,
-            style_resolver=translator.resolver() if translator else None)
+            style_resolver=resolver)
         dirty_by_part[part] = dirty
         claims = set(region_changes)
         if cf_replacement is not None:
@@ -317,8 +323,12 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         region_claims[part] = claims
         row_claims[part] = set(row_changes)
 
-    # ---- calcChain cascade (D13) ------------------------------------------
+    # ---- calcChain cascade (D13), on the lifecycle engine ------------------
     drop_calcchain = led.formulas_changed and _CALC_CHAIN in names
+    if drop_calcchain:
+        part_plan.remove_part(
+            _CALC_CHAIN,
+            referencing_rels=[(wb_rels_part, "calcChain.xml")])
 
     # ---- styles append (runs AFTER splices: resolution allocates new xfs) --
     styles_plan = None
@@ -327,13 +337,21 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                                                 zin.read(ARC_STYLE),
                                                 translator)
     else:
-        # a package without styles.xml cannot take style appends
         from .ledger import _style_fingerprint
         lengths, _fp = _style_fingerprint(workbook)
-        if (lengths != led._style_lengths
-                or len(workbook._cell_styles) != led.orig_cell_styles_len):
-            _refuse("styles were added but the package has no xl/styles.xml "
-                    "part; part creation is not supported in v0.")
+        if need_styles_part or lengths != led._style_lengths \
+                or len(workbook._cell_styles) != led.orig_cell_styles_len:
+            # the package has no styles.xml: generate it whole from the
+            # model (nothing to preserve) via the lifecycle engine
+            from openpyxl.styles.stylesheet import write_stylesheet
+            from openpyxl.xml.functions import tostring
+
+            part_plan.add_part(
+                ARC_STYLE, tostring(write_stylesheet(workbook)),
+                content_type="application/vnd.openxmlformats-"
+                             "officedocument.spreadsheetml.styles+xml",
+                relate_from=wb_part,
+                rel_type=REL_NS + "/styles")
 
     # ---- workbook.xml plan -------------------------------------------------
     wb_xml_plan = crosspart.plan_workbook_xml(
@@ -341,47 +359,69 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         force_tags=("calcPr",) if force_calcpr else ())
 
     # ---- workbook rels + content types -------------------------------------
-    wb_rels_plan = None
-    if wb_rels_appends or drop_calcchain:
-        payload = zin.read(wb_rels_part)
-        if drop_calcchain:
-            payload = crosspart.rels_remove_by_target_suffix(
-                payload, "calcChain.xml")
-        if wb_rels_appends:
-            payload = crosspart.rels_append(payload, wb_rels_appends)
-        wb_rels_plan = payload
-
-    ct_plan = None
-    if ct_appends or drop_calcchain:
-        payload = zin.read("[Content_Types].xml")
-        if drop_calcchain:
-            payload = crosspart.ct_remove_override(payload, _CALC_CHAIN)
-        if ct_appends:
-            payload = crosspart.ct_append_overrides(payload, ct_appends)
-        ct_plan = payload
-
     core_changed = render_core_model(workbook) != led.core_snapshot
     if core_changed and ARC_CORE not in names:
         _refuse("document properties changed but the package has no "
                 "docProps/core.xml part; part creation is not supported "
                 "in v0.")
     custom_render = render_custom_model(workbook)
-    custom_changed = (custom_render != led.custom_snapshot
-                      and ARC_CUSTOM in names)
-    if custom_changed and custom_render is None:
-        _refuse("all custom document properties were removed; dropping the "
-                "docProps/custom.xml part (and its registrations) is not "
-                "supported in v0.")
+    custom_delta = custom_render != led.custom_snapshot
+    custom_changed = (custom_delta and ARC_CUSTOM in names
+                      and custom_render is not None)
+    if custom_delta and custom_render is not None \
+            and ARC_CUSTOM not in names:
+        from openpyxl.xml.constants import CPROPS_TYPE
+
+        part_plan.add_part(
+            ARC_CUSTOM, custom_render, content_type=CPROPS_TYPE,
+            relate_from="",
+            rel_type=REL_NS + "/custom-properties")
+    if custom_delta and custom_render is None and ARC_CUSTOM in names:
+        part_plan.remove_part(
+            ARC_CUSTOM,
+            referencing_rels=[("_rels/.rels", "docProps/custom.xml")])
 
     theme_changed = False
     if workbook.loaded_theme is not None and ARC_THEME in names:
         theme_changed = workbook.loaded_theme != zin.read(ARC_THEME)
 
+    # ---- ct/rels composition: AFTER every engine registration ------------
+    engine_rels = part_plan.touched_rels_parts()
+    wb_rels_plan = None
+    if wb_rels_appends or wb_rels_part in engine_rels:
+        payload = zin.read(wb_rels_part)
+        payload = part_plan.apply_rels(wb_rels_part, payload)
+        if wb_rels_appends:
+            payload = crosspart.rels_append(payload, wb_rels_appends)
+        wb_rels_plan = payload
+    extra_rels_updates = {}
+    for rels_part in engine_rels:
+        if rels_part == wb_rels_part:
+            continue
+        existing = zin.read(rels_part) if rels_part in names else None
+        extra_rels_updates[rels_part] = part_plan.apply_rels(
+            rels_part, existing)
+
+    ct_plan = None
+    if ct_appends or part_plan:
+        payload = zin.read("[Content_Types].xml")
+        payload = part_plan.apply_content_types(payload)
+        if ct_appends:
+            payload = crosspart.ct_append_overrides(payload, ct_appends)
+        ct_plan = payload
+
+
     # ---- assemble -----------------------------------------------------------
     def build(zout):
         for info in zin.infolist():
             name = info.filename
-            if name == _CALC_CHAIN and drop_calcchain:
+            if name in part_plan.dropped:
+                continue
+            if name in led.replaced_parts:
+                zipio.write_entry(zout, name, led.replaced_parts[name])
+                continue
+            if name in extra_rels_updates:
+                zipio.write_entry(zout, name, extra_rels_updates[name])
                 continue
             if name in plan:
                 zipio.write_entry(zout, name, plan[name])
@@ -407,6 +447,11 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             zipio.write_entry(zout, part_name, payload)
         for part_name, payload in new_rels_parts:
             zipio.write_entry(zout, part_name, payload)
+        for part_name, payload in part_plan.added.items():
+            zipio.write_entry(zout, part_name, payload)
+        for part_name, payload in extra_rels_updates.items():
+            if part_name not in names:
+                zipio.write_entry(zout, part_name, payload)
         # rels parts created for LOADED sheets that had none (first
         # hyperlink on a rels-less sheet): they exist only in the plan
         for part_name, payload in sheet_rels_updates.items():
@@ -422,6 +467,15 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
     zipio.deliver(data, target)
     return True
+
+
+def _model_style_resolver(cell):
+    """Style resolver for freshly CREATED styles.xml parts: the part is
+    generated whole from the model, so cells write model indices (the two
+    numberings coincide by construction)."""
+    if cell._style is None:
+        return None
+    return cell.style_id
 
 
 def _namelist(source):

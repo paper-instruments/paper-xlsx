@@ -45,7 +45,7 @@ class DirtyLedger:
                  "comment_snapshots", "workbook_snapshot", "core_snapshot",
                  "custom_snapshot", "chartsheet_snapshots", "pinned_regions",
                  "object_snapshots", "external_links_snapshot",
-                 "protection_warned",
+                 "protection_warned", "replaced_parts",
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag")
@@ -73,6 +73,7 @@ class DirtyLedger:
         self.object_snapshots = {}     # ws -> preserved-part-backed objects
         self.external_links_snapshot = ()
         self.protection_warned = set()   # sheets warned once (1.6)
+        self.replaced_parts = {}         # raw byte swaps (PR-1 1.4)
         self.orig_cell_styles_len = 0
         self.rich_text_mode = False
         self.sheet_states = {}         # title -> state at arm (all sheets)

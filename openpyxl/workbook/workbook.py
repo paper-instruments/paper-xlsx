@@ -168,6 +168,28 @@ class Workbook:
         """
         _ledger.mark_dirty_target(self, target)
 
+    def replace_part(self, name, payload):
+        """Raw byte swap of one unmanaged package part under preserve
+        mode (PR-1 1.4) — media swaps are the intended use
+        (``wb.replace_part("xl/media/image1.png", new_png_bytes)``).
+
+        The part must exist (:class:`~openpyxl.errors.TargetNotFoundError`
+        otherwise); parts the model actively manages (sheets, workbook,
+        styles, sharedStrings, content types) refuse with
+        :class:`~openpyxl.errors.RelationshipPolicyError` — replacing them
+        raw would desync the model. Guards run NOW; bytes land at save.
+        """
+        if self._paper_ledger is None or not self._paper_ledger.armed:
+            raise ValueError(
+                "replace_part is only meaningful in preserve mode "
+                "(load_workbook(..., preserve=True)).")
+        from openpyxl.preserve.lifecycle import check_replace_part
+
+        check_replace_part(self, name)
+        if not isinstance(payload, bytes):
+            raise TypeError("payload must be bytes")
+        self._paper_ledger.replaced_parts[name] = payload
+
     def manifest(self):
         """A structured description of this workbook: sheets, formulas,
         defined names, volatile functions, a confession block enumerating
