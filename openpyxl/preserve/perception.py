@@ -51,11 +51,21 @@ def build_manifest(wb):
     or preserve-mode)."""
     sheets = []
     volatile = {}
+    part_names = {}
+    source = getattr(wb, "_paper_source", None)
+    if source:
+        from .saver import _package_info
+
+        with zipfile.ZipFile(io.BytesIO(source)) as _zin:
+            _wb_part, _mapping = _package_info(_zin)
+            part_names = dict(_mapping)
     for ws in wb.worksheets:
         formulas = 0
-        for (row, col), cell in ws._cells.items():
+        formula_addresses = []
+        for (row, col), cell in sorted(ws._cells.items()):
             if cell.data_type == "f" and isinstance(cell._value, str):
                 formulas += 1
+                formula_addresses.append(cell.coordinate)
                 for match in _VOLATILE_RE.finditer(cell._value):
                     name = match.group(1).upper()
                     volatile.setdefault(name, []).append(
@@ -78,6 +88,9 @@ def build_manifest(wb):
             "protection": bool(ws.protection.sheet),
             "defined_names": {name: dn.value for name, dn
                               in sorted(ws.defined_names.items())},
+            # Batch-6 enrichment (PLAN-v0.1 6.5)
+            "formula_addresses": formula_addresses,
+            "part_name": part_names.get(ws.title),
         }
         sheets.append(entry)
     for addresses in volatile.values():
@@ -105,8 +118,41 @@ def build_manifest(wb):
                  or wb.security.revisionsPassword)),
         "confession": _confession(wb),
         "preservation": _preservation(wb),
+        # Batch-6 enrichment (PLAN-v0.1 6.5)
+        "computation": _computation_summary(wb),
+        "protection_summary": {
+            "protected_sheets": [ws.title for ws in wb.worksheets
+                                 if bool(ws.protection.sheet)],
+            "strict_protection": bool(getattr(wb, "strict_protection",
+                                              False)),
+        },
     }
     return WorkbookManifest(doc)
+
+
+def _computation_summary(wb):
+    """Inputs/outputs counts from the model map plus the certifiable
+    flag (are there cached values to certify against?)."""
+    from .modelmap import build_model_map
+
+    mm = build_model_map(wb)
+    counts = {role: sum(len(roles.get(role, []))
+                        for roles in mm.sheets.values())
+              for role in ("inputs", "calculations", "outputs",
+                           "constants")}
+    certifiable = False
+    source = getattr(wb, "_paper_source", None)
+    if source:
+        with zipfile.ZipFile(io.BytesIO(source)) as z:
+            for name in z.namelist():
+                if name.startswith("xl/worksheets/")                         and name.endswith(".xml"):
+                    payload = z.read(name)
+                    if re.search(br"</f><v>[^<]", payload) or re.search(
+                            br"/><v>[^<]", payload):
+                        certifiable = True
+                        break
+    counts["certifiable"] = certifiable
+    return counts
 
 
 def _quoted(title):

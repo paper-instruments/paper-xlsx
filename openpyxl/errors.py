@@ -19,7 +19,21 @@ class PaperRefusal(Exception):
     Refusals are atomic: when one is raised, the workbook model, the dirty
     ledger, and every file on disk are exactly as they were before the
     refused operation began.
+
+    Structured fields (PLAN-v0.1 6.7, populated progressively — message
+    text is always the source of truth):
+
+    - ``kind``: stable machine-readable string ("ambiguous-label", ...)
+    - ``anchor``: sheet-qualified address or part name the refusal is
+      about, or None
+    - ``options``: suggested remedies / candidate addresses (list)
     """
+
+    def __init__(self, *args, kind=None, anchor=None, options=None):
+        super().__init__(*args)
+        self.kind = kind
+        self.anchor = anchor
+        self.options = list(options) if options else []
 
 
 class AmbiguousTargetError(PaperRefusal):

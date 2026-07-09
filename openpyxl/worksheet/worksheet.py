@@ -592,6 +592,27 @@ class Worksheet(_WorkbookChild):
         self.data_validations.append(data_validation)
 
 
+    def locate(self, label, *, prefer="right"):
+        """The value cell belonging to a text label (paper-xlsx,
+        PLAN-v0.1 Batch 6; battery 23): exact-then-normalized match over
+        this sheet, value = nearest non-label neighbour to the ``right``
+        (or ``below``). Zero matches raise
+        :class:`~openpyxl.errors.TargetNotFoundError`; multiple labels
+        or no locatable value raise
+        :class:`~openpyxl.errors.AmbiguousTargetError` listing every
+        candidate."""
+        from openpyxl.preserve.locate import locate as _locate
+
+        return _locate(self, label, prefer=prefer)
+
+    def allowed_values(self, cell):
+        """The data-validation vocabulary for ``cell`` (address string or
+        Cell), or None when no list-type validation covers it
+        (paper-xlsx, PLAN-v0.1 Batch 6)."""
+        from openpyxl.preserve.locate import allowed_values as _allowed
+
+        return _allowed(self, cell)
+
     def add_chart(self, chart, anchor=None):
         """
         Add a chart to the sheet

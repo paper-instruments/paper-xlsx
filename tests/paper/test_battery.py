@@ -744,12 +744,21 @@ class TestBatteryToday:
         wb2 = load_workbook(out)
         assert len(wb2["Model"]._charts) == before + 1
 
-    # job 23 — today: no localization API. Batch 6 ships it (and finally
-    # raises the pinned AmbiguousTargetError).
-    def test_job23_no_label_localization_api_yet(self, fixture_copy):
-        wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"))
-        assert not hasattr(wb, "locate")
-        assert not hasattr(wb.active, "find_by_label")
+    # job 23 — Batch-6 state (flipped by 6.1): ws.locate answers by
+    # label, correct or AmbiguousTargetError (the pinned class earns
+    # its keep — the debt is paid)
+    def test_job23_locate_by_label(self, fixture_copy):
+        from openpyxl.errors import AmbiguousTargetError
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        ws = wb["Summary"]
+        cell = ws.locate("Grand total")
+        assert cell.data_type == "f"          # the value next to a label
+        ws["A7"] = "Grand total"              # now ambiguous
+        with pytest.raises(AmbiguousTargetError) as exc:
+            ws.locate("Grand total")
+        assert exc.value.kind == "ambiguous-label"
+        assert len(exc.value.options) == 2    # every candidate listed
 
     # job 24 — Batch-5 state (flipped by 5.3): write-back exists and is
     # CERTIFICATION-GATED; the full LibreOffice path is exercised in

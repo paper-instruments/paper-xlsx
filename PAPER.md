@@ -797,6 +797,53 @@ sections):
   fresh-generated workbook already saves with the flag (verified;
   no change needed, recorded here per the PR-1 stock-visible note).
 
+## Batch 6 — Perception and the agent experience (2026-07-08, PLAN-v0.1)
+
+- **6.1 verbs:** `ws.locate(label, prefer="right"|"below")` —
+  exact-then-normalized label match, value = nearest non-label
+  neighbour; zero matches -> TargetNotFoundError, multiple labels or no
+  value neighbour -> AmbiguousTargetError listing every candidate (THE
+  DEBT IS PAID — the pinned class is produced and tested; ledger entry
+  removed). Battery 23: CORRECT-or-Ambiguous. `wb.search(text_or_regex,
+  regex=, values=, formulas=)` -> [{"address","match","kind"}].
+  `openpyxl.preserve.scan_errors(wb)` — LibreOffice-free: live error
+  values, cached t="e" tokens from the preserved bytes (both load views
+  from one workbook), and #REF! markers in formulas.
+  `ws.allowed_values(cell)` — list-DV vocabulary (literal or
+  range-sourced; unreadable sources -> None). `wb.validate()` — replays
+  the full preserve save machinery into a discarded buffer: every
+  refusal a save WOULD raise, raised now, nothing written.
+- **6.2 model map:** `wb.model_map()` (pinned schema "model_map" v1) —
+  inputs/calculations/outputs/constants per formula-bearing sheet via
+  the dependency sketch (whole-column refs clamped to populated
+  extents); fill-color corroboration recorded as a convention when >=80%
+  of inputs share a non-default fill; unresolved references flagged in
+  conventions.
+- **6.5 manifest enrichment:** per-sheet formula_addresses + part_name;
+  workbook-level computation counts + certifiable flag (cached values
+  present in the preserved bytes) + protection_summary. Manifest golden
+  regenerated (diff purely additive).
+- **6.6 edit receipt:** `openpyxl.preserve.receipt(before, after,
+  recalc=None)` -> EditReceipt (pinned schema "edit_receipt" v1):
+  cells-diff per worksheet part (added/removed/changed refs),
+  package-diff (parts changed/added/removed), the loss-inventory
+  confession of the AFTER package, optional oracle result.
+  `wb.save(path, receipt=True)` returns one for that save
+  (preserve-only).
+- **6.7 structured refusals:** PaperRefusal gains `.kind` / `.anchor` /
+  `.options` (kw-only, default empty; message text unchanged, populated
+  progressively — locate's refusals carry them fully).
+- **6.8 findings:** `openpyxl.preserve.findings(wb)` — the pinned
+  ADVISORY taxonomy (hardcode-in-formula, inconsistent-row-formula,
+  error-cell, orphaned-name, external-link, hidden-sheet, hidden-rows,
+  merged-hazard, volatile, magnitude-outlier); measurements with
+  evidence addresses, never judgments — the fences stand.
+- **6.9 diff report:** `openpyxl.preserve.diff_workbooks(a, b,
+  remaps=())` -> DiffReport (schema "workbook_diff" v1): cell diffs
+  classified content-changed vs shifted-by-structural-edit by pushing
+  A-side addresses through the AddressRemap chain; sheet
+  membership changes listed.
+
 ## Batch 5 — adversarial gate report (2026-07-08)
 
 Four lenses, 20 findings confirmed with live repros plus one found
@@ -975,7 +1022,7 @@ Debts are pinned surface not yet produced-and-tested; each names its
 owning batch. Paying a debt REQUIRES removing its entry (the CI check
 enforces both directions).
 
-- `AmbiguousTargetError` — owed to Batch 6 (label localization raises it)
+(no open debts — AmbiguousTargetError was paid by Batch 6's locate())
 
 ## Batch 0 — adversarial gate report (2026-07-08)
 

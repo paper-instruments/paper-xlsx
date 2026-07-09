@@ -12,7 +12,8 @@ from .inventory import LossInventory, scan_archive
 from .saver import save_preserved
 
 __all__ = ["AddressRemap", "DirtyLedger", "LossInventory", "scan_archive",
-           "save_preserved"]
+           "save_preserved", "scan_errors", "findings", "receipt",
+           "diff_workbooks"]
 
 
 def __getattr__(name):
@@ -25,4 +26,16 @@ def __getattr__(name):
     if name == "AddressRemap":
         from .structural import AddressRemap
         return AddressRemap
+    if name == "scan_errors":
+        from .hygiene import scan_errors
+        return scan_errors
+    if name == "findings":
+        from .hygiene import findings
+        return findings
+    if name == "receipt":
+        from .receipt import receipt
+        return receipt
+    if name == "diff_workbooks":
+        from .diffreport import diff_workbooks
+        return diff_workbooks
     raise AttributeError(name)

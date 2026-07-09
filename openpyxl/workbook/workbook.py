@@ -193,6 +193,69 @@ class Workbook:
             raise TypeError("payload must be bytes")
         self._paper_ledger.replaced_parts[name] = payload
 
+    def model_map(self):
+        """Role classification of every populated cell on formula-bearing
+        sheets — inputs / calculations / outputs / constants (paper-xlsx,
+        PLAN-v0.1 6.2; pinned schema "model_map" v1). Returns
+        :class:`openpyxl.preserve.modelmap.ModelMap`."""
+        from openpyxl.preserve.modelmap import build_model_map
+
+        return build_model_map(self)
+
+    def search(self, text_or_regex, *, regex=False, values=True,
+               formulas=True):
+        """Find text across the workbook (paper-xlsx, PLAN-v0.1 Batch 6).
+        Returns ``[{"address", "match", "kind"}, ...]`` where kind is
+        "value" or "formula"."""
+        import re as _re
+
+        if regex:
+            pattern = _re.compile(text_or_regex)
+        else:
+            pattern = None
+        results = []
+        for ws in self.worksheets:
+            for (row, col), cell in sorted(ws._cells.items()):
+                value = cell._value
+                if value is None:
+                    continue
+                is_formula = cell.data_type == "f"
+                if is_formula and not formulas:
+                    continue
+                if not is_formula and not values:
+                    continue
+                text = value if isinstance(value, str) else str(value)
+                if pattern is not None:
+                    m = pattern.search(text)
+                    if m is None:
+                        continue
+                    match = m.group(0)
+                else:
+                    if str(text_or_regex) not in text:
+                        continue
+                    match = str(text_or_regex)
+                results.append({
+                    "address": "{0}!{1}".format(ws.title,
+                                                cell.coordinate),
+                    "match": match,
+                    "kind": "formula" if is_formula else "value",
+                })
+        return results
+
+    def validate(self):
+        """Run the preserve saver's FULL validation pass without
+        delivering a file (paper-xlsx, PLAN-v0.1 Batch 6): every refusal
+        a save would raise is raised now; on success returns None and
+        nothing is written anywhere."""
+        if not self._preserve or self._paper_ledger is None:
+            raise ValueError(
+                "validate() replays the preserve save machinery and is "
+                "only available on workbooks loaded with preserve=True.")
+        import io as _io
+
+        self.save(_io.BytesIO())
+        return None
+
     def evaluate(self, set, read, *, timeout=120.0):
         """What-if scenario against THIS workbook's preserved source
         bytes (PLAN-v0.1 5.1): inputs applied to a temp copy through the
@@ -494,7 +557,7 @@ class Workbook:
         return ct
 
 
-    def save(self, filename, *, allow_formula_loss=False):
+    def save(self, filename, *, allow_formula_loss=False, receipt=False):
         """Save the current workbook under the given `filename`.
         Use this function instead of using an `ExcelWriter`.
 
@@ -504,6 +567,9 @@ class Workbook:
             flag is set (and even then only cells you actually edited lose
             their formulas — untouched cells keep them in the original
             bytes). On the stock path the flag silences the loud warning.
+        :param receipt: preserve mode only — return an
+            :class:`openpyxl.preserve.receipt.EditReceipt` describing
+            exactly what this save changed (PLAN-v0.1 6.6).
 
         .. warning::
             When creating your workbook using `write_only` set to True,
@@ -512,9 +578,18 @@ class Workbook:
         """
         if self.read_only:
             raise TypeError("""Workbook is read-only""")
+        if receipt and (not self._preserve or self._paper_source is None):
+            raise ValueError(
+                "save(receipt=True) compares against the preserved source "
+                "bytes and is only available under preserve mode.")
         if self.write_only and not self.worksheets:
             self.create_sheet()
         save_workbook(self, filename, allow_formula_loss=allow_formula_loss)
+        if receipt:
+            from openpyxl.preserve.receipt import receipt as _receipt
+
+            return _receipt(self._paper_source, filename)
+        return None
 
 
     @property
