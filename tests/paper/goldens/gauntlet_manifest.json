@@ -3,8 +3,8 @@
  "computation": {
   "calculations": 0,
   "certifiable": false,
-  "constants": 19,
-  "inputs": 17,
+  "constants": 25,
+  "inputs": 21,
   "outputs": 10
  },
  "confession": {

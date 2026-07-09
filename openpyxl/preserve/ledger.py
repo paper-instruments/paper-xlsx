@@ -746,15 +746,25 @@ def record_rename(sheet_child, new_title):
             "reference it (pivot cacheSource rewriting is out of scope). "
             "Nothing was changed.".format(old_title))
 
-    # model-side cascade: formulas everywhere + defined names
-    for ws in wb.worksheets:
-        for (row, col), cell in sorted(ws._cells.items()):
-            if cell.data_type != "f" or not isinstance(cell._value, str):
-                continue
-            new_formula, changed = rename_sheet_in_formula(
-                cell._value, old_title, new_title)
-            if changed:
-                cell.value = new_formula        # public setter: ledgered
+    # model-side cascade: formulas everywhere + defined names. The
+    # rewrites are DERIVED from already-accepted formulas and reference
+    # the new title before it lands on the sheet object — the lint
+    # chokepoint must not judge them (Batch-6 gate: the cascade tripped
+    # unknown-sheet, and refuse mode would have refused the rename)
+    _saved_lint = getattr(wb, "formula_lint", "warn")
+    wb.formula_lint = "off"
+    try:
+        for ws in wb.worksheets:
+            for (row, col), cell in sorted(ws._cells.items()):
+                if cell.data_type != "f" \
+                        or not isinstance(cell._value, str):
+                    continue
+                new_formula, changed = rename_sheet_in_formula(
+                    cell._value, old_title, new_title)
+                if changed:
+                    cell.value = new_formula    # public setter: ledgered
+    finally:
+        wb.formula_lint = _saved_lint
     _rename_defined_names(wb, old_title, new_title)
     for scoped in wb.worksheets:
         _rename_defined_names(scoped, old_title, new_title)

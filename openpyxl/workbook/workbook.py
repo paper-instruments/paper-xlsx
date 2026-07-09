@@ -49,6 +49,17 @@ from openpyxl.xml.constants import (
 
 INTEGER_TYPES = (int,)
 
+
+def _require_materialized_cells(wb, api):
+    """The perception verbs read ws._cells; read-only and write-only
+    workbooks never materialize it (Batch-6 gate: raw AttributeError /
+    silently empty results)."""
+    if getattr(wb, "_read_only", False) or wb.write_only:
+        raise ValueError(
+            "{0} needs materialized cells; read-only and write-only "
+            "workbooks do not hold them. Load normally (or with "
+            "preserve=True) instead.".format(api))
+
 class Workbook:
     """Workbook is the container for all other parts of the document."""
 
@@ -200,6 +211,7 @@ class Workbook:
         :class:`openpyxl.preserve.modelmap.ModelMap`."""
         from openpyxl.preserve.modelmap import build_model_map
 
+        _require_materialized_cells(self, "model_map()")
         return build_model_map(self)
 
     def search(self, text_or_regex, *, regex=False, values=True,
@@ -209,8 +221,14 @@ class Workbook:
         "value" or "formula"."""
         import re as _re
 
+        _require_materialized_cells(self, "search()")
         if regex:
-            pattern = _re.compile(text_or_regex)
+            try:
+                pattern = _re.compile(text_or_regex)
+            except _re.error as exc:
+                raise ValueError(
+                    "search(regex=True) got an invalid pattern "
+                    "{0!r}: {1}".format(text_or_regex, exc))
         else:
             pattern = None
         results = []
@@ -224,7 +242,15 @@ class Workbook:
                     continue
                 if not is_formula and not values:
                     continue
-                text = value if isinstance(value, str) else str(value)
+                if is_formula and not isinstance(value, str):
+                    # ArrayFormula/DataTableFormula objects: search their
+                    # TEXT, never the Python repr (Batch-6 gate: repr
+                    # fabricated matches and hid real ones)
+                    text = getattr(value, "text", None)
+                    if not isinstance(text, str):
+                        continue
+                else:
+                    text = value if isinstance(value, str) else str(value)
                 if pattern is not None:
                     m = pattern.search(text)
                     if m is None:
@@ -568,8 +594,10 @@ class Workbook:
             their formulas — untouched cells keep them in the original
             bytes). On the stock path the flag silences the loud warning.
         :param receipt: preserve mode only — return an
-            :class:`openpyxl.preserve.receipt.EditReceipt` describing
-            exactly what this save changed (PLAN-v0.1 6.6).
+            :class:`openpyxl.preserve.receipts.EditReceipt` comparing the
+            saved file against the AS-LOADED source bytes (PLAN-v0.1
+            6.6). NOTE: after several saves from one session the receipt
+            is cumulative — it describes the session, not the last call.
 
         .. warning::
             When creating your workbook using `write_only` set to True,
@@ -586,7 +614,7 @@ class Workbook:
             self.create_sheet()
         save_workbook(self, filename, allow_formula_loss=allow_formula_loss)
         if receipt:
-            from openpyxl.preserve.receipt import receipt as _receipt
+            from openpyxl.preserve.receipts import receipt as _receipt
 
             return _receipt(self._paper_source, filename)
         return None

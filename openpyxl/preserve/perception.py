@@ -54,11 +54,13 @@ def build_manifest(wb):
     part_names = {}
     source = getattr(wb, "_paper_source", None)
     if source:
-        from .saver import _package_info
+        from .hygiene import current_titles_by_part
 
         with zipfile.ZipFile(io.BytesIO(source)) as _zin:
-            _wb_part, _mapping = _package_info(_zin)
-            part_names = dict(_mapping)
+            # CURRENT-title keyed (renamed sheets keep their part —
+            # Batch-6 gate: part_name went stale/None after a rename)
+            part_names = {title: part for part, title
+                          in current_titles_by_part(wb, _zin).items()}
     for ws in wb.worksheets:
         formulas = 0
         formula_addresses = []

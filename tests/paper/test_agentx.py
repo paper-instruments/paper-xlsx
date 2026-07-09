@@ -122,7 +122,7 @@ class TestValidateAndReceipt:
         assert wb.validate() is None
 
     def test_save_receipt(self, fixture_copy, tmp_path):
-        from openpyxl.preserve.receipt import EditReceipt
+        from openpyxl.preserve.receipts import EditReceipt
 
         wb = load_workbook(fixture_copy("features/schedule.xlsx"),
                            preserve=True)

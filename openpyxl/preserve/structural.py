@@ -422,15 +422,24 @@ def apply_model_shift(ws, operation, index, amount):
         _rebase_snapshots(led, ws, mapper, axis)
 
     # 1. formulas everywhere in the workbook that reference this sheet
-    for other in wb.worksheets:
-        for (row, col), cell in list(other._cells.items()):
-            if cell.data_type != "f" or not isinstance(cell._value, str):
-                continue
-            new_formula, changed = shift_formula(
-                cell._value, other.title, ws.title, axis, index, amount,
-                is_delete)
-            if changed:
-                cell.value = new_formula     # through the chokepoint: dirty
+    # (machinery-derived rewrites of accepted formulas: the lint
+    # chokepoint must not judge them — Batch-6 gate, same class as the
+    # rename cascade)
+    _saved_lint = getattr(wb, "formula_lint", "warn")
+    wb.formula_lint = "off"
+    try:
+        for other in wb.worksheets:
+            for (row, col), cell in list(other._cells.items()):
+                if cell.data_type != "f" \
+                        or not isinstance(cell._value, str):
+                    continue
+                new_formula, changed = shift_formula(
+                    cell._value, other.title, ws.title, axis, index,
+                    amount, is_delete)
+                if changed:
+                    cell.value = new_formula  # via the chokepoint: dirty
+    finally:
+        wb.formula_lint = _saved_lint
 
     # 2. defined names (workbook- and sheet-scoped) and print settings
     for names in [wb.defined_names] + [s.defined_names

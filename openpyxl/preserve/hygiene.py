@@ -11,10 +11,38 @@ ERROR_TOKENS = frozenset([
     "#SPILL!", "#CALC!", "#GETTING_DATA",
 ])
 
-_CACHED_ERROR_RE = re.compile(
-    br"<c\b[^>]*\bt=\"e\"[^>]*>.*?<v>([^<]+)</v>", re.S)
-_CELL_REF_OF_ERROR_RE = re.compile(
-    br"<c\b[^>]*\br=\"([A-Z]+\d+)\"[^>]*\bt=\"e\"[^>]*>", re.S)
+# both quote styles, ALWAYS (the recurring gate lesson)
+_ERROR_CELL_RE = re.compile(
+    br"<c\b([^>]*)\bt=(?:\"e\"|'e')([^>]*)>(.*?)</c>", re.S)
+_R_ATTR_RE = re.compile(br"\br=(?:\"([A-Za-z]+\d+)\"|'([A-Za-z]+\d+)')")
+
+
+def current_titles_by_part(wb, zin):
+    """{part_name: CURRENT sheet title} for a preserve workbook — the
+    package still uses ORIGINAL titles after an in-session rename, and
+    sheets removed this session map to nothing (shared by scan_errors
+    and the manifest — Batch-6 gate: stale/None attributions)."""
+    from .saver import _package_info
+
+    led = getattr(wb, "_paper_ledger", None)
+    current_by_original = {}
+    if led is not None:
+        for ws_obj, original in getattr(led, "renames", {}).items():
+            current_by_original[original] = ws_obj.title
+    live_titles = {ws.title for ws in wb.worksheets}
+    _wb_part, mapping = _package_info(zin)
+    out = {}
+    for title, part in mapping.items():
+        current = current_by_original.get(title, title)
+        if current in live_titles:
+            out[part] = current
+    return out
+
+
+def _require_materialized_cells(wb, api):
+    from openpyxl.workbook.workbook import _require_materialized_cells
+
+    _require_materialized_cells(wb, api)
 
 
 def scan_errors(wb):
@@ -26,11 +54,15 @@ def scan_errors(wb):
     "value" (a live cell holds the error), "cache" (the preserved bytes
     hold it), or "formula" (a formula's text contains #REF!).
     """
+    _require_materialized_cells(wb, "scan_errors()")
     results = []
     seen = set()
     for ws in wb.worksheets:
         for (row, col), cell in sorted(ws._cells.items()):
             value = cell._value
+            if cell.data_type == "f" and not isinstance(value, str):
+                # ArrayFormula/DataTableFormula: scan the TEXT
+                value = getattr(value, "text", None)
             address = "{0}!{1}".format(ws.title, cell.coordinate)
             if isinstance(value, str):
                 if cell.data_type == "f":
@@ -52,25 +84,19 @@ def scan_errors(wb):
         import io
         import zipfile
 
-        from .saver import _package_info
-
         with zipfile.ZipFile(io.BytesIO(source)) as zin:
-            _wb_part, mapping = _package_info(zin)
-            title_by_part = {part: title
-                             for title, part in mapping.items()}
+            title_by_part = current_titles_by_part(wb, zin)
             for part, title in sorted(title_by_part.items()):
                 if part not in zin.namelist():
                     continue
                 payload = zin.read(part)
-                for m in re.finditer(
-                        br'<c\b([^>]*)\bt="e"[^>]*>(.*?)</c>', payload,
-                        re.S):
-                    ref_m = re.search(br'\br="([A-Za-z]+\d+)"', m.group(1))
-                    v_m = re.search(br"<v>([^<]*)</v>", m.group(2))
+                for m in _ERROR_CELL_RE.finditer(payload):
+                    ref_m = _R_ATTR_RE.search(m.group(1) + m.group(2))
+                    v_m = re.search(br"<v[^>]*>([^<]*)</v>", m.group(3))
                     if ref_m is None or v_m is None:
                         continue
-                    address = "{0}!{1}".format(
-                        title, ref_m.group(1).decode("ascii"))
+                    ref = (ref_m.group(1) or ref_m.group(2)).decode("ascii")
+                    address = "{0}!{1}".format(title, ref)
                     if address in seen:
                         continue
                     results.append({
@@ -123,6 +149,7 @@ def findings(wb):
     pinned). Measurements only — nothing here refuses or rewrites."""
     from openpyxl.formula import Tokenizer
 
+    _require_materialized_cells(wb, "findings()")
     out = []
 
     # error-cell (reuses the LibreOffice-free scan)
@@ -223,6 +250,8 @@ def findings(wb):
         # magnitude-outlier: contiguous numeric column runs
         _magnitude_outliers(ws, out)
 
+    _byte_level_merged_hazards(wb, out)
+
     if volatile_cells:
         out.append(Finding("volatile", sorted(volatile_cells),
                            "volatile functions recompute on every edit"))
@@ -302,3 +331,52 @@ def _magnitude_outliers(ws, out):
                 run = []
             if row is not None:
                 run.append((row, mag, coord))
+
+
+def _byte_level_merged_hazards(wb, out):
+    """merged-hazard from the PRESERVED bytes: the model DISCARDS
+    shadowed interior values at load (MergedCell._value is always None),
+    so the real evidence lives only in the package (Batch-6 gate: the
+    model-side detector could never fire on a loaded file)."""
+    source = getattr(wb, "_paper_source", None)
+    if not source:
+        return
+    import io
+    import zipfile
+
+    from openpyxl.utils.cell import coordinate_to_tuple, range_boundaries
+
+    with zipfile.ZipFile(io.BytesIO(source)) as zin:
+        title_by_part = current_titles_by_part(wb, zin)
+        byte_hazards = []
+        for part, title in sorted(title_by_part.items()):
+            payload = zin.read(part)
+            merges = re.findall(
+                br"<mergeCell\b[^>]*\bref=(?:\"([^\"]+)\"|'([^']+)')",
+                payload)
+            interiors = set()
+            for g1, g2 in merges:
+                ref = (g1 or g2).decode("ascii", "replace")
+                try:
+                    c1, r1, c2, r2 = range_boundaries(ref)
+                except Exception:
+                    continue
+                for r in range(r1, r2 + 1):
+                    for c in range(c1, c2 + 1):
+                        if (r, c) != (r1, c1):
+                            interiors.add((r, c))
+            if not interiors:
+                continue
+            for m in re.finditer(
+                    br"<c\b[^>]*\br=(?:\"([A-Z]+\d+)\"|'([A-Z]+\d+)')"
+                    br"[^>]*>(.*?)</c>", payload, re.S):
+                ref = (m.group(1) or m.group(2)).decode("ascii")
+                if b"<v" not in m.group(3) and b"<is" not in m.group(3):
+                    continue
+                if coordinate_to_tuple(ref) in interiors:
+                    byte_hazards.append("{0}!{1}".format(title, ref))
+        if byte_hazards:
+            out.append(Finding(
+                "merged-hazard", sorted(byte_hazards),
+                "the PRESERVED bytes carry shadowed values inside "
+                "merged ranges (invisible in the loaded model)"))

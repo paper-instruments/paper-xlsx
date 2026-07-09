@@ -82,12 +82,16 @@ def _referenced_coordinates(wb):
 
 def build_model_map(wb):
     referenced, has_unresolved = _referenced_coordinates(wb)
+    referenced_titles = {title for (title, _r, _c) in referenced}
     sheets = {}
     input_fills = {}
     for ws in wb.worksheets:
         has_formulas = any(cell.data_type == "f"
                            for cell in ws._cells.values())
-        if not has_formulas:
+        # a formula-free sheet whose cells other sheets READ is part of
+        # the model: its referenced cells are inputs (Batch-6 gate:
+        # cross-sheet inputs were invisible in the map and the manifest)
+        if not has_formulas and ws.title not in referenced_titles:
             continue
         roles = {"inputs": [], "calculations": [], "outputs": [],
                  "constants": []}

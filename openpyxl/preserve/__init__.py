@@ -33,7 +33,10 @@ def __getattr__(name):
         from .hygiene import findings
         return findings
     if name == "receipt":
-        from .receipt import receipt
+        # the module is named receiptS so this attribute can only ever
+        # resolve to the FUNCTION (Batch-6 gate: a same-named submodule
+        # import shadowed the function with the module object)
+        from .receipts import receipt
         return receipt
     if name == "diff_workbooks":
         from .diffreport import diff_workbooks

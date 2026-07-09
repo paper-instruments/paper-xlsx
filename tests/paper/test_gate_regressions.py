@@ -1264,3 +1264,194 @@ class TestBatch5OracleGaps:
         assert _values_match(45296, dt)               # serial == datetime
         assert _values_match(dt, 45296.0)
         assert not _values_match(dt, 45297)
+
+
+class TestBatch6LocateGaps:
+
+    def test_merged_label_interior_never_a_target(self):
+        # locate returned the unwritable MergedCell interior of the
+        # label's OWN merge as "the value" (gate critical)
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "Growth rate"
+        ws.merge_cells("A1:B1")
+        ws["C1"] = 0.05
+        assert ws.locate("Growth rate").coordinate == "C1"
+
+    def test_adjacent_string_with_competitor_is_ambiguous(self):
+        # the walk silently jumped over a string (a text value, a cached
+        # formula string, or a number-stored-as-text) to a farther cell
+        # (gate criticals x3): competition now refuses typed
+        from openpyxl.errors import AmbiguousTargetError
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "Status"
+        ws["B1"] = "pending"
+        ws["C1"] = 42
+        with pytest.raises(AmbiguousTargetError) as exc:
+            ws.locate("Status")
+        assert exc.value.kind == "ambiguous-value-cell"
+        assert set(exc.value.options) == {"Sheet!B1", "Sheet!C1"}
+        # a lone adjacent string IS the value (text values are real)
+        wb2 = Workbook()
+        ws2 = wb2.active
+        ws2["A1"] = "Status"
+        ws2["B1"] = "pending"
+        assert ws2.locate("Status").value == "pending"
+
+    def test_error_cell_is_a_value(self):
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "Check"
+        ws["B1"] = "#DIV/0!"
+        ws["C1"] = 1
+        assert ws.locate("Check").value == "#DIV/0!"
+
+    def test_prefer_validated_first(self):
+        wb = Workbook()
+        wb.active["A1"] = "L"
+        with pytest.raises(ValueError, match="prefer"):
+            wb.active.locate("Anything", prefer="left")
+
+    def test_allowed_values_whole_column_and_reversed(self):
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        wb = Workbook()
+        ws = wb.active
+        for i, v in enumerate(("Yes", "No", "Maybe"), start=1):
+            ws.cell(row=i, column=2, value=v)
+        dv = DataValidation(type="list", formula1="=$B:$B")
+        dv.add("D1")
+        ws.add_data_validation(dv)
+        assert ws.allowed_values("D1") == ["Yes", "No", "Maybe"]
+        dv2 = DataValidation(type="list", formula1="=$B$3:$B$1")
+        dv2.add("D2")
+        ws.add_data_validation(dv2)
+        assert ws.allowed_values("D2") == ["Yes", "No", "Maybe"]
+
+
+class TestBatch6InstrumentGaps:
+
+    def test_diff_reports_content_at_vacated_coordinates(self, tmp_path):
+        # new content written where a shift vacated cells was invisible
+        # in the diff (gate critical)
+        from openpyxl.preserve import diff_workbooks
+
+        wb0 = Workbook()
+        s0 = wb0.active
+        s0.title = "S"
+        s0["A1"] = "hdr"
+        s0["A2"] = 10
+        before = str(tmp_path / "a.xlsx")
+        wb0.save(before)
+        wb = load_workbook(before, preserve=True)
+        remap = wb["S"].insert_rows(2)
+        wb["S"]["A2"] = 99
+        after = str(tmp_path / "b.xlsx")
+        wb.save(after)
+        report = diff_workbooks(before, after, remaps=[remap])
+        assert any(e["after"] == 99 for e in report.changed)
+        assert any(e["from"] == "S!A2" and e["to"] == "S!A3"
+                   for e in report.shifted)
+
+    def test_diff_is_bool_aware(self, tmp_path):
+        from openpyxl.preserve import diff_workbooks
+
+        a = Workbook()
+        a.active["A1"] = 1
+        pa = str(tmp_path / "a.xlsx")
+        a.save(pa)
+        b = Workbook()
+        b.active["A1"] = True
+        pb = str(tmp_path / "b.xlsx")
+        b.save(pb)
+        assert len(diff_workbooks(pa, pb).changed) == 1
+
+    def test_preserve_receipt_survives_reaccess(self):
+        # the submodule import shadowed the lazily-exported FUNCTION: the
+        # second access returned the module (gate major)
+        import openpyxl.preserve as preserve_pkg
+
+        first = preserve_pkg.receipt
+        second = preserve_pkg.receipt
+        assert callable(first) and callable(second)
+        assert first is second
+
+    def test_search_reads_array_formula_text(self):
+        # search fabricated matches from the Python repr and missed the
+        # real formula text (gate critical)
+        from openpyxl.worksheet.formula import ArrayFormula
+
+        wb = Workbook()
+        ws = wb.active
+        ws["B1"] = ArrayFormula("B1:B2", "=SUM(A1:A2*2)")
+        hits = wb.search("SUM")
+        assert [h["address"] for h in hits] == ["Sheet!B1"]
+        assert wb.search(r"0x[0-9a-f]+", regex=True) == []
+
+    def test_perception_verbs_guard_readonly_writeonly(self, fixture_copy):
+        from openpyxl.preserve import findings, scan_errors
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           read_only=True)
+        for call in (lambda: wb.search("x"), lambda: wb.model_map(),
+                     lambda: scan_errors(wb), lambda: findings(wb)):
+            with pytest.raises(ValueError, match="materialized"):
+                call()
+        wo = Workbook(write_only=True)
+        ws = wo.create_sheet()
+        ws.append(["Growth rate"])
+        with pytest.raises(ValueError, match="materialized"):
+            wo.search("Growth")
+
+    def test_model_map_sees_cross_sheet_inputs(self):
+        wb = Workbook()
+        data = wb.active
+        data.title = "Data"
+        data["B1"] = 7                        # referenced from Calc
+        calc = wb.create_sheet("Calc")
+        calc["A1"] = "=Data!B1*2"
+        mm = wb.model_map()
+        assert "B1" in mm.sheets["Data"]["inputs"]
+        assert mm.inputs("Data") == ["B1"]
+
+    def test_manifest_part_name_follows_rename(self, fixture_copy):
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        wb["Schedule"].title = "Renamed"
+        doc = wb.manifest().to_dict()
+        entry = next(s for s in doc["sheets"] if s["title"] == "Renamed")
+        assert entry["part_name"] == "xl/worksheets/sheet1.xml"
+
+    def test_merged_hazard_fires_from_preserved_bytes(self, fixture_copy,
+                                                      tmp_path):
+        # the model discards shadowed interior values at load, so the
+        # detector could never fire (gate minor): byte-level view now
+        from openpyxl.preserve import findings
+
+        src = fixture_copy("features/merged.xlsx")
+        crafted = str(tmp_path / "shadow.xlsx")
+        # plant a shadowed value INSIDE the first merge
+        wb0 = load_workbook(src)
+        rng = next(iter(wb0.active.merged_cells.ranges))
+        interior = "{0}{1}".format(
+            chr(ord("A") + rng.min_col), rng.min_row) \
+            if rng.max_col > rng.min_col else "{0}{1}".format(
+                chr(ord("A") + rng.min_col - 1), rng.min_row + 1)
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(crafted, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/sheet1"):
+                    payload = payload.replace(
+                        b"</sheetData>",
+                        '<row r="{0}"><c r="{1}"><v>777</v></c></row>'
+                        .format(rng.min_row if rng.max_col > rng.min_col
+                                else rng.min_row + 1,
+                                interior).encode()
+                        + b"</sheetData>", 1)
+                zout.writestr(name, payload)
+        wb = load_workbook(crafted, preserve=True)
+        kinds = {f.kind for f in findings(wb)}
+        assert "merged-hazard" in kinds

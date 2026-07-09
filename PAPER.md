@@ -844,6 +844,66 @@ sections):
   A-side addresses through the AddressRemap chain; sheet
   membership changes listed.
 
+## Batch 6 — adversarial gate report (2026-07-08)
+
+Four lenses, 24 findings confirmed with live repros — deduplicated to
+fourteen defects, all fixed and fixtured
+(tests/paper/test_gate_regressions.py Batch-6 classes):
+
+- **locate() rework (three criticals + two majors, one root cause):**
+  every silent-guess branch of the value walk was a lying instrument —
+  the merged interior of the label's OWN merge came back as "the value"
+  (unwritable MergedCell, next write crashed raw); a cached formula
+  string under data_only, a number-stored-as-text, or any adjacent text
+  value was skipped as "another label" and an unrelated farther cell
+  returned silently. The walk now REFUSES instead of guessing: merged
+  interiors are covered cells (skipped), error-typed cells are values,
+  and an adjacent string with ANY populated competitor raises
+  AmbiguousTargetError naming both candidates; a lone adjacent string
+  is the value. prefer= validates before matching.
+- **diff_workbooks (critical):** new content written at coordinates a
+  shift VACATED was invisible (the B-side pass skipped every key
+  present in A); under remaps the skip now keys on consumed images
+  only. Bool-aware comparison (1 -> TRUE reported as unchanged).
+- **search (critical):** ArrayFormula cells were searched by Python
+  repr — fabricated matches (memory addresses!) and missed real
+  formula text; .text is searched now (scan_errors too). Invalid regex
+  raises ValueError with the pattern.
+- **openpyxl.preserve.receipt (major):** the same-named submodule
+  import shadowed the lazily-exported FUNCTION — the second access
+  returned the module ("'module' object is not callable"). The module
+  is now receipts.py; the attribute can only resolve to the function.
+- **read_only/write_only (majors):** search/model_map/scan_errors/
+  findings crashed raw (or silently returned []) — typed ValueError
+  naming the materialized-cells requirement.
+- **model_map (major):** cross-sheet inputs on formula-free sheets
+  were invisible (the sheet was skipped entirely); referenced-only
+  sheets now classify their referenced cells as inputs. Manifest
+  computation counts follow (golden regenerated, computation only).
+- **manifest part_name (major):** stale None after an in-session
+  rename; the rename-aware part mapping is now shared
+  (hygiene.current_titles_by_part) by scan_errors and the manifest.
+- **allowed_values (major+minor):** whole-column sources crashed raw
+  (None bounds now clamp to the populated extent); reversed sources
+  returned [] posing as "empty vocabulary" (bounds normalize).
+- **merged-hazard (minor):** unfireable from the model (shadowed
+  interior values are discarded at load) — a byte-level scan of the
+  preserved package now provides the evidence.
+- **Found and fixed mid-gate:** scan_errors' cached-error regexes were
+  double-quote-only (the FIFTH both-quote lesson); the rename/shift
+  model cascades tripped the formula linter (refuse mode would have
+  refused a legitimate rename) — machinery-internal rebinds now
+  suppress lint.
+- **Rejected with rationale:** locate refusing across an unmaterialized
+  gap (documented walk rule; typed refusal); receipt/BadZipFile on
+  non-package input (upstream convention at the package-open boundary);
+  manifest ~10x slower on huge sheets via model_map expansion
+  (absolute cost sub-second at 150k cells; revisit only with a measured
+  hot path); search's raw PatternError verdict was split — the typed
+  ValueError wrap shipped anyway.
+
+Suite: 3101 upstream+paper; 509 paper both env arms.
+
 ## Batch 5 — adversarial gate report (2026-07-08)
 
 Four lenses, 20 findings confirmed with live repros plus one found

@@ -31,44 +31,57 @@ def _label_matches(ws, label):
 
 
 def _value_neighbour(ws, row, col, prefer):
-    """The nearest non-label cell in the preferred direction: first the
-    immediate neighbour; if that is a non-empty STRING (another label),
-    keep walking up to a few cells for the first value-like cell."""
-    if prefer == "right":
-        step = (0, 1)
-    elif prefer == "below":
-        step = (1, 0)
-    else:
-        raise ValueError("prefer must be 'right' or 'below' "
-                         "(got {0!r})".format(prefer))
+    """The nearest value cell in the preferred direction — REFUSE, never
+    guess (Batch-6 gate: every silent-guess branch was a lying
+    instrument). Walk rules:
+
+    - merged-range interiors are COVERED cells, never targets: skipped;
+    - formulas, non-strings and error-typed cells are values: returned;
+    - a materialized EMPTY cell is a fillable value slot: returned;
+    - a STRING neighbour is genuinely two-faced (text value or another
+      label): it is returned only when the walk ends right after it —
+      if anything populated follows, the caller gets an
+      AmbiguousTargetError listing both candidates (raised by locate);
+    - an unmaterialized gap ends the walk.
+
+    Returns (cell, competing_cell_or_None); (None, None) = no target."""
+    from openpyxl.cell.cell import MergedCell
+
+    step = (0, 1) if prefer == "right" else (1, 0)
     r, c = row, col
-    for _ in range(4):
+    fallback = None
+    for _ in range(6):
         r += step[0]
         c += step[1]
         cell = ws._cells.get((r, c))
-        if cell is None or cell._value is None:
-            # an empty cell is a legitimate TARGET (a value slot waiting
-            # to be filled) only when materialized; unmaterialized gaps
-            # end the walk
-            if cell is not None:
-                return cell
-            return None
-        if cell.data_type == "f" or not isinstance(cell._value, str):
-            return cell
-        # a string: another label or a text VALUE — treat a string
-        # immediately adjacent as a text value only if nothing better
-        # follows; keep it as fallback
+        if cell is None:
+            return (fallback, None)          # gap ends the walk
+        if isinstance(cell, MergedCell):
+            continue                          # covered, never a target
+        if cell._value is None:
+            if fallback is not None:
+                return (fallback, None)
+            return (cell, None)               # fillable value slot
+        if cell.data_type == "f" \
+                or not isinstance(cell._value, str) \
+                or cell.data_type == "e":
+            if fallback is not None:
+                return (fallback, cell)       # competition: ambiguous
+            return (cell, None)
+        # a string: candidate value OR another label
+        if fallback is not None:
+            return (fallback, cell)           # two strings: ambiguous
         fallback = cell
-        nxt = ws._cells.get((r + step[0], c + step[1]))
-        if nxt is None or nxt._value is None:
-            return fallback
-    return None
+    return (fallback, None)
 
 
 def locate(ws, label, *, prefer="right"):
     """Worksheet.locate implementation (PR-1 §5)."""
     if not isinstance(label, str) or not label.strip():
         raise TypeError("locate() takes a non-empty label string")
+    if prefer not in ("right", "below"):
+        raise ValueError("prefer must be 'right' or 'below' "
+                         "(got {0!r})".format(prefer))
     matches = _label_matches(ws, label)
     if not matches:
         raise TargetNotFoundError(
@@ -88,7 +101,17 @@ def locate(ws, label, *, prefer="right"):
             anchor=addresses[0],
             options=addresses)
     row, col = matches[0]
-    cell = _value_neighbour(ws, row, col, prefer)
+    cell, competitor = _value_neighbour(ws, row, col, prefer)
+    if competitor is not None:
+        candidates = ["{0}!{1}".format(ws.title, cell.coordinate),
+                      "{0}!{1}".format(ws.title, competitor.coordinate)]
+        raise AmbiguousTargetError(
+            "label {0!r} has two plausible value cells {1}: the adjacent "
+            "text could be the value or another label. Address the cell "
+            "directly.".format(label, " and ".join(candidates)),
+            kind="ambiguous-value-cell",
+            anchor=candidates[0],
+            options=candidates)
     if cell is None:
         label_addr = "{0}!{1}{2}".format(ws.title, _col_letter(col), row)
         other = "below" if prefer == "right" else "right"
@@ -153,6 +176,18 @@ def allowed_values(ws, cell):
             min_col, min_row, max_col, max_row = range_boundaries(ref)
         except ValueError:
             return None            # a name/formula source: not readable
+        # whole-column/row sources clamp to the populated extent
+        # (range_boundaries hands back None bounds — Batch-6 gate: raw
+        # TypeError); reversed sources normalize (gate: silent [])
+        min_row = 1 if min_row is None else min_row
+        min_col = 1 if min_col is None else min_col
+        max_row = (target_ws.max_row or 1) if max_row is None else max_row
+        max_col = (target_ws.max_column or 1) if max_col is None \
+            else max_col
+        if min_row > max_row:
+            min_row, max_row = max_row, min_row
+        if min_col > max_col:
+            min_col, max_col = max_col, min_col
         out = []
         for r in range(min_row, max_row + 1):
             for c in range(min_col, max_col + 1):

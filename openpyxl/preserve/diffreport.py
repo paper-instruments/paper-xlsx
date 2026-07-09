@@ -95,7 +95,7 @@ def diff_workbooks(a, b, remaps=()):
                             "before": _txt(value_a), "after": None})
             continue
         value_b = cells_b.get(target)
-        if value_a == value_b:
+        if _same(value_a, value_b):
             if target != key:
                 t_title, t_row, t_col = target
                 shifted.append({
@@ -111,7 +111,13 @@ def diff_workbooks(a, b, remaps=()):
             "after": _txt(value_b)})
         consumed_b.add(target)
     for key in sorted(cells_b, key=lambda k: (k[0], k[1], k[2])):
-        if key in consumed_b or key in cells_a:
+        # skip only coordinates already CONSUMED as some A-cell's image:
+        # under remaps an A-side coordinate may have been vacated and
+        # REWRITTEN with new content, which must be reported (Batch-6
+        # gate: the `key in cells_a` skip made such cells invisible)
+        if key in consumed_b:
+            continue
+        if not remaps and key in cells_a:
             continue
         title, row, col = key
         if title not in titles_a:
@@ -124,6 +130,14 @@ def diff_workbooks(a, b, remaps=()):
     return DiffReport(changed, shifted,
                       sorted(titles_b - titles_a),
                       sorted(titles_a - titles_b))
+
+
+def _same(a, b):
+    # True == 1 in Python but not in a spreadsheet (t="b" vs numeric):
+    # bool-aware comparison (Batch-6 gate: 1 -> TRUE reported unchanged)
+    if isinstance(a, bool) != isinstance(b, bool):
+        return False
+    return a == b
 
 
 def _txt(value):
