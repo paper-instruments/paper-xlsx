@@ -45,7 +45,7 @@ class DirtyLedger:
                  "comment_snapshots", "workbook_snapshot", "core_snapshot",
                  "custom_snapshot", "chartsheet_snapshots", "pinned_regions",
                  "object_snapshots", "external_links_snapshot",
-                 "protection_warned", "replaced_parts",
+                 "protection_warned", "replaced_parts", "renames",
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag")
@@ -74,6 +74,7 @@ class DirtyLedger:
         self.external_links_snapshot = ()
         self.protection_warned = set()   # sheets warned once (1.6)
         self.replaced_parts = {}         # raw byte swaps (PR-1 1.4)
+        self.renames = {}                # ws -> ORIGINAL title (3.2)
         self.orig_cell_styles_len = 0
         self.rich_text_mode = False
         self.sheet_states = {}         # title -> state at arm (all sheets)
@@ -660,10 +661,15 @@ def refuse_chart_or_image_add(ws, what):
     )
 
 
-def refuse_rename(sheet_child):
-    """Renaming a LOADED sheet under preserve is refused: every formula,
-    defined name and chart series referencing the old name — including
-    inside preserved-bytes parts — would silently dangle."""
+def record_rename(sheet_child, new_title):
+    """Renaming a LOADED sheet (PLAN-v0.1 3.2, battery 8): the cascade
+    rewrite. Model formulas and defined names are rewritten NOW (upstream
+    rewrites nothing — the model must stay coherent in-session); chart
+    parts referencing the old name are byte-patched at save; the sheets
+    entry in workbook.xml gets a name patch keyed by the ORIGINAL title.
+    Refuses (atomic, before any mutation): textual references the rewrite
+    cannot see (the old title inside formula STRING literals — the
+    INDIRECT class), and pivot parts referencing the old name."""
     wb = getattr(sheet_child, "parent", None)
     if wb is None:
         return
@@ -672,13 +678,68 @@ def refuse_rename(sheet_child):
         return
     if sheet_child in led.added_sheets:
         return
-    if sheet_child.title in led.loaded_sheet_titles:
+    old_title = sheet_child.title
+    if old_title not in led.loaded_sheet_titles:
+        return
+
+    from .rewrite import rename_sheet_in_formula, title_in_string_literals
+    from .structural import _pivots_referencing
+
+    # guards first — the refusal must precede every mutation
+    textual = []
+    for ws in wb.worksheets:
+        for (row, col), cell in ws._cells.items():
+            if cell.data_type == "f" and isinstance(cell._value, str) \
+                    and title_in_string_literals(cell._value, old_title):
+                textual.append("{0}!{1}".format(ws.title, cell.coordinate))
+    if textual:
         raise UnsupportedStructureError(
-            "renaming sheet {0!r} is not supported in preserve mode: "
-            "formulas, defined names and chart references to the old name "
-            "(including inside preserved charts) would silently break. "
-            "Nothing was changed.".format(sheet_child.title)
-        )
+            "renaming sheet {0!r} cannot rewrite textual references to it "
+            "inside formula strings (INDIRECT-style) at: {1}. Rewrite "
+            "those formulas first. Nothing was changed.".format(
+                old_title, ", ".join(sorted(textual)[:8])))
+    if _pivots_referencing(wb, old_title):
+        raise UnsupportedStructureError(
+            "renaming sheet {0!r} is not supported while pivot parts "
+            "reference it (pivot cacheSource rewriting is out of scope). "
+            "Nothing was changed.".format(old_title))
+
+    # model-side cascade: formulas everywhere + defined names
+    for ws in wb.worksheets:
+        for (row, col), cell in sorted(ws._cells.items()):
+            if cell.data_type != "f" or not isinstance(cell._value, str):
+                continue
+            new_formula, changed = rename_sheet_in_formula(
+                cell._value, old_title, new_title)
+            if changed:
+                cell.value = new_formula        # public setter: ledgered
+    _rename_defined_names(wb, old_title, new_title)
+    for scoped in wb.worksheets:
+        _rename_defined_names(scoped, old_title, new_title)
+
+    # ledger bookkeeping: the sheet keeps counting as LOADED under its
+    # new name, state patches re-key, and the save patches the name attr
+    # of the <sheet> entry still carrying the ORIGINAL bytes
+    original = led.renames.get(sheet_child, old_title)
+    led.renames[sheet_child] = original
+    led.loaded_sheet_titles = frozenset(
+        (led.loaded_sheet_titles - {old_title}) | {new_title})
+    if old_title in led.sheet_states:
+        led.sheet_states[new_title] = led.sheet_states.pop(old_title)
+    led.formulas_changed = True
+
+
+def _rename_defined_names(holder, old_title, new_title):
+    from .rewrite import rename_sheet_in_formula
+
+    for name in list(holder.defined_names):
+        dn = holder.defined_names[name]
+        if not dn.value:
+            continue
+        rewritten, changed = rename_sheet_in_formula(
+            "=" + dn.value, old_title, new_title)
+        if changed:
+            dn.value = rewritten[1:]
 
 
 # ---------------------------------------------------------------------

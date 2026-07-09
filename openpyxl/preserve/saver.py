@@ -227,7 +227,10 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             continue
         table_lifecycle = "tableParts" in all_region_changes
 
-        part = sheet_parts.get(ws.title)
+        # renamed sheets are still keyed by their ORIGINAL title in the
+        # original workbook.xml (PLAN-v0.1 3.2)
+        original_title = led.renames.get(ws, ws.title)
+        part = sheet_parts.get(original_title)
         if part is None or part not in names:
             _refuse("cannot locate the package part for sheet {0!r} via "
                     "the workbook relationships.".format(ws.title))
@@ -384,6 +387,20 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             claims.add("hyperlinks")
         region_claims[part] = claims
         row_claims[part] = set(row_changes)
+
+    # ---- rename cascade: chart parts referencing old titles (3.2) ---------
+    for ws_obj, original_title in led.renames.items():
+        if ws_obj.title == original_title:
+            continue
+        from .chartpatch import patch_chart_rename
+        from .structural import _charts_referencing
+
+        for chart_part in _charts_referencing(workbook, original_title):
+            payload = plan.get(chart_part, zin.read(chart_part))
+            patched = patch_chart_rename(payload, original_title,
+                                         ws_obj.title)
+            if patched is not None:
+                plan[chart_part] = patched
 
     # ---- calcChain cascade (D13), on the lifecycle engine ------------------
     drop_calcchain = led.formulas_changed and _CALC_CHAIN in names

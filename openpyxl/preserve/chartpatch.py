@@ -249,3 +249,41 @@ def _sheet_drawing_part(zin, sheet_title):
         if rel.Type.endswith("/drawing"):
             return rel.target
     return None
+
+
+def patch_chart_rename(payload, old_title, new_title):
+    """Rewrite every chart formula text (<c:f>) referencing ``old_title``
+    to ``new_title`` (PLAN-v0.1 3.2). Returns the patched payload, or None
+    when nothing referenced the old title. Refuses when the chart carries
+    machinery whose references the patch cannot see (the same blocker set
+    as shift patching)."""
+    from openpyxl.errors import UnsupportedStructureError
+
+    from .rewrite import rename_sheet_in_formula
+
+    hit = False
+    edits = []
+    for ns, local, _parent, t_start, t_end in _walk_leaf_texts(payload):
+        if local != b"f" or ns != CHART_NS:
+            continue
+        raw = payload[t_start:t_end]
+        text = _unescape(raw).decode("utf-8")
+        new_text, changed = rename_sheet_in_formula(
+            "=" + text, old_title, new_title)
+        if not changed:
+            continue
+        hit = True
+        edits.append((t_start, t_end,
+                      _escape(new_text[1:].encode("utf-8"))))
+    if not hit:
+        return None
+    for marker, label in ((b"c15:", "c15 filtered-series machinery"),
+                          (b"AlternateContent", "alternate-content blocks")):
+        if marker in payload:
+            raise UnsupportedStructureError(
+                "renaming sheet {0!r}: a chart referencing it carries "
+                "{1}, whose references the rename patch cannot see. "
+                "Nothing was written.".format(old_title, label))
+    from .crosspart import apply_edits
+
+    return apply_edits(payload, edits)

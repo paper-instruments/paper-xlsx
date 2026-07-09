@@ -193,14 +193,19 @@ class TestSheetLifecycle:
         with pytest.raises(UnsupportedStructureError, match="copy_worksheet"):
             wb.copy_worksheet(wb["Data"])
 
-    def test_rename_loaded_sheet_refuses_added_sheet_allowed(self, preserved):
-        wb, _ = preserved
-        with pytest.raises(UnsupportedStructureError, match="renaming"):
-            wb["Data"].title = "Records"
-        assert "Data" in wb.sheetnames
+    def test_rename_cascades_and_added_sheet_still_free(self, preserved):
+        # FLIPPED by v0.1 Batch 3 (was a refusal): loaded-sheet renames
+        # cascade (full coverage in battery job 8); in-session sheets
+        # rename with no ledger involvement at all
+        wb, led = preserved
+        wb["Data"].title = "Records"
+        assert "Records" in wb.sheetnames
+        assert "Records" in led.loaded_sheet_titles     # still LOADED
+        assert "Data" not in led.loaded_sheet_titles
         ws = wb.create_sheet("New")
         ws.title = "Renamed"                     # in-session sheets may rename
         assert ws.title == "Renamed"
+        assert ws not in led.renames             # no cascade recorded
 
 
 class TestMarkDirty:

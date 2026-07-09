@@ -404,14 +404,32 @@ class TestBatteryToday:
         with pytest.raises(UnsupportedStructureError, match="cm/vm"):
             wb.save(str(tmp_path / "o.xlsx"))
 
-    # job 8 — today: refuse at set-time. Batch 3 flips to cascade rewrite.
-    def test_job8_sheet_rename_refuses(self, fixture_copy):
-        from openpyxl.errors import UnsupportedStructureError
+    # job 8 — Batch-3 state: CORRECT cascade rewrite (was a set-time
+    # refusal): formulas, defined names, and the workbook.xml entry all
+    # follow the rename.
+    def test_job8_sheet_rename_cascades(self, fixture_copy, tmp_path):
+        src = fixture_copy("features/schedule.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Schedule"].title = "Plan B"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert "Plan B" in wb2.sheetnames
+        assert "Schedule" not in wb2.sheetnames
+        # cross-sheet formula rewritten (quoted: the new name has a space)
+        assert wb2["Summary"]["B1"].value == "='Plan B'!B12"
+        # defined name rewritten
+        assert wb2.defined_names["Growth"].value == "'Plan B'!$B$15"
+        # same-sheet formulas untouched in meaning
+        assert wb2["Plan B"]["B12"].value == "=SUM(B2:B11)"
 
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           preserve=True)
-        with pytest.raises(UnsupportedStructureError, match="renam"):
-            wb["Schedule"].title = "Renamed"
+        # the INDIRECT class refuses atomically
+        wb3 = load_workbook(src, preserve=True)
+        wb3["Summary"]["C1"] = '=INDIRECT("Schedule!B12")'
+        from openpyxl.errors import UnsupportedStructureError
+        with pytest.raises(UnsupportedStructureError, match="INDIRECT"):
+            wb3["Schedule"].title = "X"
+        assert wb3["Schedule"].title == "Schedule"     # unchanged
 
     # job 9 — Batch-1 state (flipped by 1.6): warn by default, refuse
     # under wb.strict_protection. Protection is reported, never bypassed

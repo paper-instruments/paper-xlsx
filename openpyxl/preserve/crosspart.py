@@ -411,14 +411,24 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
         raise UnsupportedStructureError(
             "the workbook part has no sheets element. Nothing was written.")
     sheets_node = sheets_nodes[0]
-    if state_changes:
+    renamed = {}
+    for ws_obj, original_title in getattr(led, "renames", {}).items():
+        if ws_obj.title != original_title:
+            renamed[original_title] = ws_obj.title
+    if state_changes or renamed:
         for entry in sheets_node.children:
             if entry.local() != "sheet":
                 continue
             name = entry.attrs.get("name")
-            if name in state_changes:
+            if name in renamed:
+                # the entry still carries the ORIGINAL name bytes; the
+                # state key (led re-keyed at rename time) is the NEW one
+                edits.append(_patch_attr(original, entry, "name",
+                                         renamed[name]))
+            effective = renamed.get(name, name)
+            if effective in state_changes:
                 edits.append(_patch_attr(original, entry, "state",
-                                         state_changes[name],
+                                         state_changes[effective],
                                          drop_value="visible"))
     if new_sheet_entries:
         payload = b"".join(
