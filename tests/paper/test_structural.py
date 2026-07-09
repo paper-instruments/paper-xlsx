@@ -169,3 +169,82 @@ class TestMultipleShifts:
         wb.save(out)
         wb2 = load_workbook(out)
         assert wb2["Schedule"]["B4"].value == 777
+
+
+class TestSpanningMerges:
+    """PLAN-v0.1 3.3: Excel merge semantics under shifts (expansion on
+    insert-inside, shrink on delete-inside, move otherwise)."""
+
+    def test_merge_expands_shrinks_and_moves(self, fixture_copy, tmp_path):
+        src = fixture_copy("features/merged.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]                    # merges: A1:D1, A3:B4
+        ws.insert_rows(4)                        # inside A3:B4 -> expand
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert sorted(str(r) for r in
+                      wb2.worksheets[0].merged_cells.ranges) == \
+            ["A1:D1", "A3:B5"]
+
+        wb3 = load_workbook(fixture_copy("features/merged.xlsx"),
+                            preserve=True)
+        wb3.worksheets[0].delete_rows(4)         # inside -> shrink
+        out2 = str(tmp_path / "o2.xlsx")
+        wb3.save(out2)
+        wb4 = load_workbook(out2)
+        assert sorted(str(r) for r in
+                      wb4.worksheets[0].merged_cells.ranges) == \
+            ["A1:D1", "A3:B3"]
+
+
+class TestMoveRange:
+    """PLAN-v0.1 3.3: move_range as tracked cell edits."""
+
+    def test_clean_move_lands(self, fixture_copy, tmp_path):
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        ws = wb["Schedule"]
+        # move two label cells sideways into empty columns (nothing
+        # references them)
+        assert ws["A2"].value is not None
+        ws.move_range("A2:A3", rows=0, cols=4)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        ws2 = wb2["Schedule"]
+        assert ws2["E2"].value is not None
+        assert ws2["A2"].value is None
+        assert ws2["B12"].value == "=SUM(B2:B11)"    # untouched machinery
+
+    def test_move_of_referenced_block_refuses(self, fixture_copy):
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        ws = wb["Schedule"]
+        with pytest.raises(UnsupportedStructureError, match="references"):
+            ws.move_range("B2:B4", rows=0, cols=3)   # inside =SUM(B2:B11)
+        assert ws["B2"].value is not None            # atomic
+
+
+class TestStructuredRefs:
+    """PLAN-v0.1 3.5: Table1[@Col] is never mis-shifted — tables on the
+    shifted sheet block the shift (refusal), and bracketed operands are
+    never rewritten."""
+
+    def test_shift_on_table_sheet_refuses(self, fixture_copy):
+        wb = load_workbook(fixture_copy("features/tables.xlsx"),
+                           preserve=True)
+        ws = wb.worksheets[0]
+        with pytest.raises(UnsupportedStructureError, match="table"):
+            ws.insert_rows(2)
+
+    def test_structured_ref_text_survives_other_sheet_shift(
+            self, fixture_copy, tmp_path):
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        wb["Summary"]["C1"] = "=SUM(RegionTable[Amount])"
+        wb["Schedule"].insert_rows(3)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Summary"]["C1"].value == "=SUM(RegionTable[Amount])"

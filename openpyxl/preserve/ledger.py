@@ -881,3 +881,88 @@ def record_sheet_removal(wb, ws):
     led.pinned_regions.pop(ws, None)
     # calcChain carries positional sheet indexes: it dies with the sheet
     led.formulas_changed = True
+
+
+def begin_move_range(ws, move_spec):
+    """move_range under preserve (PLAN-v0.1 3.3): expressed as tracked
+    cell edits (source cleared + destination written — no rows shift, so
+    no byte renumber). Guards refuse what the move cannot keep coherent:
+    merges/CF/DV/tables intersecting either rectangle, and formulas
+    OUTSIDE the moved block referencing the source (Excel's cut-paste
+    would follow them; we do not rewrite them in this wave)."""
+    led = _armed_ledger_for_ws(ws)
+    if led is None or ws in led.added_sheets:
+        return
+    from openpyxl.utils.cell import range_boundaries
+
+    from .structural import _intersects
+    from .perception import dependency_sketch
+
+    cell_range, rows, cols, _translate = move_spec
+    if isinstance(cell_range, str):
+        src = range_boundaries(cell_range)
+    else:
+        src = (cell_range.min_col, cell_range.min_row,
+               cell_range.max_col, cell_range.max_row)
+    dst = (src[0] + cols, src[1] + rows, src[2] + cols, src[3] + rows)
+    if dst[0] < 1 or dst[1] < 1:
+        raise UnsupportedStructureError(
+            "move_range would move cells before column A / row 1. "
+            "Nothing was changed.")
+
+    problems = []
+    for rng in ws.merged_cells.ranges:
+        b = (rng.min_col, rng.min_row, rng.max_col, rng.max_row)
+        if _intersects(b, *src) or _intersects(b, *dst):
+            problems.append("merged range {0}".format(rng))
+    for cf in ws.conditional_formatting:
+        for rng in getattr(cf.sqref, "ranges", []):
+            b = (rng.min_col, rng.min_row, rng.max_col, rng.max_row)
+            if _intersects(b, *src) or _intersects(b, *dst):
+                problems.append("conditional formatting {0}".format(rng))
+    if ws.data_validations:
+        for dv in ws.data_validations.dataValidation:
+            for rng in getattr(dv.sqref, "ranges", []):
+                b = (rng.min_col, rng.min_row, rng.max_col, rng.max_row)
+                if _intersects(b, *src) or _intersects(b, *dst):
+                    problems.append("data validation {0}".format(rng))
+    for name, ref in getattr(ws, "tables", {}).items():
+        from .structural import _ref_hit
+
+        if _ref_hit(ref, src) or _ref_hit(ref, dst):
+            problems.append("table {0!r}".format(name))
+
+    sketch = dependency_sketch(ws.parent)
+    inside = set()
+    for r in range(src[1], src[3] + 1):
+        for c in range(src[0], src[2] + 1):
+            inside.add((r, c))
+    from openpyxl.utils.cell import coordinate_to_tuple
+
+    for address in sketch.cells_referencing(ws.title, src):
+        title, _, coord = address.rpartition("!")
+        bare = title.strip("'").replace("''", "'")
+        try:
+            rc = coordinate_to_tuple(coord)
+        except Exception:
+            problems.append("formula {0}".format(address))
+            continue
+        if bare.casefold() != ws.title.casefold() or rc not in inside:
+            problems.append("formula {0} references the moved "
+                            "block".format(address))
+    if problems:
+        raise UnsupportedStructureError(
+            "move_range on sheet {0!r} cannot be kept coherent:\n  - {1}\n"
+            "Nothing was changed. Restructure the edit or move the "
+            "referencing content first.".format(
+                ws.title, "\n  - ".join(sorted(set(problems))[:10])))
+
+    # the move is plain cell edits: mark every source AND destination
+    # coordinate dirty (upstream mutates the model right after this)
+    for r in range(src[1], src[3] + 1):
+        for c in range(src[0], src[2] + 1):
+            led.mark_cell(ws, r, c)
+    for r in range(dst[1], dst[3] + 1):
+        for c in range(dst[0], dst[2] + 1):
+            led.mark_cell(ws, r, c)
+    led.formulas_changed = True          # moved formulas re-anchor

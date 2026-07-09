@@ -57,15 +57,19 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
     if not dirty:
         return dirty
 
-    # array formulas: refuse on intersection
+    # array/spill formulas: refuse on intersection, naming the anchor
+    # (PLAN-v0.1 3.4: the in_spill context — members of a dynamic-array
+    # spill are blank cells in the file; the range lives on the anchor)
     for ref in scan.array_refs:
         hit = dirty & _cells_in_ref(ref)
         if hit:
+            anchor = ref.split(":")[0]
             raise SpliceRefusal(
-                "cannot edit cell(s) {0} on sheet {1!r}: they intersect the "
-                "array formula range {2}. Editing array formulas is not "
-                "supported in v0; nothing was written.".format(
-                    sorted(hit), ws.title, ref))
+                "cannot edit cell(s) {0} on sheet {1!r}: they are inside "
+                "the array/spill range {2} (in_spill; anchored at {3}). "
+                "Edit the anchor formula instead, or clear the whole "
+                "range. Nothing was written.".format(
+                    sorted(hit), ws.title, ref, anchor))
 
     # shared-formula groups: dissolve on touch. Membership comes from the
     # OBSERVED member cells (every member carries si); the host's ref
@@ -94,12 +98,11 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
         cell_span = row_span.cells.get(col) if row_span else None
         if cell_span is None:
             continue
-        if "cm" in cell_span.attrs or "vm" in cell_span.attrs:
-            raise SpliceRefusal(
-                "cannot edit cell {0}{1} on sheet {2!r}: it carries cell "
-                "metadata (cm/vm — dynamic-array or rich-value metadata) "
-                "that would go stale on the new value. Nothing was "
-                "written.".format(_col_letter(col), row, ws.title))
+        # cm/vm cell metadata (dynamic-array / rich-value): a plain
+        # value overwrite is CORRECT with the attributes dropped — the
+        # cell simply stops being a rich value/spill anchor; the metadata
+        # part keeps unreferenced records (legal dead weight). The emit
+        # carry excludes cm/vm (PLAN-v0.1 3.4; was a v0 refusal).
         if cell_span.has_extlst:
             raise SpliceRefusal(
                 "cannot edit cell {0}{1} on sheet {2!r}: it carries a "

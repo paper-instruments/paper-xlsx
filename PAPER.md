@@ -671,6 +671,45 @@ sections):
   corpus lacks styles-less/custom-props frozen fixtures (synthesized
   inline in tests; queued for the next corpus regeneration).
 
+## Batch 3 — Region and structural completion (2026-07-08, PLAN-v0.1)
+
+- **3.1 x14 twin-sync** (the highest-traffic refusal, lifted): twin-
+  bearing CF composes from ORIGINAL bytes (the model drops <x14:id>
+  pointers on re-render, measured) — survivors verbatim, deletions
+  remove the GUID-matched twin entry, sqref-only changes patch classic
+  attribute AND twin xm:sqref in lockstep, new rules append as model
+  renders. DV: the blanket D15 refusal narrows to classic/x14 sqref
+  OVERLAP. Battery 20: CORRECT.
+- **3.2 sheet lifecycle:** rename cascades (model formulas + defined
+  names rewritten at set time, tokenizer-based with 3-D span endpoints;
+  chart <c:f> byte-patched; workbook.xml name-patched on ORIGINAL
+  bytes; ledger re-keyed so a renamed sheet never masquerades as added;
+  INDIRECT-textual and pivot references refuse) — battery 8 CORRECT.
+  copy_worksheet registers as an ADDED sheet; comments on added sheets
+  generate via the stock writer's anysvml legacyDrawing + the engine —
+  battery 11 CORRECT. Delete runs the reference audit (refuse with
+  enumeration) then cascades at save (part + rels + exclusive closure
+  with reference counting; RemovalReport pinned). Reorder rebuilds the
+  sheets element from ORIGINAL entry bytes; definedNames/bookViews
+  force-re-render (position-derived).
+- **3.3 structural widening:** multiple shifts per session compose (the
+  one-shift refusal was pure conservatism — fixups/rebases run at edit
+  time in order, the byte renumber replays in order); spanning merges
+  already followed Excel semantics (expand/shrink/move — now pinned by
+  tests); move_range lands as TRACKED CELL EDITS (no byte renumber) with
+  coherence guards (merges/CF/DV/tables intersecting either rectangle,
+  and outside formulas referencing the moved block, refuse with
+  victims).
+- **3.4 dynamic arrays:** ordinary value writes on cm/vm cells are
+  CORRECT — the overwrite ends the cell's rich-value/spill role, so the
+  attributes drop (never carry; unreferenced metadata records are legal
+  dead weight). Writing INTO a spill/array range keeps refusing, now
+  with the in_spill context naming the anchor. Battery 21 CORRECT;
+  battery 7 refuses with context.
+- **3.5 structured references:** never mis-shifted, by construction —
+  tables on the shifted sheet block the shift, bracketed operands are
+  never rewritten (pinned by tests).
+
 ## Pinned-surface debt ledger
 
 Debts are pinned surface not yet produced-and-tested; each names its

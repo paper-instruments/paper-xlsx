@@ -393,15 +393,17 @@ class TestBatteryToday:
                 zout.writestr(part, payload)
         return out
 
-    # job 7 — today: refuse. Batch 1 keeps refuse, adds in_spill context.
-    def test_job7_spill_write_refuses(self, fixture_copy, tmp_path):
+    # job 7 — Batch-3 state: writing INTO a spill/array range refuses
+    # with the in_spill context naming the anchor.
+    def test_job7_spill_write_refuses_with_context(self, fixture_copy,
+                                                   tmp_path):
         from openpyxl.errors import UnsupportedStructureError
 
-        src = self._surgery(fixture_copy, tmp_path, "spill.xlsx",
-                            b'<c r="B2"', b'<c r="B2" vm="1"')
+        src = fixture_copy("features/shared_formulas.xlsx")
         wb = load_workbook(src, preserve=True)
-        wb["Sheet1"]["B2"] = 5
-        with pytest.raises(UnsupportedStructureError, match="cm/vm"):
+        wb["Calc"]["D3"] = 5                   # inside the D2:D4 array
+        with pytest.raises(UnsupportedStructureError,
+                           match="in_spill.*anchored at D2"):
             wb.save(str(tmp_path / "o.xlsx"))
 
     # job 8 — Batch-3 state: CORRECT cascade rewrite (was a set-time
@@ -691,18 +693,24 @@ class TestBatteryToday:
         wb2 = load_workbook(out)
         assert len(wb2["Model"].conditional_formatting) == 4  # 3 + new
 
-    # job 21 — today: refuse (cm metadata). Batch 3 flips to correct
-    # cm/vm bookkeeping.
-    def test_job21_value_write_on_excel365_cell_refuses(
+    # job 21 — Batch-3 state: CORRECT — an ordinary value write on an
+    # Excel-365 cell (cm/vm metadata) proceeds; the stale metadata
+    # pointers are dropped with the overwrite (the cell stops being a
+    # rich value), never carried.
+    def test_job21_value_write_on_excel365_cell_is_correct(
             self, fixture_copy, tmp_path):
-        from openpyxl.errors import UnsupportedStructureError
-
         src = self._surgery(fixture_copy, tmp_path, "e365.xlsx",
-                            b'<c r="B2"', b'<c r="B2" cm="1"')
+                            b'<c r="B2"', b'<c r="B2" cm="1" vm="2"')
         wb = load_workbook(src, preserve=True)
         wb["Sheet1"]["B2"] = 5
-        with pytest.raises(UnsupportedStructureError, match="cm/vm"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'cm="1"' not in sheet
+        assert b'vm="2"' not in sheet
+        wb2 = load_workbook(out)
+        assert wb2["Sheet1"]["B2"].value == 5
 
     # job 22 — today: refuse at call time. Batch 4 flips to correct.
     def test_job22_add_chart_refuses(self, fixture_copy):

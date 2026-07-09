@@ -71,7 +71,8 @@ def _structural_guard(ws, operation, index, amount=1):
     led = getattr(wb, "_paper_ledger", None) if wb is not None else None
     if led is not None and led.armed:
         if operation == "move_range":
-            _refuse_structural_edit(ws, operation, index)
+            from openpyxl.preserve.ledger import begin_move_range
+            begin_move_range(ws, index)      # index carries the move spec
             return False
         from openpyxl.preserve.ledger import begin_structural_edit
         return begin_structural_edit(ws, operation, index, amount)
@@ -841,7 +842,8 @@ class Worksheet(_WorkbookChild):
             raise ValueError("Only CellRange objects can be moved")
         if not rows and not cols:
             return
-        _structural_guard(self, "move_range", None)
+        _structural_guard(self, "move_range",
+                          (cell_range, rows, cols, translate))
 
         down = rows > 0
         right = cols > 0

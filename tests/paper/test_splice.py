@@ -187,7 +187,7 @@ class TestSharedAndArrayFormulas:
             before = f.read()
         wb = load_workbook(src, preserve=True)
         wb["Calc"]["D3"] = 5                          # inside D2:D4 array
-        with pytest.raises(UnsupportedStructureError, match="array formula"):
+        with pytest.raises(UnsupportedStructureError, match="in_spill"):
             wb.save(str(tmp_path / "o.xlsx"))
         with open(src, "rb") as f:
             assert f.read() == before
@@ -370,14 +370,22 @@ class TestProducerGuards:
         assert b'ph="1"' in sheet
         assert load_workbook(out)["Sheet1"]["B2"].value == 42
 
-    def test_cm_metadata_cell_refuses(self, fixture_copy, tmp_path):
+    def test_cm_metadata_drops_on_overwrite(self, fixture_copy, tmp_path):
+        # FLIPPED by v0.1 Batch 3 (was a refusal): a value overwrite ends
+        # the cell's rich-value role; cm/vm never carry (battery job 21)
         surgical = self._surgery(
             fixture_copy, tmp_path,
             lambda p: p.replace(b'<c r="B2"', b'<c r="B2" cm="1"', 1))
         wb = load_workbook(surgical, preserve=True)
         wb["Sheet1"]["B2"] = 42
-        with pytest.raises(UnsupportedStructureError, match="cell metadata"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        parts = part_payloads(out)
+        sheet = next(p for n, p in parts.items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'cm="1"' not in sheet
+        assert load_workbook(out)["Sheet1"]["B2"].value == 42
+
 
     def test_rless_rows_refuse(self, fixture_copy, tmp_path):
         import re
