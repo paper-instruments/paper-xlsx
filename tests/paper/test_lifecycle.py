@@ -153,3 +153,84 @@ class TestEnginePrimitive:
             "docProps/custom.xml"
         assert _relative_target("xl/worksheets/sheet1.xml",
                                 "xl/comments1.xml") == "../comments1.xml"
+
+
+class TestTableLifecycle:
+
+    def test_table_removal_drops_part_and_element(self, fixture_copy,
+                                                  tmp_path):
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        del ws.tables["RegionTable"]
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        parts = part_payloads(out)
+        assert not any(n.startswith("xl/tables/") for n in parts)
+        sheet = next(p for n, p in parts.items()
+                     if n.startswith("xl/worksheets/"))
+        assert b"<tableParts" not in sheet
+        assert b"table+xml" not in parts["[Content_Types].xml"]
+        wb2 = load_workbook(out)
+        assert not wb2.worksheets[0].tables
+        assert wb2.worksheets[0]["B2"].value == 20     # data survives
+
+    def test_second_table_coexists_with_original(self, fixture_copy,
+                                                 tmp_path):
+        from openpyxl.worksheet.table import Table
+
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        ws["D1"] = "K"
+        ws["D2"] = 1
+        ws.add_table(Table(displayName="Second", ref="D1:D2"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        parts = part_payloads(out)
+        # original part untouched byte-for-byte
+        assert parts["xl/tables/table1.xml"] == \
+            part_payloads(src)["xl/tables/table1.xml"]
+        sheet = next(p for n, p in parts.items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'<tableParts count="2">' in sheet
+        wb2 = load_workbook(out)
+        assert set(wb2.worksheets[0].tables) == {"RegionTable", "Second"}
+
+    def test_totals_row_moves_with_append(self, fixture_copy, tmp_path):
+        # craft a totals-row table: extend RegionTable with a totals row
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        tbl = ws.tables["RegionTable"]
+        ws["A6"] = "Total"
+        ws["B6"] = "=SUBTOTAL(109,RegionTable[Amount])"
+        tbl.totalsRowCount = 1
+        tbl.ref = "A1:B6"
+        staged = str(tmp_path / "staged.xlsx")
+        wb.save(staged)
+
+        wb2 = load_workbook(staged, preserve=True)
+        ws2 = wb2.worksheets[0]
+        from openpyxl.preserve.tables import append_row
+
+        append_row(ws2, "RegionTable", ["Central", 60])
+        out = str(tmp_path / "o.xlsx")
+        wb2.save(out)
+        wb3 = load_workbook(out)
+        ws3 = wb3.worksheets[0]
+        assert ws3["A6"].value == "Central"
+        assert ws3["B6"].value == 60
+        assert ws3["A7"].value == "Total"              # totals stayed last
+        assert ws3.tables["RegionTable"].ref == "A1:B7"
+
+    def test_append_refuses_content_below(self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+        from openpyxl.preserve.tables import append_row
+
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        ws["A8"] = "in the way"
+        with pytest.raises(UnsupportedStructureError, match="below"):
+            append_row(ws, "RegionTable", ["X", 1])

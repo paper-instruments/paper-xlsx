@@ -453,22 +453,38 @@ class TestBatteryToday:
         assert doc["sheets"][0]["protection"] is True
         assert doc["workbook_protection"] is False
 
-    # job 10 — Batch-1 state: REFUSE (flipped from silent staleness by
-    # the 1.1 object guards). Batch 2's lifecycle engine flips to correct
-    # append semantics.
-    def test_job10_table_ref_edit_refuses(self, fixture_copy, tmp_path):
-        from openpyxl.errors import UnsupportedStructureError
+    # job 10 — Batch-2 state: CORRECT table append discipline (flipped
+    # from the Batch-1 refusal by the lifecycle engine + table verbs).
+    def test_job10_table_append_is_correct(self, fixture_copy, tmp_path):
+        from openpyxl.preserve.tables import append_row
 
         src = fixture_copy("features/tables.xlsx")
-        with open(src, "rb") as f:
-            before = f.read()
         wb = load_workbook(src, preserve=True)
         ws = wb.worksheets[0]
-        name = sorted(ws.tables)[0]
-        ws.tables[name].ref = "A1:B2"
-        with pytest.raises(UnsupportedStructureError, match="table"):
-            wb.save(str(tmp_path / "o.xlsx"))
-        with open(src, "rb") as f:
+        append_row(ws, "RegionTable", {"Region": "Central", "Amount": 60})
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        parts = part_payloads(out)
+        table_part = parts["xl/tables/table1.xml"]
+        assert b'ref="A1:B6"' in table_part            # range extended
+        wb2 = load_workbook(out)
+        ws2 = wb2.worksheets[0]
+        assert ws2.tables["RegionTable"].ref == "A1:B6"
+        assert ws2["A6"].value == "Central"
+        assert ws2["B6"].value == 60
+        assert ws2["B5"].value == 50                   # neighbours intact
+
+        # geometry guards refuse atomically: anchor moves and column-count
+        # mismatches never reach the file
+        src2 = fixture_copy("features/tables.xlsx")
+        with open(src2, "rb") as f:
+            before = f.read()
+        wb3 = load_workbook(src2, preserve=True)
+        wb3.worksheets[0].tables["RegionTable"].ref = "A1:C5"  # 3 cols vs 2
+        from openpyxl.errors import UnsupportedStructureError
+        with pytest.raises(UnsupportedStructureError, match="tableColumns"):
+            wb3.save(str(tmp_path / "refused.xlsx"))
+        with open(src2, "rb") as f:
             assert f.read() == before                 # atomic
 
     # job 11 — today: refuse at call time. Batch 3 flips to correct copy.
@@ -568,17 +584,30 @@ class TestBatteryToday:
         assert part_payloads(out2)["xl/workbook.xml"] == \
             part_payloads(src2)["xl/workbook.xml"]
 
-    # job 18 — today: refuse at save. Batch 2 flips to correct via the
-    # part-lifecycle engine.
-    def test_job18_make_range_a_table_refuses(self, fixture_copy, tmp_path):
-        from openpyxl.errors import UnsupportedStructureError
+    # job 18 — Batch-2 state: CORRECT ("make this range a table" via the
+    # part-lifecycle engine; was a save-time refusal).
+    def test_job18_make_range_a_table_is_correct(self, fixture_copy,
+                                                 tmp_path):
         from openpyxl.worksheet.table import Table
 
         wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"),
                            preserve=True)
         wb["Sheet1"].add_table(Table(displayName="New", ref="A1:B3"))
-        with pytest.raises(UnsupportedStructureError, match="table"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        parts = part_payloads(out)
+        table_part = next(p for n, p in parts.items()
+                          if n.startswith("xl/tables/"))
+        assert b'displayName="New"' in table_part
+        assert b'ref="A1:B3"' in table_part
+        sheet = next(p for n, p in parts.items()
+                     if n.startswith("xl/worksheets/"))
+        assert b"<tableParts count=\"1\">" in sheet
+        assert b"table+xml" in parts["[Content_Types].xml"]
+        wb2 = load_workbook(out)
+        assert "New" in wb2["Sheet1"].tables
+        assert wb2["Sheet1"].tables["New"].ref == "A1:B3"
+        assert wb2["Sheet1"]["B2"].value is not None   # data intact
 
     # job 19 — today: refuse at save. Batch 2 flips to correct.
     def test_job19_comment_on_comment_free_sheet_refuses(

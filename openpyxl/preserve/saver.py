@@ -176,6 +176,14 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             continue
         changed_objects = ledger_mod.diff_objects(
             ws, led.object_snapshots.get(ws))
+        _armed_tables = set(
+            (led.object_snapshots.get(ws) or {}).get("table", {}))
+        table_changes = [key for kind, key in changed_objects
+                         if kind == "table"
+                         and key in _armed_tables
+                         and key in getattr(ws, "tables", {})]
+        changed_objects = [(kind, key) for kind, key in changed_objects
+                           if kind != "table"]
         if changed_objects:
             # the boundary class (PLAN-v0.1 1.1): these objects' backing
             # parts are preserved bytes the splice never re-serializes —
@@ -212,20 +220,36 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         comments_changed = _comments_changed(ws, led)
         shift_ops = led.shifts.get(ws, [])
         if not (ledger_dirty or all_region_changes or row_changes
-                or comments_changed or shift_ops or led.rich_text_mode):
+                or comments_changed or shift_ops or led.rich_text_mode
+                or table_changes):
             continue
         if comments_changed:
             _refuse("comments changed on sheet {0!r}; comment-part editing "
                     "is not supported in v0.".format(ws.title))
-        if "tableParts" in all_region_changes:
-            _refuse("tables were added or removed on sheet {0!r}; table-part "
-                    "lifecycle is not supported in v0.".format(ws.title))
+        table_lifecycle = "tableParts" in all_region_changes
 
         part = sheet_parts.get(ws.title)
         if part is None or part not in names:
             _refuse("cannot locate the package part for sheet {0!r} via "
                     "the workbook relationships.".format(ws.title))
         original = zin.read(part)
+        if table_changes:
+            # Batch 2 (PR-1 1.2): loaded-table mutations re-render the
+            # table part from the fully-modeled Table via the engine
+            from . import tables as tables_mod
+
+            tables_mod.plan_table_mutations(
+                workbook, ws, part, zin, table_changes, plan)
+        table_parts_bytes = _UNSET = object()
+        if table_lifecycle:
+            # Batch 2 (PR-1 1.2): table ADD/REMOVE via the lifecycle
+            # engine; the crafted tableParts bytes ride the region splice
+            from . import tables as tables_mod
+
+            table_parts_bytes = tables_mod.plan_table_lifecycle(
+                workbook, ws, part, zin,
+                led.region_snapshots.get(ws, {}).get("tableParts", ()),
+                plan, part_plan, names)
         if shift_ops:
             # Phase 6b: the byte renumber runs first (deleted rows cut,
             # shifted r attributes rewritten, all other bytes verbatim);
@@ -255,6 +279,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         region_changes = {tag: rendered
                           for tag, rendered in all_region_changes.items()
                           if tag not in _CUSTOM_REGIONS}
+        if table_lifecycle and table_parts_bytes is not _UNSET:
+            region_changes["tableParts"] = table_parts_bytes
 
         # PR-0 D2 applies to ROW and COLUMN styles too: dict(RowDimension)
         # and ColumnDimension.to_tree() carry MODEL style indices — every

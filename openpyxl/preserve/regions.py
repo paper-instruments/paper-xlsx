@@ -189,9 +189,15 @@ SPLICEABLE_REGIONS = [
 ]
 REGION_BY_TAG = {r.tag: r for r in SPLICEABLE_REGIONS}
 
-# regions whose USER change is detected but not writable in v0: refusal,
-# never silent drop. Table add/remove needs table-part lifecycle.
-DETECT_ONLY_REGIONS = ["tableParts"]
+# regions whose USER change is detected but written only via the saver's
+# own planners (the model render is a detection signature, not writable
+# bytes): the tableParts element is rebuilt by preserve.tables and rides
+# the region splice as crafted bytes (Batch 2)
+DETECT_ONLY_REGIONS = []
+
+# regions whose replacement bytes come from the SAVER's own planner (never
+# from a model render): the splice accepts them as-is
+SAVER_CRAFTED_REGIONS = frozenset(["tableParts"])
 
 
 def _render_cf(ws):

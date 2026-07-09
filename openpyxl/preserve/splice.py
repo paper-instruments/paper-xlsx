@@ -14,7 +14,8 @@ from openpyxl.errors import UnsupportedStructureError
 from openpyxl.utils.cell import range_boundaries
 
 from . import emit
-from .regions import CT_ORDER_INDEX, REGION_BY_TAG, DETECT_ONLY_REGIONS
+from .regions import (CT_ORDER_INDEX, REGION_BY_TAG, DETECT_ONLY_REGIONS,
+                      SAVER_CRAFTED_REGIONS)
 from .xmlscan import scan_sheet
 
 
@@ -143,7 +144,7 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                 "changes to {0} on sheet {1!r} are not writable in v0 "
                 "(table-part lifecycle); nothing was "
                 "written.".format(tag, ws.title))
-        if tag not in REGION_BY_TAG:
+        if tag not in REGION_BY_TAG and tag not in SAVER_CRAFTED_REGIONS:
             raise SpliceRefusal(
                 "internal: unexpected region change {0!r}".format(tag))
         spans = scan.regions.get(tag, [])

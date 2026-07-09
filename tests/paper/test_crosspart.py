@@ -375,19 +375,23 @@ class TestConditionalFormattingLift:
 
 class TestV0CrosspartRefusals:
 
-    def test_table_add_refuses(self, fixture_copy, tmp_path):
+    def test_table_add_now_correct(self, fixture_copy, tmp_path):
+        # FLIPPED by v0.1 Batch 2 (was a v0 refusal): table add rides the
+        # part-lifecycle engine; full coverage in test_lifecycle.py
         from openpyxl.worksheet.table import Table
 
         src = fixture_copy("features/tables.xlsx")
-        with open(src, "rb") as f:
-            before = f.read()
         wb = load_workbook(src, preserve=True)
         ws = wb["Data"]
+        ws["D1"] = "K"
+        ws["D2"] = 1
+        ws["E1"] = "V"
+        ws["E2"] = 2
         ws.add_table(Table(displayName="T2", ref="D1:E3"))
-        with pytest.raises(PaperRefusal, match="table"):
-            wb.save(str(tmp_path / "o.xlsx"))
-        with open(src, "rb") as f:
-            assert f.read() == before
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert "T2" in wb2["Data"].tables
 
     def test_mark_dirty_part_refuses(self, fixture_copy, tmp_path):
         src = fixture_copy(GAUNTLET)
