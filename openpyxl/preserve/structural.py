@@ -241,10 +241,10 @@ def shift_blockers(ws, operation, index, amount=1):
     blockers = []
     source = getattr(wb, "_paper_source", None)
     led = getattr(wb, "_paper_ledger", None)
-    if led is not None and led.shifts.get(ws):
-        blockers.append(
-            "the sheet already has a pending structural edit this session; "
-            "save the workbook between structural edits")
+    # multiple shifts per session compose: model fixups and snapshot
+    # rebases run at edit time in order, the byte renumber replays the
+    # recorded ops in order at save (PLAN-v0.1 3.3 retired the
+    # one-shift-per-session refusal)
     part_payload = _sheet_payload(wb, ws.title)
     if part_payload is None:
         blockers.append("the sheet's package part could not be located")

@@ -138,3 +138,34 @@ class TestBoundaryViolation:
         ws.cell(row=1, column=16384, value="sentinel")
         with pytest.raises(BoundaryViolationError, match="XFD"):
             ws.insert_cols(1)
+
+
+class TestMultipleShifts:
+    """PLAN-v0.1 3.3: shifts compose within one session."""
+
+    def test_two_shifts_one_session(self, fixture_copy, tmp_path):
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        ws = wb["Schedule"]
+        remap1 = ws.insert_rows(3, 2)      # B12 -> B14
+        remap2 = ws.delete_rows(5)         # (was row 3 data) B14 -> B13
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        ws2 = wb2["Schedule"]
+        total_row = remap2.map(remap1.map("B12"))
+        assert ws2[total_row].value.startswith("=SUM(")
+        # cross-sheet reference composed through both shifts
+        assert wb2["Summary"]["B1"].value == "=Schedule!" + total_row
+
+    def test_shift_then_edit_then_shift(self, fixture_copy, tmp_path):
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        ws = wb["Schedule"]
+        ws.insert_rows(3)
+        ws["B3"] = 777                     # edit between the shifts
+        ws.insert_rows(1)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Schedule"]["B4"].value == 777
