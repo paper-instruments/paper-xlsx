@@ -114,6 +114,11 @@ EXCEL_FUNCTIONS = frozenset([
     "CUBERANKEDMEMBER", "CUBESET", "CUBESETCOUNT", "CUBEVALUE",
     # web
     "ENCODEURL", "FILTERXML", "WEBSERVICE",
+    # 2023-2025 additions + storage-canonical dynamic-array operators
+    # (_xlfn.ANCHORARRAY / _xlfn.SINGLE are how A1# and @ are stored)
+    "GROUPBY", "PIVOTBY", "PERCENTOF", "TRIMRANGE", "REGEXTEST",
+    "REGEXEXTRACT", "REGEXREPLACE", "TRANSLATE", "DETECTLANGUAGE", "PY",
+    "ANCHORARRAY", "SINGLE",
     # legacy compatibility
     "CALL", "EUROCONVERT", "REGISTER.ID",
 ])

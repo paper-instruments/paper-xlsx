@@ -222,6 +222,19 @@ class Cell(StyleableObject):
         if dt:
             self._data_type = dt
 
+        if dt == "f" and paper_armed:
+            # ArrayFormula/DataTableFormula objects carry their text out
+            # of band: they must not bypass the lint chokepoint
+            # (Batch-5 gate)
+            text = getattr(value, "text", None)
+            if isinstance(text, str) and text.startswith("="):
+                from openpyxl.formula.lint import lint_on_bind
+                try:
+                    lint_on_bind(self, text)
+                except Exception:
+                    self._data_type = old_data_type
+                    raise
+
         if dt == 'd':
             if not is_date_format(self.number_format):
                 self.number_format = get_time_format(t)

@@ -321,6 +321,27 @@ def _classify(sketch, wb, ws, address, raw):
         return
 
     plain = ref.replace("$", "")
+    # a pure-alphabetic token without ':' is NEVER a cell/column reference
+    # in a formula (column refs need "IN:IN"; cells need a row number) —
+    # range_boundaries would happily parse "IN" as a column and hand the
+    # taint walk phantom bounds (Batch-5 gate: a defined name shaped like
+    # a column letter escaped the input taint)
+    if ":" not in plain and not any(ch.isdigit() for ch in plain):
+        name = wb.defined_names.get(raw) or ws.defined_names.get(raw)
+        if name is None:
+            sketch.unresolved.setdefault(address, []).append(raw)
+            return
+        if name.value and "[" in name.value:
+            sketch.unresolved.setdefault(address, []).append(raw)
+            return
+        try:
+            for dest_sheet, dest_ref in name.destinations:
+                dest_bounds = range_boundaries(dest_ref.replace("$", ""))
+                sketch.references.setdefault(address, []).append(
+                    (dest_sheet, dest_bounds, raw))
+        except Exception:
+            sketch.unresolved.setdefault(address, []).append(raw)
+        return
     try:
         bounds = range_boundaries(plain)
     except Exception:

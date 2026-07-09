@@ -347,7 +347,24 @@ class CertificationResult:
             self.status, self.checked, len(self.divergences))
 
 
-def _values_match(cached, computed):
+def _values_match(cached, computed, epoch=None):
+    import datetime as _dt
+
+    def _serialize(v):
+        if isinstance(v, (_dt.datetime, _dt.date, _dt.time, _dt.timedelta)):
+            from openpyxl.utils.datetime import WINDOWS_EPOCH, to_excel
+
+            return to_excel(v, epoch if epoch is not None
+                            else WINDOWS_EPOCH)
+        return v
+
+    # a date SERIAL and its parsed datetime are the same value: compare
+    # numerically (Batch-5 gate: write_back's own serials were judged
+    # DIVERGED by its own certification)
+    if isinstance(cached, (_dt.datetime, _dt.date, _dt.time,
+                           _dt.timedelta))             or isinstance(computed, (_dt.datetime, _dt.date, _dt.time,
+                                     _dt.timedelta)):
+        cached, computed = _serialize(cached), _serialize(computed)
     if isinstance(cached, bool) or isinstance(computed, bool):
         # a boolean only ever matches a boolean: Python's True == 1 would
         # otherwise mask real divergences
@@ -394,6 +411,15 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
     reasons = _exclusion_seeds(wb_formulas)
     for key in (input_seeds or ()):
         reasons[key] = "input"
+    if input_seeds:
+        # unresolved references (INDIRECT/OFFSET, structured refs, 3-D
+        # spans) are always-intersecting: with scenario inputs in play
+        # they may read ANY input, so they and their downstream inherit
+        # the input taint (Batch-5 gate: a cell fed only through
+        # INDIRECT escaped, and the certification falsely DIVERGED)
+        for address in sketch.unresolved:
+            key = _address_key(address, wb_formulas)
+            reasons.setdefault(key, "input")
     tainted = set(reasons)
     changed = True
     while changed:
@@ -421,17 +447,40 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
             formula_cells.append((ws.title, row, col, cell.coordinate,
                                   cached))
 
+    def _bucket_reasons():
+        volatile, external, unsupported = [], [], []
+        for (sheet, row, col, coord, _cached) in formula_cells:
+            reason = reasons.get((sheet, row, col))
+            if reason is None:
+                continue
+            address = "{0}!{1}".format(sheet, coord)
+            if reason == "external-link":
+                external.append(address)
+            elif reason == "input":
+                pass
+            elif reason.startswith("unsupported:"):
+                unsupported.append("{0} ({1})".format(address, reason[12:]))
+            else:
+                volatile.append(address)
+        return sorted(volatile), sorted(external), sorted(unsupported)
+
     if not formula_cells:
         return CertificationResult(
             CertificationResult.BASELINE_UNVERIFIABLE, 0, [], [],
             []), recalculated
     if all(cached is None or cached == ""
            for (_s, _r, _c, _coord, cached) in formula_cells):
-        # openpyxl-written files carry empty <v></v>: no answer key exists
+        # openpyxl-written files carry empty <v></v>: no answer key
+        # exists — but the exclusion classes still ride along, so
+        # write_back(allow_uncertified=True) never writes volatile/
+        # external/unsupported cells (Batch-5 gate)
+        vol, ext, uns = _bucket_reasons()
         return CertificationResult(
-            CertificationResult.BASELINE_UNVERIFIABLE, 0, [], [],
+            CertificationResult.BASELINE_UNVERIFIABLE, 0, [], vol,
             ["{0}!{1}".format(s, coord)
-             for (s, _r, _c, coord, _v) in formula_cells]), recalculated
+             for (s, _r, _c, coord, _v) in formula_cells],
+            external_excluded=ext,
+            unsupported_excluded=uns), recalculated
 
     if recalculated is None:
         recalculated = _recalculate_bytes(data, timeout)
@@ -465,7 +514,7 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
         ccell = computed_ws._cells.get((row, col))
         computed = ccell._value if ccell is not None else None
         checked += 1
-        if not _values_match(cached, computed):
+        if not _values_match(cached, computed, epoch=wb_formulas.epoch):
             divergences.append({"address": address, "cached": cached,
                                 "computed": computed})
 
@@ -664,6 +713,20 @@ def _resolve_single_cell(wb, address):
     return matches[0], min_row, min_col
 
 
+def _set_input_cell(ws, row, col, value, address):
+    """Assign one scenario input, refusing merged-cell interiors typed
+    (a raw AttributeError is not a legal outcome — Batch-5 gate)."""
+    from openpyxl.cell.cell import MergedCell
+    from openpyxl.errors import TargetNotFoundError
+
+    cell = ws.cell(row=row, column=col)
+    if isinstance(cell, MergedCell):
+        raise TargetNotFoundError(
+            "{0!r} is inside a merged range; write the input to the "
+            "merge's anchor cell instead.".format(address))
+    cell.value = value
+
+
 def _scan_errors(recalculated):
     from openpyxl.reader.excel import load_workbook
 
@@ -692,7 +755,7 @@ def evaluate(source, set, read, *, timeout=120.0):
     input_seeds = []
     for address in sorted(set or {}):
         ws, row, col = _resolve_single_cell(wb, address)
-        ws.cell(row=row, column=col, value=set[address])
+        _set_input_cell(ws, row, col, set[address], address)
         input_seeds.append((ws.title, row, col))
     buf = io.BytesIO()
     wb.save(buf)
@@ -736,7 +799,7 @@ def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
         seeds = []
         for address in sorted(case or {}):
             ws, row, col = _resolve_single_cell(wb, address)
-            ws.cell(row=row, column=col, value=case[address])
+            _set_input_cell(ws, row, col, case[address], address)
             seeds.append((ws.title, row, col))
         buf = io.BytesIO()
         wb.save(buf)
@@ -948,7 +1011,9 @@ def write_back(source, *, timeout=120.0, allow_uncertified=False):
     wb.save(buf)
     out = buf.getvalue()
     cleared = False
-    if covered:
+    if covered and not uncertified:
+        # an UNCERTIFIED write must leave the recalc-on-load flag alone:
+        # clearing it would make Excel trust caches nobody verified
         out, cleared = _clear_fullcalc(out)
 
     package_diff = []

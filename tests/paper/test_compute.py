@@ -184,7 +184,9 @@ class TestWriteBack:
         assert isinstance(result, oracle.WriteBackResult)  # pinned type
         assert result.uncertified is True             # the loud stamp
         assert result.cells_written == 2
-        assert result.cleared_fullcalc is True
+        # an uncertified write NEVER clears the recalc flag: Excel must
+        # not be told to trust caches nobody verified
+        assert result.cleared_fullcalc is False
         assert "xl/worksheets/sheet1.xml" in result.package_diff
         payload = result.to_dict()
         assert payload["schema"] == "oracle_write_back"
@@ -194,12 +196,16 @@ class TestWriteBack:
         wb3 = load_workbook(p)
         assert wb3["M"]["A3"].value == "=A1+A2"       # formulas intact
         with zipfile.ZipFile(p) as z:
-            assert b"fullCalcOnLoad" not in z.read("xl/workbook.xml")
-        # second run: everything verified, nothing changes
+            assert b"fullCalcOnLoad" in z.read("xl/workbook.xml")
+        # second run: the caches now verify, so the CERTIFIED pass writes
+        # nothing new and MAY clear the flag (full coverage, certified)
         result2 = oracle.write_back(p)
         assert result2.uncertified is False
         assert result2.cells_written == 0
-        assert result2.package_diff == []
+        assert result2.cleared_fullcalc is True
+        assert result2.package_diff == ["xl/workbook.xml"]
+        with zipfile.ZipFile(p) as z:
+            assert b"fullCalcOnLoad" not in z.read("xl/workbook.xml")
 
     @needs_soffice
     def test_write_back_is_macro_safe(self, fixture_copy):

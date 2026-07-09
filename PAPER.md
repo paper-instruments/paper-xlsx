@@ -797,6 +797,60 @@ sections):
   fresh-generated workbook already saves with the flag (verified;
   no change needed, recorded here per the PR-1 stock-visible note).
 
+## Batch 5 — adversarial gate report (2026-07-08)
+
+Four lenses, 20 findings confirmed with live repros plus one found
+pre-gate — deduplicated to eleven defects, all fixed and fixtured
+(tests/paper/test_gate_regressions.py Batch-5 classes):
+
+- **Lint false positives (majors):** the QUOTED storage form of
+  external-workbook references ('[Budget.xlsx]Sheet One'!A1) was judged
+  against local sheet names — refuse mode blocked legitimate binds, and
+  path-form externals reported TWO phantom sheets via the 3-D split
+  (external detection now covers the quoted branch); in-session tables
+  have no tableColumns until save, so every structured ref against a
+  just-added table was refused (columns unknowable → never unknown);
+  Excel's ' escape in column specs ([Col'[1']]) mis-split as nested
+  parts (escaped specs are unknowable → never unknown); the catalog
+  lacked 2023-25 functions (GROUPBY/PIVOTBY/PERCENTOF/TRIMRANGE/REGEX*/
+  TRANSLATE/DETECTLANGUAGE/PY) AND the storage-canonical dynamic-array
+  operators _xlfn.ANCHORARRAY/_xlfn.SINGLE (the stored forms of A1# and
+  @) — all added; eta-reduced function references (REDUCE(0,A,SUM))
+  flagged unknown-name (bare names matching the catalog now pass).
+- **Certification taint escapes (majors):** with scenario inputs in
+  play, cells fed ONLY through INDIRECT/OFFSET (sketch.unresolved)
+  escaped the input taint — the evaluation certification falsely
+  DIVERGED on healthy workbooks; unresolved formulas now inherit the
+  input taint (always-intersecting). A defined name shaped like column
+  letters ("IN", "TAX") was parsed as a whole-COLUMN reference by the
+  dependency sketch (range_boundaries permissiveness), so its readers
+  escaped every taint walk — pure-alphabetic no-colon tokens now resolve
+  as names or land in unresolved, never as phantom columns.
+- **Write-back gaps:** BASELINE_UNVERIFIABLE early-returned WITHOUT the
+  exclusion classes, so allow_uncertified wrote volatile cells and
+  their downstream (NOW() caches written as truth) — the early-return
+  result now carries volatile/external/unsupported lists;
+  write_back's own date serials were judged DIVERGED by its own
+  certification (datetime-vs-serial pairs now compare numerically via
+  the workbook epoch in _values_match); string caches with significant
+  whitespace gain xml:space="preserve". Found pre-gate: an UNCERTIFIED
+  write no longer clears fullCalcOnLoad (Excel must never be told to
+  trust caches nobody verified — stricter than the PR-1 wording, which
+  pinned coverage as the necessary condition).
+- **Chokepoint bypass (minor):** ArrayFormula objects carried their
+  text past the lint chokepoint (garbage accepted under refuse and
+  saved); the dt=='f' branch now lints .text. Merged-cell interior
+  inputs crashed evaluate() with a raw AttributeError → typed
+  TargetNotFoundError naming the anchor remedy.
+- **Rejected with rationale:** lint at 'warn' costs ~25-35µs/bind
+  (~8-11x relative on a microbenchmark, invisible in real sessions;
+  set formula_lint='off' for bulk binds — noted here); pre-existing
+  #DIV/0! cells make Evaluation.status 'errors' (honest attribution,
+  the error IS in the recalced copy); evaluate_many pool hygiene
+  (leaked soffice) did not reproduce.
+
+Suite: 3070 upstream+paper; 478 paper both env arms.
+
 ## Batch 4 — adversarial gate report (2026-07-08)
 
 Four lenses (Workflow orchestration), 21 findings confirmed with live

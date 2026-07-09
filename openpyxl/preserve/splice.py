@@ -521,5 +521,8 @@ def _patch_cached_value(cell_bytes, value, epoch, label):
     attr_blob = re.sub(br"\st=(?:\"[^\"]*\"|'[^']*')", b"", attr_blob)
     if t_attr is not None:
         attr_blob += b' t="' + t_attr + b'"'
+    v_open = b"<v>"
+    if isinstance(value, str) and value != value.strip():
+        v_open = b'<v xml:space="preserve">'
     return (b"<c" + attr_blob + b">" + f_m.group(0)
-            + b"<v>" + v_text + b"</v></c>")
+            + v_open + v_text + b"</v></c>")

@@ -56,8 +56,13 @@ def _split_sheet(operand):
                 break
             end += 1
         if operand[end + 1:end + 2] == "!":
-            return (operand[1:end].replace("''", "'"),
-                    operand[end + 2:])
+            sheet = operand[1:end].replace("''", "'")
+            if "[" in sheet:
+                # '[Budget.xlsx]Sheet One'!A1 / 'C:\path\[B.xlsx]S'!A1:
+                # the quoted storage form of external-workbook references
+                # — never judged (Batch-5 gate: flagged as unknown-sheet)
+                return ("<external>", None)
+            return (sheet, operand[end + 2:])
         return (None, operand)
     if "!" in operand:
         sheet, rest = operand.split("!", 1)
@@ -187,6 +192,18 @@ def lint_formula(text, *, workbook=None, sheet=None):
                         "table {0!r} does not exist in this "
                         "workbook".format(table_name), operand))
                     continue
+                if not table.column_names:
+                    # an in-session table has no tableColumns until save
+                    # (openpyxl derives them from the header row at write
+                    # time): its columns are unknowable here, never
+                    # unknown (Batch-5 gate: false refusals on the normal
+                    # add-table-then-write-formulas order)
+                    continue
+                if "'" in m.group(2):
+                    # Excel's ' escape for [ ] # ' @ in column names:
+                    # decoding needs a full structured-ref parser —
+                    # unknowable, never unknown (Batch-5 gate)
+                    continue
                 columns = {c.casefold()
                            for c in (table.column_names or [])}
                 specials = {"#all", "#data", "#headers", "#totals",
@@ -207,6 +224,8 @@ def lint_formula(text, *, workbook=None, sheet=None):
                                 table_name, part), operand))
             continue
         if _NAME_RE.match(rest) and not has_locals:
+            if _strip_prefix(rest).upper() in EXCEL_FUNCTIONS:
+                continue      # eta-reduced function ref: REDUCE(0,A,SUM)
             if rest.casefold() not in names \
                     and rest.casefold() not in tables:
                 findings.append(_finding(

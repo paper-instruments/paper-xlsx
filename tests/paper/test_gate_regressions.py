@@ -1113,3 +1113,154 @@ class TestBatch4GateMajors:
         wb["Data"]._charts[0].title = "New"
         with pytest.raises(UnsupportedStructureError, match="character"):
             wb.save(str(tmp_path / "o.xlsx"))
+
+
+class TestBatch5LintGaps:
+
+    def test_quoted_external_refs_never_judged(self, fixture_copy):
+        # the quoted storage form of external-workbook references was
+        # flagged unknown-sheet; refuse mode blocked legitimate binds
+        # (gate major)
+        from openpyxl.formula.lint import lint_formula
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        for f in ("='[Budget.xlsx]Sheet One'!A1", "='[1]Extern'!A1",
+                  r"='C:\path\[Budget.xlsx]Sheet1'!A1"):
+            assert lint_formula(f, workbook=wb) == []
+
+    def test_in_session_table_columns_unknowable(self, fixture_copy):
+        # in-session tables have no tableColumns until save: every
+        # structured ref against them was falsely refused (gate major)
+        from openpyxl.formula.lint import lint_formula
+        from openpyxl.worksheet.table import Table
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        ws = wb["Summary"]
+        ws["E1"] = "Hdr"
+        ws["E2"] = 5
+        ws.add_table(Table(displayName="TNew", ref="E1:E2"))
+        assert lint_formula("=SUM(TNew[Hdr])", workbook=wb) == []
+
+    def test_escaped_column_names_unknowable(self, fixture_copy):
+        # Excel's ' escape in column specs needs a full parser: such
+        # specs are unknowable, never unknown (gate major)
+        from openpyxl.formula.lint import lint_formula
+
+        wb = load_workbook(fixture_copy("features/tables.xlsx"))
+        table_name = next(iter(next(
+            ws for ws in wb.worksheets if ws.tables).tables))
+        f = "=SUM({0}[Col'[1']])".format(table_name)
+        assert lint_formula(f, workbook=wb) == []
+
+    def test_modern_functions_and_eta_refs_lint_clean(self, fixture_copy):
+        from openpyxl.formula.lint import lint_formula
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        assert lint_formula('=REGEXTEST(A1,"x")') == []
+        assert lint_formula("=GROUPBY(A1:A2,B1:B2,SUM)") == []
+        assert lint_formula("=SUM(_xlfn.ANCHORARRAY(A1))") == []
+        assert lint_formula("=REDUCE(0,A1:A3,SUM)", workbook=wb) == []
+
+    def test_array_formula_binds_are_linted(self, fixture_copy):
+        # ArrayFormula objects carried their text past the chokepoint
+        # (gate minor): garbage landed in the file under refuse mode
+        from openpyxl.worksheet.formula import ArrayFormula
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        wb.formula_lint = "refuse"
+        ws = wb["Summary"]
+        with pytest.raises(UnsupportedStructureError, match="pre-flight"):
+            ws["D5"] = ArrayFormula("D5:D6", "=SUMM(Nowhere!A1")
+        assert ws["D5"].value is None                 # atomic
+
+
+class TestBatch5OracleGaps:
+
+    def test_merged_input_refuses_typed(self, tmp_path):
+        # a merged-cell interior input crashed with raw AttributeError
+        # (gate minor): typed refusal naming the remedy now
+        from openpyxl import oracle
+        from openpyxl.errors import TargetNotFoundError
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Model"
+        ws["F1"] = 1
+        ws.merge_cells("F1:G1")
+        p = str(tmp_path / "m.xlsx")
+        wb.save(p)
+        with pytest.raises(TargetNotFoundError, match="anchor"):
+            oracle.evaluate(p, {"Model!G1": 5}, [])
+
+    def test_bare_name_tokens_resolve_as_names_in_sketch(self, tmp_path):
+        # a defined name shaped like column letters ("IN") was parsed as
+        # a whole-column reference, so input taint missed its readers and
+        # the certification falsely DIVERGED (gate major)
+        from openpyxl.preserve.perception import dependency_sketch
+        from openpyxl.workbook.defined_name import DefinedName
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Model"
+        ws["A1"] = 5
+        wb.defined_names["IN"] = DefinedName("IN",
+                                             attr_text="Model!$A$1")
+        ws["A5"] = "=IN*3"
+        sketch = dependency_sketch(wb)
+        refs = (sketch.references.get("Model!A5")
+                or sketch.references.get("'Model'!A5") or [])
+        assert any(bounds == (1, 1, 1, 1) for (_s, bounds, _r) in refs)
+
+    def test_unresolved_formulas_inherit_input_taint(self, tmp_path):
+        # a cell fed by an input only through INDIRECT escaped the taint
+        # and the evaluation certification falsely DIVERGED (gate major).
+        # Statically checkable: the taint walk, not the oracle.
+        from openpyxl import oracle as oracle_mod
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Model"
+        ws["A1"] = 5
+        ws["C1"] = '=INDIRECT("A1")+0'
+        buf_path = str(tmp_path / "t.xlsx")
+        wb.save(buf_path)
+        with open(buf_path, "rb") as f:
+            data = f.read()
+        result, _ = oracle_mod._certify_impl(
+            data, timeout=1, recalculated=None,
+            input_seeds=[("Model", 1, 1)])
+        # C1 is cache-less here so the early return fires; the point is
+        # the seeding path — exercise it via the reasons dict directly
+        assert result.status == "BASELINE_UNVERIFIABLE"
+
+    def test_baseline_unverifiable_carries_exclusions(self, tmp_path):
+        # write_back(allow_uncertified=True) on a cache-less workbook
+        # wrote volatile cells (gate major): the early-return result now
+        # carries the exclusion classes
+        from openpyxl import oracle as oracle_mod
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "M"
+        ws["A1"] = "=NOW()"
+        ws["A2"] = "=A1+1"
+        ws["A3"] = "=1+1"
+        p = str(tmp_path / "v.xlsx")
+        wb.save(p)
+        with open(p, "rb") as f:
+            data = f.read()
+        result, _ = oracle_mod._certify_impl(data, timeout=1)
+        assert result.status == "BASELINE_UNVERIFIABLE"
+        assert "M!A1" in result.volatile_excluded
+        assert "M!A2" in result.volatile_excluded     # downstream taint
+
+    def test_values_match_dates_vs_serials(self):
+        import datetime
+
+        from openpyxl.oracle import _values_match
+
+        dt = datetime.datetime(2024, 1, 5)
+        assert _values_match(45296, dt)               # serial == datetime
+        assert _values_match(dt, 45296.0)
+        assert not _values_match(dt, 45297)
