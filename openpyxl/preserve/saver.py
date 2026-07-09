@@ -212,15 +212,19 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             from openpyxl.xml.functions import tostring
 
             from . import chartpatch as chartpatch_mod
+            from .structural import _charts_referencing
 
-            if any(led.shifts.values()):
-                # a shift rewrites chart <c:f> texts itself; composing a
-                # property edit on top would shift the NEW range too
-                # (silent double-shift). Refuse, never guess.
-                _refuse("chart(s) on sheet {0!r} were edited in the same "
-                        "session as a row/column shift; the two rewrites "
-                        "cannot be composed faithfully — do these edits "
-                        "in separate sessions.".format(ws.title))
+            # a shift rewrites chart <c:f> texts itself; composing a
+            # property edit on top would shift the NEW range too (silent
+            # double-shift). Refuse — but ONLY for chart parts a shift
+            # actually patches (Batch-4 gate: a shift on an unrelated
+            # sheet false-refused every chart edit)
+            shift_affected = set()
+            for shifted_ws, ops in led.shifts.items():
+                if ops:
+                    shift_affected |= set(_charts_referencing(
+                        workbook,
+                        led.renames.get(shifted_ws, shifted_ws.title)))
             for key in chart_mutations:
                 chart = ws._charts[key]
                 armed_render, armed_anchor = armed_snap["chart"][key]
@@ -231,6 +235,13 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                             "cannot be expressed. Reopen without "
                             "preserve=True to rewrite the workbook "
                             "lossily.".format(key, ws.title))
+                if part_name in shift_affected:
+                    _refuse("chart {0} on sheet {1!r} was edited in the "
+                            "same session as a row/column shift that "
+                            "patches the same chart part; the two "
+                            "rewrites cannot be composed faithfully — do "
+                            "these edits in separate sessions.".format(
+                                key, ws.title))
                 if ledger_mod._anchor_fingerprint(chart) != armed_anchor:
                     _refuse("chart {0} on sheet {1!r}: the anchor "
                             "(position/size) changed; anchors live in the "
@@ -383,8 +394,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                           if kind == "chart"]
             new_images = [ws._images[k] for kind, k in new_drawables
                           if kind == "image"]
-            existing_drawing = drawings_mod._existing_drawing_part(
-                zin, names, part)
+            existing_drawing, existing_drawing_rid = \
+                drawings_mod._existing_drawing_part(zin, names, part)
             if existing_drawing is None:
                 if scan.regions.get("drawing"):
                     _refuse("sheet {0!r} carries a drawing element whose "
@@ -407,6 +418,15 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                     drawing_base,
                     zin.read(drels) if drels in names else None,
                     new_charts, new_images)
+                if not scan.regions.get("drawing"):
+                    # legal-but-odd package: the drawing rel and part
+                    # exist, the sheet never references them — without
+                    # this element the appended objects are invisible
+                    # (Batch-4 gate: orphan drawing rel)
+                    region_changes["drawing"] = (
+                        b'<drawing xmlns:r="%s" r:id="%s"/>'
+                        % (REL_NS.encode("ascii"),
+                           existing_drawing_rid.encode("ascii")))
 
         # PR-0 D2 applies to ROW and COLUMN styles too: dict(RowDimension)
         # and ColumnDimension.to_tree() carry MODEL style indices — every
@@ -460,7 +480,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             hyperlinks_replacement = render_hyperlinks_for_write(ws)
         if "hyperlinks" in all_region_changes:
             hyperlinks_replacement, rels_update = _plan_hyperlinks(
-                workbook, ws, led, zin, part, names)
+                workbook, ws, led, zin, part, names, part_plan)
             if rels_update is not None:
                 sheet_rels_updates[rels_update[0]] = rels_update[1]
 
@@ -1010,10 +1030,15 @@ def _rewrite_added_sheet_styles(payload, workbook, translator):
     return crosspart.apply_edits(payload, edits)
 
 
-def _plan_hyperlinks(workbook, ws, led, zin, sheet_part, names):
+def _plan_hyperlinks(workbook, ws, led, zin, sheet_part, names,
+                     part_plan):
     """Hyperlink ADDITIONS on a loaded sheet: allocate relationship ids,
     render the new hyperlinks element, and return the updated sheet-rels
-    payload. Removals/changes refuse (dangling or rewritten relationships)."""
+    payload. Removals/changes refuse (dangling or rewritten relationships).
+    Ids come from the ENGINE's shared per-rels-part allocator — an
+    independent next_rid computation collides with any other planner
+    touching the same rels part in one save (Batch-4 gate: duplicate rId
+    with a fresh drawing)."""
     arm = led.region_snapshots.get(ws, {}).get("hyperlinks", {})
     now = hyperlink_signatures(ws)
     removed = set(arm) - set(now)
@@ -1033,19 +1058,15 @@ def _plan_hyperlinks(workbook, ws, led, zin, sheet_part, names):
     rels_part = _rels_path(sheet_part)
     if rels_part in names:
         rels_payload = zin.read(rels_part)
-        next_rid = crosspart.rels_next_rid(rels_payload)
     else:
         rels_payload = None
-        next_rid = 1
 
     entries = []
-    counter = 0
     for (row, col) in sorted(added):
         cell = ws._cells[(row, col)]
         link = cell._hyperlink
         if link.target:
-            rid = "rId{0}".format(next_rid + counter)
-            counter += 1
+            rid = part_plan.reserve_rid(rels_part, rels_payload)
             link.id = rid
             entries.append((rid, _HYPERLINK_REL, link.target, "External"))
         else:

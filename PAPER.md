@@ -752,6 +752,65 @@ sections):
 - Every 4.x output queued in agent_docs/FIXTURE-REQUESTS.md for
   real-Excel open checks (the producer-sensitive surface).
 
+## Batch 4 — adversarial gate report (2026-07-08)
+
+Four lenses (Workflow orchestration), 21 findings confirmed with live
+repros plus two found pre-gate — deduplicated to twelve defects, all
+fixed and fixtured (tests/paper/test_gate_regressions.py Batch-4
+classes):
+
+- **CRITICAL, rId remap cross-wire:** appending chart+image into an
+  existing drawing remapped local rIds by sequential in-place replace;
+  when a reserved id equaled a still-unreplaced local id the anchors
+  cross-wired (chart frame → PNG, blip → chart XML; output unreadable).
+  Two-pass placeholder remap now.
+- **CRITICAL, duplicate rIds (drawing + hyperlink):** the hyperlink
+  planner allocated next_rid independently of the engine's allocator —
+  one save produced two rId1 relationships (OPC violation). Hyperlinks
+  now allocate through part_plan.reserve_rid.
+- **CRITICAL, file-object image corruption:** _image_payload read
+  seekable streams from their CURRENT position (PIL parks it mid-file):
+  garbage media bytes saved silently. Reads from offset 0 now (position
+  restored) + image-signature validation.
+- **CRITICAL, double-unescape:** chartpatch._unescape chained
+  str.replace, so a title containing literal '&lt;' text was decoded
+  twice and silently rewritten. Single-pass regex (fixes the shared
+  helper used by rename/shift chart patching too).
+- **CRITICAL, flat positional a:t mapping:** an original that serializes
+  valAx before catAx (schema-legal) got the WRONG axis title patched.
+  Text/formula leaves now map within ancestor-path groups; structural
+  disagreement refuses.
+- **CRITICAL, rename skipped in-session charts:** add chart → rename
+  sheet → save left the new chart part referencing the dead title. The
+  rename cascade now rewrites non-armed model charts' refs (mirrors the
+  shift fix).
+- **Pre-gate criticals:** the chart single-use seen-set lived on the
+  workbook (second save false-refused; now per-save PartPlan); added
+  charts' ranges silently ignored shifts (apply_model_shift now rewrites
+  them; stranding deletes block pre-move).
+- **Majors:** the drawing tag tokenizer stopped at '>' inside quoted
+  attribute values (false refusals; quote-aware _find_tag_end walker
+  now) and the cNvPr id scan missed single-quoted ids (duplicate shape
+  ids; both-quote scan — the FOURTH both-quote-styles lesson); an
+  orphan drawing rel (rel+part present, sheet element absent) swallowed
+  added charts invisibly (the element is spliced back, referencing the
+  existing rel); the shift+chart-edit refusal keyed on ANY shift in the
+  session (false refusal for unrelated sheets; now scoped to chart parts
+  a shift actually patches); empty self-closing <wsDr/> false-refused
+  (expanded before append).
+- **Minors:** numeric charrefs in ORIGINAL chart text leaked a bare
+  ScanRefusal (typed refusal now); _OBJECT_UNLOCKS still promised
+  "editing lands with Batch 4" after it shipped (messages state the
+  actual surface).
+- **Rejected with rationale:** same Image object added twice writes two
+  media parts (stock parity, wasteful not wrong); multi-line title edits
+  refuse (run-count change = whole-element surgery — honest, documented
+  here); one verifier initially rejected the rename-skips-added-charts
+  finding as stock parity — overruled by the record_rename coherence
+  contract.
+
+Suite: 3037 upstream+paper; 445 paper both env arms.
+
 ## Batch 3 — adversarial gate report (2026-07-08)
 
 Four lenses, seven criticals + a major set confirmed with live repros —

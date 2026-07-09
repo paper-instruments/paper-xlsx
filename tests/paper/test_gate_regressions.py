@@ -811,3 +811,305 @@ class TestBatch4DrawingGaps:
         # pre-move atomicity: neither cells nor the chart moved
         assert ws["A2"].value is not None
         assert chart.series[0].val.numRef.f == "'Sheet1'!$A$2:$A$3"
+
+
+def _two_sheet_chart_fixture(tmp_path, with_axis_titles=False):
+    """Fresh two-sheet workbook: 'Data' carries one titled chart over
+    Data!$B$1:$B$5; 'Plain' is chartless."""
+    from openpyxl.chart import BarChart, Reference
+
+    src = str(tmp_path / "base.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    for i in range(1, 6):
+        ws.cell(row=i, column=2, value=i)
+    chart = BarChart()
+    chart.title = "Original"
+    if with_axis_titles:
+        chart.x_axis.title = "XT"
+        chart.y_axis.title = "YT"
+    chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=5))
+    ws.add_chart(chart, "D2")
+    plain = wb.create_sheet("Plain")
+    plain["A1"] = 1
+    wb.save(src)
+    return src
+
+
+def _rezip(src, out, fn):
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+        for name in zin.namelist():
+            zout.writestr(name, fn(name, zin.read(name)))
+
+
+class TestBatch4GateCriticals:
+
+    def test_append_rid_remap_does_not_cross_wire(self, tmp_path):
+        # sequential in-place rId replacement cross-wired anchors when a
+        # reserved id equaled a still-unreplaced local id: the chart frame
+        # pointed at the PNG, output unreadable (gate critical). Two-pass
+        # placeholder remap now.
+        import io as _io
+
+        from PIL import Image as PILImageMod
+
+        from openpyxl.chart import BarChart, Reference
+        from openpyxl.drawing.image import Image
+
+        src = _two_sheet_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Data"]
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=5))
+        ws.add_chart(chart, "K2")
+        buf = _io.BytesIO()
+        PILImageMod.new("RGB", (1, 1), "red").save(buf, format="png")
+        buf.seek(0)
+        ws.add_image(Image(buf), "K20")
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        payloads = part_payloads(out)
+        rels = next(p for n, p in payloads.items() if "drawings/_rels" in n)
+        drawing = next(p for n, p in payloads.items()
+                       if n.startswith("xl/drawings/drawing"))
+        relmap = {}
+        for tag in re.findall(rb"<Relationship\b[^>]*>", rels):
+            rid_m = re.search(rb'Id="([^"]+)"', tag)
+            target_m = re.search(rb'Target="([^"]+)"', tag)
+            if rid_m and target_m:
+                relmap[rid_m.group(1)] = target_m.group(1)
+        for rid in re.findall(rb'<c:chart [^>]*r:id="(rId\d+)"', drawing):
+            assert b"chart" in relmap[rid]
+        for rid in re.findall(rb'embed="(rId\d+)"', drawing):
+            assert b"media" in relmap[rid]
+        wb2 = load_workbook(out)                # parses: nothing swapped
+        assert len(wb2["Data"]._charts) == 2
+        assert len(wb2["Data"]._images) == 1
+
+    def test_hyperlink_and_drawing_share_rid_allocator(self, fixture_copy,
+                                                       tmp_path):
+        # both planners computed next_rid independently over the same
+        # original rels -> duplicate rId (OPC violation, gate critical)
+        from openpyxl.chart import BarChart, Reference
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Sheet1"]
+        ws["A1"].hyperlink = "https://example.com/x"
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=1, min_row=1, max_row=3))
+        ws.add_chart(chart, "F2")
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        rels = next(p for n, p in part_payloads(out).items()
+                    if "worksheets/_rels" in n)
+        ids = re.findall(rb'Id="(rId\d+)"', rels)
+        assert len(ids) == len(set(ids))
+        wb2 = load_workbook(out)
+        assert wb2["Sheet1"]["A1"].hyperlink is not None
+        assert len(wb2["Sheet1"]._charts) == 1
+
+    def test_file_object_image_reads_from_offset_zero(self, fixture_copy,
+                                                      tmp_path):
+        # PIL leaves the stream position mid-file: the media part was
+        # saved as garbage bytes (gate critical); stock mode was correct
+        from PIL import Image as PILImageMod
+
+        from openpyxl.drawing.image import Image
+
+        png_path = str(tmp_path / "d.png")
+        PILImageMod.new("RGB", (3, 3), "green").save(png_path,
+                                                     format="png")
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        with open(png_path, "rb") as f:
+            img = Image(f)
+            wb = load_workbook(src, preserve=True)
+            wb["Sheet1"].add_image(img, "E5")
+            out = str(tmp_path / "o.xlsx")
+            wb.save(out)
+        media = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/media/"))
+        assert media.startswith(b"\x89PNG")
+
+    def test_entity_text_single_unescape_roundtrip(self, tmp_path):
+        # chained str.replace decoded '&amp;lt;' twice: a title with
+        # literal entity-like text was silently rewritten (gate critical)
+        src = _two_sheet_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        wb["Data"]._charts[0].title = "Powered by <html> & &lt;stuff&gt;"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        runs = wb2["Data"]._charts[0].title.tx.rich.p[0].r
+        assert runs[0].t == "Powered by <html> & &lt;stuff&gt;"
+
+    def test_axis_order_swap_patches_correct_title(self, tmp_path):
+        # flat positional <a:t> mapping patched the WRONG axis title when
+        # the original serialized valAx before catAx (gate critical);
+        # leaves now map within ancestor-path groups
+        src = _two_sheet_chart_fixture(tmp_path, with_axis_titles=True)
+        swapped = str(tmp_path / "swapped.xlsx")
+
+        def swap(name, payload):
+            if not name.startswith("xl/charts/chart"):
+                return payload
+            cat = re.search(rb"<catAx>.*?</catAx>", payload, re.S)
+            val = re.search(rb"<valAx>.*?</valAx>", payload, re.S)
+            return (payload[:cat.start()] + val.group(0)
+                    + payload[cat.end():val.start()] + cat.group(0)
+                    + payload[val.end():])
+
+        _rezip(src, swapped, swap)
+        wb = load_workbook(swapped, preserve=True)
+        wb["Data"]._charts[0].x_axis.title = "NewX"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        chart = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/charts/chart"))
+        catax = re.search(rb"<catAx>.*?</catAx>", chart, re.S).group(0)
+        valax = re.search(rb"<valAx>.*?</valAx>", chart, re.S).group(0)
+        assert b"NewX" in catax
+        assert b"YT" in valax and b"NewX" not in valax
+
+    def test_rename_after_add_chart_follows(self, tmp_path):
+        # the rename cascade skipped in-session charts: the new chart part
+        # referenced the old, now-nonexistent title (gate critical)
+        from openpyxl.chart import BarChart, Reference
+
+        src = _two_sheet_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Data"]
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=5))
+        ws.add_chart(chart, "K2")
+        ws.title = "D2"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        for name, payload in part_payloads(out).items():
+            if name.startswith("xl/charts/chart"):
+                for f in re.findall(rb"<(?:c:)?f>([^<]*)</(?:c:)?f>",
+                                    payload):
+                    assert b"D2" in f and b"Data" not in f
+
+
+class TestBatch4GateMajors:
+
+    def test_gt_in_attribute_and_single_quoted_ids(self, tmp_path):
+        # the tag tokenizer stopped at '>' inside quoted attribute values
+        # (false refusal) and the cNvPr id scan missed single-quoted ids
+        # (duplicate shape ids) — gate majors
+        from openpyxl.chart import BarChart, Reference
+
+        src = _two_sheet_chart_fixture(tmp_path)
+        crafted = str(tmp_path / "crafted.xlsx")
+
+        def plant(name, payload):
+            if name.startswith("xl/drawings/drawing"):
+                return payload.replace(
+                    b'<cNvPr id="1" name="Chart 1"/>',
+                    b"<cNvPr id='7' name=\"a > b\"/>", 1)
+            return payload
+
+        _rezip(src, crafted, plant)
+        wb = load_workbook(crafted, preserve=True)
+        ws = wb["Data"]
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=5))
+        ws.add_chart(chart, "K2")               # no false refusal
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        drawing = next(p for n, p in part_payloads(out).items()
+                       if n.startswith("xl/drawings/drawing"))
+        ids = [a or b for a, b in
+               re.findall(rb"\bid=(?:\"(\d+)\"|'(\d+)')", drawing)]
+        assert len(ids) == len(set(ids))        # no duplicate shape ids
+
+    def test_empty_self_closing_wsdr_appendable(self, tmp_path):
+        from openpyxl.chart import BarChart, Reference
+
+        src = _two_sheet_chart_fixture(tmp_path)
+        crafted = str(tmp_path / "crafted.xlsx")
+
+        def blank(name, payload):
+            if name.startswith("xl/drawings/drawing"):
+                m = re.match(rb"<wsDr[^>]*>", payload)
+                return m.group(0)[:-1] + b"/>"
+            if "drawings/_rels" in name:
+                return (b'<?xml version="1.0"?><Relationships xmlns="http:'
+                        b'//schemas.openxmlformats.org/package/2006/'
+                        b'relationships"/>')
+            return payload
+
+        _rezip(src, crafted, blank)
+        wb = load_workbook(crafted, preserve=True)
+        ws = wb["Data"]
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=5))
+        ws.add_chart(chart, "K2")               # no false refusal
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        assert len(load_workbook(out)["Data"]._charts) == 1
+
+    def test_orphan_drawing_rel_gets_element_spliced(self, tmp_path):
+        # rel + part existed but the sheet never referenced them: the
+        # appended chart was invisible with no refusal (gate major)
+        from openpyxl.chart import BarChart, Reference
+
+        src = _two_sheet_chart_fixture(tmp_path)
+        crafted = str(tmp_path / "crafted.xlsx")
+
+        def strip_el(name, payload):
+            if name.startswith("xl/worksheets/sheet"):
+                return re.sub(rb"<drawing [^>]*/>", b"", payload)
+            return payload
+
+        _rezip(src, crafted, strip_el)
+        wb = load_workbook(crafted, preserve=True)
+        ws = wb["Data"]
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=5))
+        ws.add_chart(chart, "K2")
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/") and b"<drawing" in p)
+        assert b"<drawing" in sheet
+        assert len(load_workbook(out)["Data"]._charts) == 2
+
+    def test_unrelated_shift_does_not_block_chart_edit(self, tmp_path):
+        # any(led.shifts) refused every chart edit even when the shift
+        # touched a sheet the chart never references (gate major)
+        src = _two_sheet_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        wb["Data"]._charts[0].title = "Edited"
+        wb["Plain"].insert_rows(1)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        chart = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/charts/chart"))
+        assert b"Edited" in chart
+
+        # the RELATED combination still refuses (double-shift hazard)
+        wb2 = load_workbook(src, preserve=True)
+        wb2["Data"]._charts[0].title = "Edited"
+        wb2["Data"].insert_rows(1)
+        with pytest.raises(UnsupportedStructureError,
+                           match="separate sessions"):
+            wb2.save(str(tmp_path / "o2.xlsx"))
+
+    def test_charref_in_original_title_refuses_typed(self, tmp_path):
+        src = _two_sheet_chart_fixture(tmp_path)
+        crafted = str(tmp_path / "crafted.xlsx")
+
+        def inject(name, payload):
+            if name.startswith("xl/charts/chart"):
+                return payload.replace(b"<a:t>Original</a:t>",
+                                       b"<a:t>Ori&#10;ginal</a:t>", 1)
+            return payload
+
+        _rezip(src, crafted, inject)
+        wb = load_workbook(crafted, preserve=True)
+        wb["Data"]._charts[0].title = "New"
+        with pytest.raises(UnsupportedStructureError, match="character"):
+            wb.save(str(tmp_path / "o.xlsx"))

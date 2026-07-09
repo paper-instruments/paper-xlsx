@@ -26,6 +26,7 @@ from openpyxl.errors import UnsupportedStructureError
 
 from . import crosspart
 from .lifecycle import _rels_path, _resolve_target
+from .xmlscan import ScanRefusal, _find_tag_end
 
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 DRAWING_REL_TYPE = REL_NS + "/drawing"
@@ -42,7 +43,7 @@ _IMAGE_MIME = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif",
 
 _ANCHOR_OPEN_RE = re.compile(
     br"<(oneCellAnchor|twoCellAnchor|absoluteAnchor)(?=[ >])")
-_CNVPR_ID_RE = re.compile(br'<(?:\w+:)?cNvPr\b[^>]*?\bid="(\d+)"')
+_CNVPR_ID_RE = re.compile(br'\bid=(?:"(\d+)"|\'(\d+)\')')
 
 
 def _refuse(msg):
@@ -77,8 +78,12 @@ def _image_payload(image):
     try:
         if hasattr(ref, "getvalue"):
             data = ref.getvalue()
-        elif hasattr(ref, "read"):
+        elif hasattr(ref, "seek") and hasattr(ref, "read"):
+            # PIL leaves the stream position wherever parsing stopped:
+            # reading from the CURRENT position saves garbage media bytes
+            # (Batch-4 gate) — read the whole stream, restore the position
             pos = ref.tell()
+            ref.seek(0)
             data = ref.read()
             ref.seek(pos)
         elif isinstance(ref, str):
@@ -92,6 +97,12 @@ def _image_payload(image):
         _refuse("image data could not be read ({0}).".format(exc))
     if not data:
         _refuse("image data is empty.")
+    _SIGNATURES = {"png": b"\x89PNG", "gif": b"GIF8",
+                   "jpeg": b"\xff\xd8\xff", "bmp": b"BM"}
+    sig = _SIGNATURES.get(fmt)
+    if sig is not None and not data.startswith(sig):
+        _refuse("image data does not look like {0} (bad signature); the "
+                "backing stream may have been consumed.".format(fmt))
     return data, fmt
 
 
@@ -212,11 +223,11 @@ def plan_fresh_drawing(workbook, ws, part_plan, names, sheet_part,
 
 
 def _existing_drawing_part(zin, names, sheet_part):
-    """The sheet's drawing part name, resolved through its ORIGINAL rels,
-    or None."""
+    """(drawing_part_name, rel_id) for the sheet's drawing, resolved
+    through its ORIGINAL rels, or (None, None)."""
     rels_part = _rels_path(sheet_part)
     if rels_part not in names:
-        return None
+        return None, None
     payload = zin.read(rels_part)
     for m in re.finditer(br"<Relationship\b[^>]*>", payload):
         tag = m.group(0)
@@ -227,9 +238,56 @@ def _existing_drawing_part(zin, names, sheet_part):
         target_m = re.search(br'Target=(?:"([^"]*)"|\'([^\']*)\')', tag)
         if not target_m:
             continue
+        id_m = re.search(br'Id=(?:"([^"]*)"|\'([^\']*)\')', tag)
+        rid = ((id_m.group(1) or id_m.group(2)).decode("ascii")
+               if id_m else None)
         target = (target_m.group(1) or target_m.group(2)).decode("utf-8")
-        return _resolve_target(sheet_part, target)
-    return None
+        return _resolve_target(sheet_part, target), rid
+    return None, None
+
+
+def _iter_tags(body):
+    """Yield (is_closing, local_name, self_closing) for every tag in
+    ``body``, quote-aware (a '>' inside an attribute value never ends a
+    tag — Batch-4 gate: false refusals). Raises ScanRefusal on
+    unterminated tags."""
+    pos = 0
+    n = len(body)
+    while pos < n:
+        lt = body.find(b"<", pos)
+        if lt == -1:
+            return
+        gt = _find_tag_end(body, lt)
+        head = body[lt + 1:gt]
+        closing = head.startswith(b"/")
+        if closing:
+            head = head[1:]
+        self_closing = head.endswith(b"/")
+        m = re.match(br"[\w:]+", head)
+        name = m.group(0) if m else b""
+        yield (closing, name.split(b":")[-1], self_closing)
+        pos = gt + 1
+
+
+def _cnvpr_max_id(payload):
+    """The highest numeric cNvPr id in a drawing part, both quote styles,
+    quote-aware tag boundaries."""
+    max_id = 0
+    pos = 0
+    n = len(payload)
+    while pos < n:
+        lt = payload.find(b"<", pos)
+        if lt == -1:
+            break
+        gt = _find_tag_end(payload, lt)
+        head = payload[lt + 1:gt]
+        if re.match(br"(?:\w+:)?cNvPr\b", head):
+            for m in _CNVPR_ID_RE.finditer(head):
+                max_id = max(max_id,
+                             int(m.group(1) if m.group(1) is not None
+                                 else m.group(2)))
+        pos = gt + 1
+    return max_id
 
 
 def _wsdr_close(payload):
@@ -242,33 +300,58 @@ def _wsdr_close(payload):
     return m.start(), root_m.group(1) is None if root_m else True
 
 
+def _expand_self_closing_root(payload):
+    """A schema-valid empty drawing may be a self-closing <wsDr .../>;
+    expand it so the append has a body to land in. Returns the payload
+    unchanged when the root is not self-closing."""
+    m = re.search(br"<((?:\w+:)?wsDr)\b", payload)
+    if m is None:
+        return payload
+    try:
+        gt = _find_tag_end(payload, m.start())
+    except ScanRefusal:
+        return payload
+    if payload[gt - 1:gt] != b"/":
+        return payload
+    if payload[gt + 1:].strip():
+        return payload            # trailing content: not a bare root
+    return (payload[:gt - 1] + b"></" + m.group(1) + b">"
+            + payload[gt + 1:])
+
+
 def _anchor_only(payload):
     """True when every top-level child of wsDr is an anchor element —
     the only drawing shape this module may append into."""
-    root_m = re.search(br"<(?:\w+:)?wsDr\b[^>]*>", payload)
+    payload = _expand_self_closing_root(payload)
+    root_m = re.search(br"<(?:\w+:)?wsDr\b", payload)
     if root_m is None:
+        return False
+    try:
+        root_gt = _find_tag_end(payload, root_m.start())
+    except ScanRefusal:
         return False
     close_m = re.search(br"</(?:\w+:)?wsDr\s*>\s*$", payload)
     if close_m is None:
         return False
-    body = payload[root_m.end():close_m.start()]
+    body = payload[root_gt + 1:close_m.start()]
     if b"<!--" in body or b"<![" in body or b"<?" in body:
         return False              # comments/CDATA/PIs: hands off
     depth = 0
-    for m in re.finditer(br"<(/?)(\w+(?::\w+)?)[^>]*?(/?)>", body):
-        closing, name, self_closing = m.group(1), m.group(2), m.group(3)
-        local = name.split(b":")[-1]
-        if closing:
-            depth -= 1
-            if depth < 0:
-                return False
-        else:
-            if depth == 0:
-                if local not in (b"oneCellAnchor", b"twoCellAnchor",
-                                 b"absoluteAnchor"):
+    try:
+        for closing, local, self_closing in _iter_tags(body):
+            if closing:
+                depth -= 1
+                if depth < 0:
                     return False
-            if not self_closing:
-                depth += 1
+            else:
+                if depth == 0:
+                    if local not in (b"oneCellAnchor", b"twoCellAnchor",
+                                     b"absoluteAnchor"):
+                        return False
+                if not self_closing:
+                    depth += 1
+    except ScanRefusal:
+        return False
     return depth == 0
 
 
@@ -284,6 +367,7 @@ def plan_drawing_append(workbook, ws, part_plan, names, drawing_part,
                 "content, ...); appending into it is not supported — "
                 "the {1} would otherwise risk the existing drawing.".format(
                     ws.title, "chart" if charts else "image"))
+    original = _expand_self_closing_root(original)
     _register_objects(workbook, ws, part_plan, names, charts, images)
     rendered, local_rels = _render_drawing(charts, images)
     root_m = re.search(br"<wsDr\b[^>]*>", rendered)
@@ -291,27 +375,32 @@ def plan_drawing_append(workbook, ws, part_plan, names, drawing_part,
     body = rendered[root_m.end():close_m.start()]
 
     # remap the render's local rId1..rIdN to ids reserved on the ORIGINAL
-    # drawing's rels, and its cNvPr shape ids past the existing maximum
+    # drawing's rels — through collision-proof placeholders: a sequential
+    # in-place replace cross-wires anchors whenever a reserved id equals a
+    # still-unreplaced local id (Batch-4 gate: chart anchor pointed at the
+    # PNG, output unreadable)
     drawing_rels_part = _rels_path(drawing_part)
     rel_appends = []
+    reserved = []
     for i, (local_rid, rtype, target, mode) in enumerate(local_rels, 1):
         rid = part_plan.reserve_rid(drawing_rels_part, existing_rels)
-        body = body.replace(b'"rId%d"' % i, b'"%s"' % rid.encode("ascii"),
-                            1)
+        body = body.replace(b'"rId%d"' % i, b'"__paperRid%d__"' % i, 1)
+        reserved.append((i, rid))
         rel_appends.append((rid, rtype, target, mode))
+    for i, rid in reserved:
+        body = body.replace(b'"__paperRid%d__"' % i,
+                            b'"%s"' % rid.encode("ascii"), 1)
     part_plan.rel_appends.setdefault(drawing_rels_part,
                                      []).extend(rel_appends)
 
-    max_id = 0
-    for m in _CNVPR_ID_RE.finditer(original):
-        max_id = max(max_id, int(m.group(1)))
-
-    def _bump(m):
-        return m.group(0).replace(
-            b'id="%s"' % m.group(1),
-            b'id="%d"' % (int(m.group(1)) + max_id), 1)
-
-    body = _CNVPR_ID_RE.sub(_bump, body)
+    # shape ids bump past the original's maximum (quote-aware scan; the
+    # render body itself is double-quoted by construction)
+    max_id = _cnvpr_max_id(original)
+    body = re.sub(
+        br'(<cNvPr\b[^>]*?\bid=")(\d+)(")',
+        lambda m: m.group(1) + b"%d" % (int(m.group(2)) + max_id)
+        + m.group(3),
+        body)
 
     insert_at, uses_default = _wsdr_close(original)
     if not uses_default:

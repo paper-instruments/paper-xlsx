@@ -25,7 +25,8 @@ XDR_NS = b"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
 
 
 def _walk_leaf_texts(data):
-    """Yield (clark_ns, local, parent_local, text_start, text_end) for every
+    """Yield (clark_ns, local, parent_local, text_start, text_end,
+    ancestor_path) for every
     element with pure text content, tracking namespaces exactly like the
     sheet scanner. Raises ScanRefusal on constructions we must not touch."""
     pos = 0
@@ -61,7 +62,9 @@ def _walk_leaf_texts(data):
                 text = data[entry[4]:lt]
                 if b"<" not in text:
                     parent_local = stack[-1][0] if stack else b""
-                    yield (entry[3], entry[0], parent_local, entry[4], lt)
+                    path = tuple(e[0] for e in stack)
+                    yield (entry[3], entry[0], parent_local, entry[4], lt,
+                           path)
             pos = gt + 1
             continue
 
@@ -100,12 +103,17 @@ _ENTITY_MAP = ((b"&amp;", b"&"), (b"&lt;", b"<"), (b"&gt;", b">"),
                (b"&quot;", b'"'), (b"&apos;", b"'"))
 
 
+_ENTITY_RE = re.compile(b"&(amp|lt|gt|quot|apos);")
+_ENTITY_BY_NAME = {b"amp": b"&", b"lt": b"<", b"gt": b">",
+                   b"quot": b'"', b"apos": b"'"}
+
+
 def _unescape(text):
     if b"&#" in text:
-        raise ScanRefusal("numeric character references in a chart formula")
-    for entity, char in _ENTITY_MAP:
-        text = text.replace(entity, char)
-    return text
+        raise ScanRefusal("numeric character references in chart text")
+    # single pass: chained str.replace decodes '&amp;lt;' twice, silently
+    # corrupting literal entity-like text (Batch-4 gate)
+    return _ENTITY_RE.sub(lambda m: _ENTITY_BY_NAME[m.group(1)], text)
 
 
 def _escape(text):
@@ -132,7 +140,7 @@ def patch_chart(payload, sheet_title, operation, index, amount):
     is_delete = operation.startswith("delete")
     edits = []
     try:
-        for ns, local, _parent, t_start, t_end in _walk_leaf_texts(payload):
+        for ns, local, _parent, t_start, t_end, _path in _walk_leaf_texts(payload):
             if local != b"f" or ns != CHART_NS:
                 continue
             raw = payload[t_start:t_end]
@@ -166,7 +174,7 @@ def patch_drawing_anchors(payload, operation, index, amount):
     is_delete = operation.startswith("delete")
     wanted = b"row" if axis == "rows" else b"col"
     edits = []
-    for ns, local, parent, t_start, t_end in _walk_leaf_texts(payload):
+    for ns, local, parent, t_start, t_end, _path in _walk_leaf_texts(payload):
         if ns != XDR_NS or local != wanted or parent not in (b"from", b"to"):
             continue
         try:
@@ -261,7 +269,7 @@ def patch_chart_renames(payload, mapping):
 
     hit = False
     edits = []
-    for ns, local, _parent, t_start, t_end in _walk_leaf_texts(payload):
+    for ns, local, _parent, t_start, t_end, _path in _walk_leaf_texts(payload):
         if local != b"f" or ns != CHART_NS:
             continue
         raw = payload[t_start:t_end]
@@ -298,7 +306,7 @@ def patch_chart_rename(payload, old_title, new_title):
 
     hit = False
     edits = []
-    for ns, local, _parent, t_start, t_end in _walk_leaf_texts(payload):
+    for ns, local, _parent, t_start, t_end, _path in _walk_leaf_texts(payload):
         if local != b"f" or ns != CHART_NS:
             continue
         raw = payload[t_start:t_end]
@@ -331,22 +339,26 @@ DRAWING_MAIN_NS = b"http://schemas.openxmlformats.org/drawingml/2006/main"
 
 
 def _text_sequences(data):
-    """([(start, end, text)] for <c:f> leaves, same for <a:t> leaves), in
-    document order — the two property families chartpatch can express."""
+    """([(start, end, text, path)] for <c:f> leaves, same for <a:t>
+    leaves), in document order, each with its ancestor local-name path —
+    the two property families chartpatch can express. The path anchors
+    the positional mapping structurally: two documents that serialize
+    the same elements in different orders (valAx before catAx) must
+    never cross-patch (Batch-4 gate)."""
     fs, ts = [], []
-    for ns, local, _parent, start, end in _walk_leaf_texts(data):
+    for ns, local, _parent, start, end, path in _walk_leaf_texts(data):
         if local == b"f" and ns == CHART_NS:
-            fs.append((start, end, data[start:end]))
+            fs.append((start, end, data[start:end], path))
         elif local == b"t" and ns == DRAWING_MAIN_NS:
-            ts.append((start, end, data[start:end]))
+            ts.append((start, end, data[start:end], path))
     return fs, ts
 
 
 def _neutralized(data, fs, ts):
     """The document with every expressible text span replaced by a
     placeholder — what remains is the INexpressible surface."""
-    spans = sorted([(s, e) for s, e, _ in fs] + [(s, e) for s, e, _ in ts],
-                   reverse=True)
+    spans = sorted([(s, e) for s, e, _t, _p in fs]
+                   + [(s, e) for s, e, _t, _p in ts], reverse=True)
     for start, end in spans:
         data = data[:start] + b"#" + data[end:]
     return data
@@ -430,6 +442,12 @@ def plan_property_edits(wb, ws, key, armed, current, original):
     t_changes = {i: (a[2], c[2])
                  for i, (a, c) in enumerate(zip(armed_t, current_t))
                  if a[2] != c[2]}
+    for i, (a, c) in enumerate(zip(armed_f, current_f)):
+        if a[3] != c[3] and (i in f_changes):
+            _refuse("the renders disagree about element structure")
+    for i, (a, c) in enumerate(zip(armed_t, current_t)):
+        if a[3] != c[3] and (i in t_changes):
+            _refuse("the renders disagree about element structure")
     if not f_changes and not t_changes:
         return original
 
@@ -465,22 +483,61 @@ def plan_property_edits(wb, ws, key, armed, current, original):
                 "loaded {1} — the positional mapping is not "
                 "trustworthy".format(len(original_t), len(armed_t)))
 
+    # the original document may serialize sibling elements in a different
+    # order than the model render (valAx before catAx is schema-legal):
+    # map leaves within PATH GROUPS, never by flat index (Batch-4 gate:
+    # the flat mapping patched the wrong axis title)
+    def _groups(leaves):
+        groups = {}
+        for idx, leaf in enumerate(leaves):
+            groups.setdefault(leaf[3], []).append(idx)
+        return groups
+
+    def _map_to_original(i, armed_leaves, original_groups, armed_groups,
+                         what):
+        path = armed_leaves[i][3]
+        armed_group = armed_groups.get(path, [])
+        original_group = original_groups.get(path, [])
+        if len(armed_group) != len(original_group):
+            _refuse("the original part arranges its {0} elements "
+                    "differently than the model ({1} vs {2} at {3}) — "
+                    "the positional mapping is not trustworthy".format(
+                        what, len(original_group), len(armed_group),
+                        b"/".join(path).decode("ascii", "replace")))
+        return original_group[armed_group.index(i)]
+
     edits = []
-    for i, (old, new) in f_changes.items():
-        o_start, o_end, o_text = original_f[i]
-        if _unescape(o_text) != _unescape(old):
-            _refuse("formula reference {0} in the original part ({1!r}) "
-                    "does not match the model's arm state ({2!r}) — "
-                    "another edit already rewrote it this session; do "
-                    "these edits in separate sessions".format(
-                        i, o_text, old))
-        edits.append((o_start, o_end, _escape(_unescape(new))))
-    for i, (old, new) in t_changes.items():
-        o_start, o_end, o_text = original_t[i]
-        if _unescape(o_text) != _unescape(old):
-            _refuse("text run {0} in the original part does not match the "
-                    "model's arm state".format(i))
-        edits.append((o_start, o_end, _escape(_unescape(new))))
+    if f_changes:
+        of_groups, af_groups = _groups(original_f), _groups(armed_f)
+        for i, (old, new) in f_changes.items():
+            oi = _map_to_original(i, armed_f, of_groups, af_groups,
+                                  "formula")
+            o_start, o_end, o_text, _op = original_f[oi]
+            try:
+                matches = _unescape(o_text) == _unescape(old)
+            except ScanRefusal as exc:
+                _refuse(str(exc))
+            if not matches:
+                _refuse("formula reference {0} in the original part "
+                        "({1!r}) does not match the model's arm state "
+                        "({2!r}) — another edit already rewrote it this "
+                        "session; do these edits in separate "
+                        "sessions".format(i, o_text, old))
+            edits.append((o_start, o_end, _escape(_unescape(new))))
+    if t_changes:
+        ot_groups, at_groups = _groups(original_t), _groups(armed_t)
+        for i, (old, new) in t_changes.items():
+            oi = _map_to_original(i, armed_t, ot_groups, at_groups,
+                                  "text")
+            o_start, o_end, o_text, _op = original_t[oi]
+            try:
+                matches = _unescape(o_text) == _unescape(old)
+            except ScanRefusal as exc:
+                _refuse(str(exc))
+            if not matches:
+                _refuse("text run {0} in the original part does not match "
+                        "the model's arm state".format(i))
+            edits.append((o_start, o_end, _escape(_unescape(new))))
 
     for start, end, replacement in sorted(edits, reverse=True):
         original = original[:start] + replacement + original[end:]

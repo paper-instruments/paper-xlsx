@@ -265,8 +265,11 @@ def _object_snapshot(ws):
 _OBJECT_UNLOCKS = {
     "table": "table editing lands with the v0.1 lifecycle engine "
              "(Batch 2)",
-    "chart": "chart editing lands with v0.1 Batch 4",
-    "image": "image editing lands with v0.1 Batch 4",
+    "chart": "only title/axis text and series ranges are editable on "
+             "loaded charts (chartpatch, v0.1 Batch 4); this edit is "
+             "outside that set",
+    "image": "loaded images are preserved verbatim and not editable; "
+             "ADDING images is supported (v0.1 Batch 4)",
     "pivot": "pivot editing is out of scope (preservation and "
              "refresh-on-load cover brownfield pivots)",
 }
@@ -686,7 +689,8 @@ def refuse_chart_or_image_add(ws, what):
             raise UnsupportedStructureError(
                 "add_{0}(): the package part for sheet {1!r} could not be "
                 "located. Nothing was changed.".format(what, ws.title))
-        drawing_part = drawings_mod._existing_drawing_part(zin, names, part)
+        drawing_part, _rid = drawings_mod._existing_drawing_part(
+            zin, names, part)
         if drawing_part is not None \
                 and not drawings_mod._anchor_only(zin.read(drawing_part)):
             raise UnsupportedStructureError(
@@ -752,6 +756,23 @@ def record_rename(sheet_child, new_title):
     _rename_defined_names(wb, old_title, new_title)
     for scoped in wb.worksheets:
         _rename_defined_names(scoped, old_title, new_title)
+    # in-session charts are model-rendered at save: their data-source
+    # references follow the rename like every other model reference
+    # (loaded charts' parts are byte-patched at save instead) — Batch-4
+    # gate: an added chart's part kept the old, now-nonexistent title
+    from .structural import _chart_source_ref_objects
+
+    for sheet in wb.worksheets:
+        armed_charts = (led.object_snapshots.get(sheet) or {}).get(
+            "chart", {})
+        for i, chart in enumerate(getattr(sheet, "_charts", []) or []):
+            if i in armed_charts:
+                continue
+            for ref in _chart_source_ref_objects(chart):
+                rewritten, changed = rename_sheet_in_formula(
+                    "=" + ref.f, old_title, new_title)
+                if changed:
+                    ref.f = rewritten[1:]
 
     # ledger bookkeeping: the sheet keeps counting as LOADED under its
     # new name, state patches re-key, and the save patches the name attr

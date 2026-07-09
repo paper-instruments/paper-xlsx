@@ -358,9 +358,9 @@ def _sheet_payload(wb, title):
         return z.read(part)
 
 
-def _chart_source_refs(chart):
-    """The live reference objects of a model chart's data sources —
-    (yields each Ref with a string .f)."""
+def _chart_source_ref_objects(chart):
+    """The live reference OBJECTS of a model chart's data sources (each
+    carries a string ``.f``)."""
     for ser in getattr(chart, "series", []) or []:
         for src_name in ("val", "yVal", "xVal", "bubbleSize", "cat", "tx"):
             src = getattr(ser, src_name, None)
@@ -370,7 +370,12 @@ def _chart_source_refs(chart):
                 ref = getattr(src, ref_name, None)
                 if ref is not None and isinstance(getattr(ref, "f", None),
                                                   str):
-                    yield ref.f
+                    yield ref
+
+
+def _chart_source_refs(chart):
+    for ref in _chart_source_ref_objects(chart):
+        yield ref.f
 
 
 def _shift_added_chart_refs(chart, target_title, axis, index, amount,
@@ -378,27 +383,17 @@ def _shift_added_chart_refs(chart, target_title, axis, index, amount,
     """Rewrite one model chart's data-source references for a shift on
     ``target_title`` (deletes that would strand a chart were already
     blocked pre-move by shift_blockers)."""
-    for ser in getattr(chart, "series", []) or []:
-        for src_name in ("val", "yVal", "xVal", "bubbleSize", "cat", "tx"):
-            src = getattr(ser, src_name, None)
-            if src is None:
-                continue
-            for ref_name in ("numRef", "strRef", "multiLvlStrRef"):
-                ref = getattr(src, ref_name, None)
-                if ref is None or not isinstance(getattr(ref, "f", None),
-                                                 str):
-                    continue
-                new_f, changed = shift_name_value(
-                    ref.f, target_title, axis, index, amount, is_delete)
-                if not changed:
-                    continue
-                if "#REF" in new_f and "#REF" not in ref.f:
-                    raise UnsupportedStructureError(
-                        "internal: a delete stranding an in-session "
-                        "chart ({0!r}) escaped the pre-move blocker; the "
-                        "model may be partially shifted — do not "
-                        "save.".format(ref.f))
-                ref.f = new_f
+    for ref in _chart_source_ref_objects(chart):
+        new_f, changed = shift_name_value(
+            ref.f, target_title, axis, index, amount, is_delete)
+        if not changed:
+            continue
+        if "#REF" in new_f and "#REF" not in ref.f:
+            raise UnsupportedStructureError(
+                "internal: a delete stranding an in-session chart "
+                "({0!r}) escaped the pre-move blocker; the model may be "
+                "partially shifted — do not save.".format(ref.f))
+        ref.f = new_f
 
 
 def apply_model_shift(ws, operation, index, amount):
