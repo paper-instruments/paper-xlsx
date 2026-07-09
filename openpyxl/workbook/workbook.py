@@ -227,6 +227,13 @@ class Workbook:
                     kind="ambiguous-name", options=[
                         "{0}!{1}".format(t, r) for t, r in destinations])
             title, coord = destinations[0]
+            if ":" in coord:
+                raise AmbiguousTargetError(
+                    "defined name {0!r} resolves to a RANGE ({1}); "
+                    "set_input takes single cells only.".format(
+                        name_or_label, coord),
+                    kind="ambiguous-name",
+                    options=["{0}!{1}".format(title, coord)])
             target = self[title][coord.replace("$", "")]
         else:
             hits = []
@@ -249,6 +256,16 @@ class Workbook:
                                       ", ".join(options)),
                     kind="ambiguous-input", options=options)
             target = hits[0]
+        from openpyxl.cell.cell import MergedCell
+
+        if isinstance(target, MergedCell):
+            raise UnsupportedStructureError(
+                "{0}!{1} is inside a merged range; write the input to the "
+                "merge's anchor cell instead. Nothing was changed.".format(
+                    target.parent.title, target.coordinate),
+                kind="input-is-merged-interior",
+                anchor="{0}!{1}".format(target.parent.title,
+                                        target.coordinate))
         if target.data_type == "f":
             raise UnsupportedStructureError(
                 "{0}!{1} holds a formula; set_input never overwrites "
@@ -261,27 +278,48 @@ class Workbook:
         return target
 
     def protect_for_delivery(self, password=None):
-        """Lock every cell EXCEPT the model map's classified inputs and
-        enable sheet protection (paper-xlsx, PLAN-v0.1 Batch 7).
+        """Lock every populated cell EXCEPT the model map's classified
+        inputs, and enable sheet protection (paper-xlsx, PLAN-v0.1 Batch
+        7). Every non-input cell is ACTIVELY locked (a workbook authored
+        with locked=False cells — templates, LibreOffice output — would
+        otherwise ship editable under a "protected" sheet: the gate found
+        this). Each cell's other protection flags (hidden) are preserved.
         Protection is advisory in the file format and REPORTED here —
-        returns {"locked_sheets": [...], "unlocked_inputs": [...]}."""
+        returns {"locked_sheets", "unlocked_inputs", "locked_cells"}."""
+        from copy import copy as _copy
+
         from openpyxl.styles import Protection
 
         mm = self.model_map()
         unlocked = []
+        locked_count = 0
         locked_sheets = []
+
+        def _set_locked(cell, locked):
+            prot = _copy(cell.protection) if cell.protection is not None \
+                else Protection()
+            prot.locked = locked
+            cell.protection = prot
+
         for ws in self.worksheets:
             inputs = set(mm.sheets.get(ws.title, {}).get("inputs", []))
-            for address in sorted(inputs):
-                cell = ws[address]
-                cell.protection = Protection(locked=False)
-                unlocked.append("{0}!{1}".format(ws.title, address))
+            for (row, col), cell in sorted(ws._cells.items()):
+                if cell._value is None:
+                    continue
+                address = cell.coordinate
+                if address in inputs:
+                    _set_locked(cell, False)
+                    unlocked.append("{0}!{1}".format(ws.title, address))
+                else:
+                    _set_locked(cell, True)
+                    locked_count += 1
             ws.protection.sheet = True
             if password:
                 ws.protection.password = password
             locked_sheets.append(ws.title)
         return {"locked_sheets": locked_sheets,
-                "unlocked_inputs": unlocked}
+                "unlocked_inputs": unlocked,
+                "locked_cells": locked_count}
 
     def scrub(self, remove=("comments", "metadata", "personal",
                             "hidden-sheets")):
@@ -306,29 +344,55 @@ class Workbook:
             raise ValueError("unknown scrub targets: {0}".format(
                 sorted(unknown)))
         if "comments" in options:
+            # a sheet whose comments come from PRESERVED machinery cannot
+            # have them removed (the saver refuses editing preserved
+            # comment parts) — nulling them would both LIE in the report
+            # and brick the save (the gate found exactly this). Detect
+            # per sheet FIRST, then only null in-session comments on
+            # comment-free sheets (compute-then-mutate keeps scrub atomic
+            # and its report honest).
+            preserved_sheets = set()
+            if self._paper_source is not None:
+                import io as _io
+                import zipfile as _zipfile
+
+                from openpyxl.preserve.comments import (
+                    sheet_has_comment_machinery,
+                )
+                from openpyxl.preserve.saver import _package_info
+
+                with _zipfile.ZipFile(
+                        _io.BytesIO(self._paper_source)) as zin:
+                    names = set(zin.namelist())
+                    _wb, mapping = _package_info(zin)
+                    led = self._paper_ledger
+                    for ws in self.worksheets:
+                        original = (led.renames.get(ws, ws.title)
+                                    if led is not None else ws.title)
+                        part = mapping.get(original)
+                        if part is not None and sheet_has_comment_machinery(
+                                zin, part, names):
+                            preserved_sheets.add(ws.title)
             for ws in self.worksheets:
+                if ws.title in preserved_sheets:
+                    commented = sorted(
+                        cell.coordinate for cell in ws._cells.values()
+                        if cell._comment is not None)
+                    if commented:
+                        report["skipped"].append(
+                            "sheet {0!r} carries preserved comment "
+                            "machinery; its comments ({1}) cannot be "
+                            "removed without rewriting preserved parts "
+                            "(unsupported). Nothing on this sheet was "
+                            "changed.".format(ws.title,
+                                              ", ".join(commented)))
+                    continue
                 for (row, col), cell in sorted(ws._cells.items()):
                     if cell._comment is not None:
                         cell.comment = None
                         report["removed"].append(
                             "comment at {0}!{1}".format(ws.title,
                                                         cell.coordinate))
-            if self._paper_source is not None:
-                import io as _io
-                import zipfile as _zipfile
-
-                with _zipfile.ZipFile(
-                        _io.BytesIO(self._paper_source)) as zin:
-                    machinery = [n for n in zin.namelist()
-                                 if n.startswith("xl/comments")
-                                 or (n.startswith("xl/drawings/")
-                                     and n.endswith(".vml"))]
-                if machinery:
-                    report["skipped"].append(
-                        "preserved comment machinery ({0}) — editing "
-                        "preserved comment parts is not supported; "
-                        "comments added this session were "
-                        "removed".format(", ".join(sorted(machinery))))
         if "metadata" in options:
             props = self.properties
             for attr in ("title", "subject", "description", "keywords",

@@ -882,6 +882,45 @@ sections):
   flip via PAPER_PRESERVE_DEFAULT, public default awaits the
   FIXTURE-REQUESTS real-Excel queue).
 
+## Batch 7 — adversarial gate report (2026-07-08)
+
+Four lenses (one — hardening-integrity — died mid-run on disk pressure;
+its concerns were verified by hand: no false-positive decompression
+refusal on a legit 70 MB-media file, no-op parts still byte-identical
+after the zip-confusion header check). Five findings confirmed with
+live repros, all fixed and fixtured
+(tests/paper/test_gate_regressions.py Batch-7 class):
+
+- **CRITICAL, scrub lied about preserved comments AND bricked the save:**
+  the comments branch nulled EVERY comment (including ones loaded from
+  preserved comment parts) and reported them "removed" — then the saver
+  refused to edit preserved comment machinery, leaving the workbook
+  permanently unsaveable (a no-op save even refused). scrub now detects
+  preserved comment machinery per sheet FIRST (sheet_has_comment_machinery
+  over the original bytes, rename-aware), leaves those comments
+  untouched, reports them under "skipped", and nulls only in-session
+  comments on comment-free sheets — compute-then-mutate, honest report,
+  still saveable.
+- **CRITICAL, protect_for_delivery was a lying safety verb:** it only
+  UNLOCKED inputs and flipped sheet.protection, relying on the OOXML
+  default locked=True — so a workbook authored with explicit
+  locked=False cells (templates, LibreOffice output) shipped its outputs
+  editable under a "protected" sheet while the report implied lockdown.
+  Every non-input populated cell is now ACTIVELY locked (existing
+  protection copied, only .locked flipped), and the report carries a
+  locked_cells count.
+- **MAJOR, protection.hidden clobbered:** apply_profile and
+  protect_for_delivery built a fresh Protection(locked=...), silently
+  dropping a cell's hidden flag (a hidden formula un-hidden). Both now
+  copy the existing protection and flip only .locked.
+- **MAJOR x2, set_input raw crashes:** a defined name resolving to a
+  multi-cell RANGE (single destination, multi-cell coord) hit
+  ws['B1:B3'] → tuple → AttributeError; a merged-range interior target
+  hit MergedCell.value (read-only) → AttributeError. Both now refuse
+  typed (ambiguous-name / input-is-merged-interior) before any write.
+
+Suite: 3123 upstream+paper; 531 paper both env arms.
+
 ## Batch 6 — adversarial gate report (2026-07-08)
 
 Four lenses, 24 findings confirmed with live repros — deduplicated to

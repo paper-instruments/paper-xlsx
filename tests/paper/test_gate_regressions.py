@@ -1455,3 +1455,111 @@ class TestBatch6InstrumentGaps:
         wb = load_workbook(crafted, preserve=True)
         kinds = {f.kind for f in findings(wb)}
         assert "merged-hazard" in kinds
+
+
+class TestBatch7DeliveryGaps:
+
+    def test_scrub_preserved_comment_is_honest_and_saveable(
+            self, fixture_copy, tmp_path):
+        # scrub nulled a PRESERVED comment, reported it "removed", and
+        # bricked the save (gate critical): it must skip preserved
+        # machinery, report it truthfully, and stay saveable
+        from openpyxl.comments import Comment
+
+        src = fixture_copy("features/schedule.xlsx")
+        wb0 = load_workbook(src)
+        wb0["Schedule"]["A2"].comment = Comment("preserved", "auth")
+        wb0.save(src)
+        wb = load_workbook(src, preserve=True)
+        report = wb.scrub()
+        assert not any("comment at" in r for r in report["removed"])
+        assert any("preserved comment machinery" in s
+                   for s in report["skipped"])
+        assert wb["Schedule"]["A2"].comment is not None   # not nulled
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)                                      # still saveable
+        assert load_workbook(out)["Schedule"]["A2"].comment is not None
+
+    def test_scrub_removes_session_comment_on_clean_sheet(self,
+                                                          fixture_copy):
+        from openpyxl.comments import Comment
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        wb["Summary"]["A9"].comment = Comment("session", "me")
+        report = wb.scrub(remove=("comments",))
+        assert any("Summary!A9" in r for r in report["removed"])
+
+    def test_protect_for_delivery_actively_locks_non_inputs(self,
+                                                            tmp_path):
+        # relying on the OOXML default left author-unlocked outputs
+        # editable under a "protected" sheet (gate critical)
+        from openpyxl.styles import Protection
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Model"
+        ws["A1"] = 10
+        ws["A2"] = 20
+        ws["B1"] = "=A1+A2"
+        ws["C1"] = "=B1*2"
+        for c in ("A1", "A2", "B1", "C1"):
+            ws[c].protection = Protection(locked=False)
+        src = str(tmp_path / "src.xlsx")
+        wb.save(src)
+        wb = load_workbook(src, preserve=True)
+        report = wb.protect_for_delivery()
+        assert report["locked_cells"] >= 2
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        r = load_workbook(out)["Model"]
+        assert r["C1"].protection.locked is True     # output locked
+        assert r["B1"].protection.locked is True     # calculation locked
+        assert r["A1"].protection.locked is False    # input stays open
+
+    def test_protection_edits_preserve_hidden_flag(self, tmp_path):
+        # apply_profile/protect built a fresh Protection, dropping hidden
+        # (gate major): the hidden bit must survive a locked-only change
+        from openpyxl.preserve import apply_profile
+        from openpyxl.styles import Protection
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "M"
+        ws["A1"] = 10
+        ws["A2"] = 20
+        ws["B1"] = "=A1+A2"
+        ws["A1"].protection = Protection(locked=True, hidden=True)
+        src = str(tmp_path / "s.xlsx")
+        wb.save(src)
+        wb = load_workbook(src, preserve=True)
+        apply_profile(wb["M"], {"inputs": {"locked": False}})
+        assert wb["M"]["A1"].protection.hidden is True
+
+    def test_set_input_range_name_refuses_typed(self, fixture_copy):
+        from openpyxl.errors import AmbiguousTargetError
+        from openpyxl.workbook.defined_name import DefinedName
+
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        wb.defined_names["Rng"] = DefinedName(
+            "Rng", attr_text="Schedule!$B$2:$B$4")
+        with pytest.raises(AmbiguousTargetError, match="RANGE"):
+            wb.set_input("Rng", 5)
+
+    def test_set_input_merged_interior_refuses_typed(self, fixture_copy):
+        from openpyxl.utils import get_column_letter
+        from openpyxl.workbook.defined_name import DefinedName
+
+        wb = load_workbook(fixture_copy("features/merged.xlsx"),
+                           preserve=True)
+        ws = next(w for w in wb.worksheets if w.merged_cells.ranges)
+        rng = next(iter(ws.merged_cells.ranges))
+        if rng.max_col <= rng.min_col:
+            pytest.skip("fixture merge is single-column")
+        interior = "'{0}'!${1}${2}".format(
+            ws.title, get_column_letter(rng.min_col + 1), rng.min_row)
+        wb.defined_names["Int"] = DefinedName("Int", attr_text=interior)
+        with pytest.raises(UnsupportedStructureError,
+                           match="merged range"):
+            wb.set_input("Int", 5)

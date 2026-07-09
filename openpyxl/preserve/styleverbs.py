@@ -96,7 +96,13 @@ def apply_profile(ws, profile):
                     font.color = Color(rgb=spec["font_color"])
                 cell.font = font
             if "locked" in spec:
-                cell.protection = Protection(locked=bool(spec["locked"]))
+                # preserve the cell's other protection flags (hidden):
+                # a fresh Protection(locked=...) would silently drop a
+                # hidden formula's hiding (the gate found this)
+                prot = copy(cell.protection) if cell.protection is not None \
+                    else Protection()
+                prot.locked = bool(spec["locked"])
+                cell.protection = prot
             applied += 1
         counts[role] = applied
     return counts
