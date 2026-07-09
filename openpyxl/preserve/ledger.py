@@ -46,6 +46,7 @@ class DirtyLedger:
                  "custom_snapshot", "chartsheet_snapshots", "pinned_regions",
                  "object_snapshots", "external_links_snapshot",
                  "protection_warned", "replaced_parts", "renames",
+                 "sheet_order", "removed_sheets",
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag")
@@ -75,6 +76,8 @@ class DirtyLedger:
         self.protection_warned = set()   # sheets warned once (1.6)
         self.replaced_parts = {}         # raw byte swaps (PR-1 1.4)
         self.renames = {}                # ws -> ORIGINAL title (3.2)
+        self.sheet_order = []            # _sheets titles at arm (3.2)
+        self.removed_sheets = []         # ORIGINAL titles removed (3.2)
         self.orig_cell_styles_len = 0
         self.rich_text_mode = False
         self.sheet_states = {}         # title -> state at arm (all sheets)
@@ -122,6 +125,7 @@ class DirtyLedger:
         led.orig_cell_styles_len = len(wb._cell_styles)
         led.rich_text_mode = rich_text
         led.sheet_states = {s.title: s.sheet_state for s in wb._sheets}
+        led.sheet_order = [s.title for s in wb._sheets]
         led.template_flag = bool(wb.template)
         led.dxfs_len = len(wb._differential_styles.styles)
         led.named_styles_len = len(wb._named_styles)
@@ -798,3 +802,82 @@ def _parse_sheet_range(target):
     # upstream keeps escaped quotes in the title group; undo that
     title = title.replace("''", "'")
     return title, bounds
+
+
+class RemovalReport:
+    """What a sheet deletion removed and remapped (PR-1 §2.2, pinned)."""
+
+    def __init__(self, removed_parts, remapped_names):
+        self.removed_parts = list(removed_parts)
+        self.remapped_names = remapped_names
+
+    def to_dict(self):
+        return {"schema": "removal_report", "version": 1,
+                "removed_parts": list(self.removed_parts),
+                "remapped_names": self.remapped_names}
+
+    def __repr__(self):
+        return "RemovalReport({0} parts, {1} names)".format(
+            len(self.removed_parts), self.remapped_names)
+
+
+def audit_sheet_removal(wb, ws):
+    """The reference audit before a LOADED sheet may be removed
+    (PLAN-v0.1 3.2): anything on ANOTHER sheet pointing at the victim
+    refuses with the full enumeration — formulas (3-D endpoints and
+    textual/INDIRECT included), defined names, chart parts, pivot parts."""
+    from .rewrite import (
+        rename_sheet_in_formula,
+        title_in_string_literals,
+    )
+    from .structural import _charts_referencing, _pivots_referencing
+
+    title = ws.title
+    victims = []
+    for other in wb.worksheets:
+        if other is ws:
+            continue
+        for (row, col), cell in sorted(other._cells.items()):
+            if cell.data_type != "f" or not isinstance(cell._value, str):
+                continue
+            # a reference the rename machinery could rewrite is exactly a
+            # reference the delete would strand
+            _, refs_it = rename_sheet_in_formula(cell._value, title, title + "_")
+            if refs_it or title_in_string_literals(cell._value, title):
+                victims.append("{0}!{1}".format(other.title,
+                                                cell.coordinate))
+    for name in list(wb.defined_names):
+        dn = wb.defined_names[name]
+        if dn.value:
+            _, refs_it = rename_sheet_in_formula("=" + dn.value, title,
+                                                 title + "_")
+            if refs_it:
+                victims.append("defined name {0!r}".format(name))
+    for part in _charts_referencing(wb, title):
+        victims.append("chart part {0}".format(part))
+    if _pivots_referencing(wb, title):
+        victims.append("pivot parts")
+    if victims:
+        raise UnsupportedStructureError(
+            "removing sheet {0!r} would strand references to it:\n  - "
+            "{1}\nNothing was changed. Delete or rewrite those references "
+            "first.".format(title, "\n  - ".join(victims[:12])))
+
+
+def record_sheet_removal(wb, ws):
+    """Called by Workbook.remove for a LOADED sheet, AFTER the audit."""
+    led = _armed_ledger_for_wb(wb)
+    if led is None:
+        return
+    original_title = led.renames.pop(ws, ws.title)
+    led.removed_sheets.append(original_title)
+    led.loaded_sheet_titles = led.loaded_sheet_titles - {ws.title}
+    led.sheet_states.pop(ws.title, None)
+    led.cells.pop(ws, None)
+    led.object_snapshots.pop(ws, None)
+    led.region_snapshots.pop(ws, None)
+    led.row_attr_snapshots.pop(ws, None)
+    led.comment_snapshots.pop(ws, None)
+    led.pinned_regions.pop(ws, None)
+    # calcChain carries positional sheet indexes: it dies with the sheet
+    led.formulas_changed = True

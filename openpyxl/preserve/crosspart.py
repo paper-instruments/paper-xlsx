@@ -415,6 +415,53 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
     for ws_obj, original_title in getattr(led, "renames", {}).items():
         if ws_obj.title != original_title:
             renamed[original_title] = ws_obj.title
+
+    # removals/reorder rebuild the sheets children from ORIGINAL entry
+    # bytes (PLAN-v0.1 3.2); the per-entry patch path handles the rest
+    removed = set(getattr(led, "removed_sheets", ()))
+    current_originals = []
+    for sheet in wb._sheets:
+        title = sheet.title
+        orig = getattr(led, "renames", {}).get(sheet, title)
+        if orig in led.sheet_order or title in led.sheet_order:
+            current_originals.append(orig)
+    armed_order = [t for t in getattr(led, "sheet_order", ())
+                   if t not in removed]
+    rebuild = bool(removed) or current_originals != armed_order
+    if rebuild:
+        by_name = {}
+        for entry in sheets_node.children:
+            if entry.local() == "sheet":
+                by_name[entry.attrs.get("name")] =                     original[entry.start:entry.end]
+        pieces = []
+        for orig_title in current_originals:
+            blob = by_name.get(orig_title)
+            if blob is None:
+                raise UnsupportedStructureError(
+                    "cannot rebuild the sheets element: no original entry "
+                    "for {0!r}. Nothing was written.".format(orig_title))
+            if orig_title in renamed:
+                blob = _rename_entry_name(blob, renamed[orig_title])
+            new_state = state_changes.get(
+                renamed.get(orig_title, orig_title))
+            if new_state is not None:
+                blob = _repatch_entry_state(blob, new_state)
+            pieces.append(blob)
+        if new_sheet_entries:
+            pieces.extend(
+                _render_sheet_entry(title, sheet_id, rid, state)
+                for title, sheet_id, rid, state in new_sheet_entries)
+        inner_start = min(c.start for c in sheets_node.children)             if sheets_node.children else None
+        inner_end = max(c.end for c in sheets_node.children)             if sheets_node.children else None
+        if inner_start is None:
+            raise UnsupportedStructureError(
+                "cannot rebuild an empty sheets element. Nothing was "
+                "written.")
+        edits.append((inner_start, inner_end, b"".join(pieces)))
+        new_sheet_entries = ()          # consumed by the rebuild
+        state_changes = {}
+        renamed = {}
+
     if state_changes or renamed:
         for entry in sheets_node.children:
             if entry.local() != "sheet":
@@ -439,6 +486,30 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
     if not edits:
         return None
     return apply_edits(original, edits)
+
+
+def _rename_entry_name(entry_bytes, new_title):
+    import re as _re
+
+    return _re.sub(
+        br'(\sname=")[^"]*(")',
+        lambda m: m.group(1) + _escape(new_title) + m.group(2),
+        entry_bytes, count=1)
+
+
+def _repatch_entry_state(entry_bytes, new_state):
+    import re as _re
+
+    if b' state="' in entry_bytes:
+        if new_state == "visible":
+            return _re.sub(br'\sstate="[^"]*"', b"", entry_bytes, count=1)
+        return _re.sub(br'(\sstate=")[^"]*(")',
+                       lambda m: m.group(1) + _escape(new_state) + m.group(2),
+                       entry_bytes, count=1)
+    if new_state == "visible":
+        return entry_bytes
+    return entry_bytes.replace(
+        b"<sheet ", b'<sheet state="%s" ' % _escape(new_state), 1)
 
 
 def _render_sheet_entry(title, sheet_id, rid, state):

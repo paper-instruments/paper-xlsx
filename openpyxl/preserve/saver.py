@@ -390,6 +390,20 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         region_claims[part] = claims
         row_claims[part] = set(row_changes)
 
+    # ---- removed sheets: the part cascade (3.2) ----------------------------
+    for removed_title in led.removed_sheets:
+        removed_part = sheet_parts.get(removed_title)
+        if removed_part is None or removed_part not in names:
+            _refuse("cannot locate the package part for removed sheet "
+                    "{0!r}.".format(removed_title))
+        closure = _exclusive_closure(zin, names, removed_part)
+        part_plan.remove_part(
+            removed_part, referencing_rels=[(wb_rels_part, removed_part)])
+        for child_part in closure:
+            if child_part in part_plan.dropped:
+                continue
+            part_plan.remove_part(child_part)
+
     # ---- rename cascade: chart parts referencing old titles (3.2) ---------
     for ws_obj, original_title in led.renames.items():
         if ws_obj.title == original_title:
@@ -435,9 +449,20 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 rel_type=REL_NS + "/styles")
 
     # ---- workbook.xml plan -------------------------------------------------
+    force_tags = ["calcPr"] if force_calcpr else []
+    order_now = []
+    for sheet_obj in workbook._sheets:
+        order_now.append(led.renames.get(sheet_obj, sheet_obj.title))
+    armed_minus_removed = [t for t in led.sheet_order
+                           if t not in set(led.removed_sheets)]
+    loaded_now = [t for t in order_now if t in set(led.sheet_order)]
+    if led.removed_sheets or loaded_now != armed_minus_removed:
+        # localSheetId and activeTab are position-derived: re-render both
+        # workbook elements whenever positions changed (PLAN-v0.1 3.2)
+        force_tags += ["definedNames", "bookViews"]
     wb_xml_plan = crosspart.plan_workbook_xml(
         workbook, led, zin.read(wb_part), new_sheet_entries,
-        force_tags=("calcPr",) if force_calcpr else ())
+        force_tags=tuple(force_tags))
 
     # ---- workbook rels + content types -------------------------------------
     core_changed = render_core_model(workbook) != led.core_snapshot
@@ -674,6 +699,59 @@ def _check_added_sheet_supported(ws):
     # comments on added sheets generate via the Batch-2 machinery (the
     # stock writer emits <legacyDrawing r:id="anysvml"/> whenever the
     # sheet has comments; the saver adds the matching parts + rels)
+
+
+def _exclusive_closure(zin, names, root_part):
+    """Parts reachable ONLY through ``root_part``'s relationship tree —
+    the deletion cascade set (drawings, charts, comments, tables, their
+    auxiliaries). Shared parts (referenced from any surviving rels part)
+    are conservatively kept."""
+    from . import lifecycle as _lc
+
+    def rels_of(part):
+        rp = _rels_path(part)
+        return rp if rp in names else None
+
+    def targets(rels_part):
+        out = []
+        root = crosspart.scan_small(zin.read(rels_part), "Relationships",
+                                    max_depth=1)
+        owner = _lc._owner_of_rels(rels_part)
+        for child in root.children:
+            if child.local() != "Relationship":
+                continue
+            if child.attrs.get("TargetMode") == "External":
+                continue
+            out.append(_lc._resolve_target(owner,
+                                           child.attrs.get("Target", "")))
+        return out
+
+    # closure through the removed tree
+    closure = set()
+    frontier = [root_part]
+    while frontier:
+        part = frontier.pop()
+        rp = rels_of(part)
+        if rp is None:
+            continue
+        for target in targets(rp):
+            if target in names and target not in closure \
+                    and target != root_part:
+                closure.add(target)
+                frontier.append(target)
+
+    # reference counting: anything reachable from a SURVIVING rels part
+    # stays (conservative — orphans are worse than shared-part deletion)
+    surviving_refs = set()
+    for name in names:
+        if not name.endswith(".rels"):
+            continue
+        owner = _lc._owner_of_rels(name)
+        if owner == root_part or owner in closure:
+            continue
+        for target in targets(name):
+            surviving_refs.add(target)
+    return sorted(closure - surviving_refs)
 
 
 def _plan_added_sheet_comments(workbook, ws, part_plan, names, sheet_rels):

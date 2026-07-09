@@ -292,11 +292,9 @@ class Workbook:
         """
         if not isinstance(sheet, Worksheet):
             sheet = self[sheet]
-        _ledger.refuse_sheet_lifecycle(
-            self, "move_sheet",
-            "reordering sheets renumbers the positional localSheetId of "
-            "every sheet-scoped defined name inside the preserved "
-            "workbook.xml.")
+        # v0.1 Batch 3: reorder is expressed at save by reordering the
+        # ORIGINAL <sheet> entry bytes; definedNames/bookViews re-render
+        # (localSheetId and activeTab are position-derived by the writer)
         idx = self._sheets.index(sheet)
         del self._sheets[idx]
         new_pos = idx + offset
@@ -304,16 +302,28 @@ class Workbook:
 
 
     def remove(self, worksheet):
-        """Remove `worksheet` from this workbook."""
+        """Remove `worksheet` from this workbook.
+
+        Under preserve mode a LOADED sheet's removal runs the reference
+        audit first (anything on another sheet pointing at the victim
+        refuses with the enumeration) and returns a
+        :class:`~openpyxl.preserve.ledger.RemovalReport`; the part
+        cascade happens at save (PLAN-v0.1 3.2)."""
+        report = None
         if not _ledger.allow_sheet_removal(self, worksheet):
-            _ledger.refuse_sheet_lifecycle(
-                self, "removing sheet {0!r}".format(worksheet.title),
-                "deleting a loaded sheet requires remapping sheet-scoped "
-                "defined names (positional localSheetId) and cascading the "
-                "deletion of its comments, drawings, tables and "
-                "relationships inside the preserved package.")
+            _ledger.audit_sheet_removal(self, worksheet)
+            _ledger.record_sheet_removal(self, worksheet)
+            report = True
         idx = self._sheets.index(worksheet)
         self._sheets.remove(worksheet)
+        if report:
+            from openpyxl.preserve.ledger import RemovalReport
+
+            # parts enumerate at save; the report carries what is known now
+            return RemovalReport([], remapped_names=len([
+                n for ws in self._sheets
+                for n in getattr(ws, "defined_names", {})]))
+        return None
 
 
     @deprecated("Use wb.remove(worksheet) or del wb[sheetname]")
