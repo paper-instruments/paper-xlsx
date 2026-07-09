@@ -844,6 +844,44 @@ sections):
   A-side addresses through the AddressRemap chain; sheet
   membership changes listed.
 
+## Batch 7 — Delivery, hardening, adoption (2026-07-08, PLAN-v0.1)
+
+- **Style verbs (preserve.styleverbs):** `copy_format(ws, src, range)`
+  (whole-format copy via style-array reuse, ledger-marked; the D2
+  translator resolves at save) and `apply_profile(ws, profile)` —
+  profiles are DATA ({role: {number_format/fill/bold/italic/font_color/
+  locked}}) applied by MODEL-MAP role, with a named number-format
+  library. Both ride the splice; styles.xml stays append-only.
+- **Ergonomics:** `wb.set_input(name_or_label, value)` — defined names
+  first, then locate() across sheets (multi-sheet hits are ambiguous,
+  typed); NEVER overwrites a formula cell (kind=input-is-calculation).
+  `wb.protect_for_delivery(password=None)` — locks everything except
+  classified inputs, enables sheet protection, returns the report
+  (protection is advisory and REPORTED, never presented as security).
+  `wb.scrub(remove=...)` — comments (in-session; PRESERVED machinery is
+  reported, not silently stripped), metadata, personal, hidden-sheets
+  (through the audited removal: a refusal lands in "skipped" — never
+  silent). `wb.set_pivot_refresh_on_load()` — refreshOnLoad byte-patched
+  onto every pivotCacheDefinition via replaced_parts.
+- **Hardening:** deliver() fsyncs the temp file BEFORE os.replace and
+  the directory after (durability of the rename); path-target saves
+  spool the archive DIRECTLY into the delivery temp file (~1x file-size
+  peak memory; the crosscheck env keeps the in-memory build);
+  decompression caps at load (2 GiB/part absolute; >500x ratio above
+  64 MiB refuses — pinned numbers, documented in reader/excel.py);
+  the raw-copy path verifies central-vs-local zip header agreement
+  (name, method, CRC, sizes) and falls back to recompression on ANY
+  disagreement — a zip-confusion payload is normalized to the central
+  directory's view, the view zipfile and Excel read; mark_dirty clamps
+  bounded ranges to the populated extent (an oversized range would mark
+  millions of phantom DELETIONS).
+- **Adoption:** README "The paper API in 90 seconds"; doc/paper.rst
+  (the contract, perception, editing, oracle, delivery, refusal
+  taxonomy, the release gate). The public preserve-by-default flip
+  stays release-gated per PLAN-v0.1 (mechanism shipped, internal images
+  flip via PAPER_PRESERVE_DEFAULT, public default awaits the
+  FIXTURE-REQUESTS real-Excel queue).
+
 ## Batch 6 — adversarial gate report (2026-07-08)
 
 Four lenses, 24 findings confirmed with live repros — deduplicated to

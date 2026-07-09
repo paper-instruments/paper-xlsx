@@ -836,6 +836,14 @@ def mark_dirty_target(wb, target):
                     min_row, max_row = ws.min_row or 1, ws.max_row or 1
                 if min_col is None:
                     min_col, max_col = ws.min_column or 1, ws.max_column or 1
+                # bounded ranges clamp too (PLAN-v0.1 7 hardening): a
+                # coordinate with no model cell is a DELETION marker to
+                # the splice, so an oversized range (A1:XFD1048576) would
+                # both explode the loop and delete beyond the intent
+                max_row = min(max_row, ws.max_row or 1)
+                max_col = min(max_col, ws.max_column or 1)
+                min_row = max(1, min_row)
+                min_col = max(1, min_col)
                 for row in range(min_row, max_row + 1):
                     for col in range(min_col, max_col + 1):
                         led.mark_cell(ws, row, col)

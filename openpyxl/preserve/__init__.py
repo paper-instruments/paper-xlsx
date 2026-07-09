@@ -13,7 +13,7 @@ from .saver import save_preserved
 
 __all__ = ["AddressRemap", "DirtyLedger", "LossInventory", "scan_archive",
            "save_preserved", "scan_errors", "findings", "receipt",
-           "diff_workbooks"]
+           "diff_workbooks", "copy_format", "apply_profile"]
 
 
 def __getattr__(name):
@@ -41,4 +41,10 @@ def __getattr__(name):
     if name == "diff_workbooks":
         from .diffreport import diff_workbooks
         return diff_workbooks
+    if name == "copy_format":
+        from .styleverbs import copy_format
+        return copy_format
+    if name == "apply_profile":
+        from .styleverbs import apply_profile
+        return apply_profile
     raise AttributeError(name)

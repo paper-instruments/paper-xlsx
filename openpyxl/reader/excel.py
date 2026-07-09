@@ -87,6 +87,37 @@ def _check_extension(filename):
             raise InvalidFileException(msg)
 
 
+# decompression caps (PLAN-v0.1 7 hardening, pinned): a part is refused
+# when it inflates past BOTH triggers — absolute size AND, for large
+# parts, a compression ratio no real spreadsheet content reaches
+_DECOMPRESSION_MAX_PART = 2 * 1024 * 1024 * 1024      # 2 GiB per part
+_DECOMPRESSION_RATIO_CAP = 500                        # zip bombs: >>1000x
+_DECOMPRESSION_RATIO_FLOOR = 64 * 1024 * 1024         # ratio checked >64MB
+
+
+def _check_decompression_caps(archive):
+    from openpyxl.errors import UnsupportedStructureError
+
+    for info in archive.infolist():
+        if info.file_size > _DECOMPRESSION_MAX_PART:
+            raise UnsupportedStructureError(
+                "part {0!r} declares {1} bytes uncompressed, past the "
+                "{2}-byte cap; refusing to inflate it. Nothing was "
+                "loaded.".format(info.filename, info.file_size,
+                                 _DECOMPRESSION_MAX_PART))
+        if (info.file_size > _DECOMPRESSION_RATIO_FLOOR
+                and info.compress_size > 0
+                and info.file_size / info.compress_size
+                > _DECOMPRESSION_RATIO_CAP):
+            raise UnsupportedStructureError(
+                "part {0!r} inflates {1}x (from {2} to {3} bytes) — "
+                "no real spreadsheet compresses like that; refusing to "
+                "inflate it. Nothing was loaded.".format(
+                    info.filename,
+                    info.file_size // max(info.compress_size, 1),
+                    info.compress_size, info.file_size))
+
+
 def _validate_archive(filename):
     """
     Does a first check whether filename is a string or a file-like
@@ -102,6 +133,7 @@ def _validate_archive(filename):
 
     _refuse_cfb(filename)
     archive = ZipFile(filename, 'r')
+    _check_decompression_caps(archive)
     return archive
 
 

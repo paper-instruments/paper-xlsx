@@ -725,14 +725,17 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                     "re-render the same part; drop one of the two "
                     "edits.".format(name))
 
-    data = zipio.build_archive_bytes(build)
-
     if os.environ.get("PAPER_LEDGER_CROSSCHECK") == "1" and plan:
+        # the crosscheck needs the finished bytes: in-memory build
+        data = zipio.build_archive_bytes(build)
         from .crosscheck import verify_splice
         verify_splice(source, data, dirty_by_part, baselines=baselines,
                       region_claims=region_claims, row_claims=row_claims)
+        zipio.deliver(data, target)
+        return True
 
-    zipio.deliver(data, target)
+    # spool-to-disk for path targets (PLAN-v0.1 7 hardening)
+    zipio.build_and_deliver(build, target)
     return True
 
 

@@ -204,6 +204,194 @@ class Workbook:
             raise TypeError("payload must be bytes")
         self._paper_ledger.replaced_parts[name] = payload
 
+    def set_input(self, name_or_label, value):
+        """Set a model INPUT by defined name or text label (paper-xlsx,
+        PLAN-v0.1 Batch 7): resolution order is defined names, then
+        ``locate`` over every sheet (a label found on several sheets is
+        ambiguous). Refuses to overwrite a formula cell — set_input never
+        destroys a calculation. Returns the Cell written."""
+        from openpyxl.errors import (
+            AmbiguousTargetError,
+            TargetNotFoundError,
+            UnsupportedStructureError,
+        )
+
+        target = None
+        dn = self.defined_names.get(name_or_label)
+        if dn is not None:
+            destinations = list(dn.destinations)
+            if len(destinations) != 1:
+                raise AmbiguousTargetError(
+                    "defined name {0!r} resolves to {1} areas; single "
+                    "cells only.".format(name_or_label, len(destinations)),
+                    kind="ambiguous-name", options=[
+                        "{0}!{1}".format(t, r) for t, r in destinations])
+            title, coord = destinations[0]
+            target = self[title][coord.replace("$", "")]
+        else:
+            hits = []
+            for ws in self.worksheets:
+                try:
+                    hits.append(ws.locate(name_or_label))
+                except TargetNotFoundError:
+                    continue
+            if not hits:
+                raise TargetNotFoundError(
+                    "{0!r} is neither a defined name nor a label on any "
+                    "sheet.".format(name_or_label),
+                    kind="input-not-found")
+            if len(hits) > 1:
+                options = ["{0}!{1}".format(c.parent.title, c.coordinate)
+                           for c in hits]
+                raise AmbiguousTargetError(
+                    "label {0!r} resolves on {1} sheets: {2}. Qualify the "
+                    "request.".format(name_or_label, len(hits),
+                                      ", ".join(options)),
+                    kind="ambiguous-input", options=options)
+            target = hits[0]
+        if target.data_type == "f":
+            raise UnsupportedStructureError(
+                "{0}!{1} holds a formula; set_input never overwrites "
+                "calculations. Nothing was changed.".format(
+                    target.parent.title, target.coordinate),
+                kind="input-is-calculation",
+                anchor="{0}!{1}".format(target.parent.title,
+                                        target.coordinate))
+        target.value = value
+        return target
+
+    def protect_for_delivery(self, password=None):
+        """Lock every cell EXCEPT the model map's classified inputs and
+        enable sheet protection (paper-xlsx, PLAN-v0.1 Batch 7).
+        Protection is advisory in the file format and REPORTED here —
+        returns {"locked_sheets": [...], "unlocked_inputs": [...]}."""
+        from openpyxl.styles import Protection
+
+        mm = self.model_map()
+        unlocked = []
+        locked_sheets = []
+        for ws in self.worksheets:
+            inputs = set(mm.sheets.get(ws.title, {}).get("inputs", []))
+            for address in sorted(inputs):
+                cell = ws[address]
+                cell.protection = Protection(locked=False)
+                unlocked.append("{0}!{1}".format(ws.title, address))
+            ws.protection.sheet = True
+            if password:
+                ws.protection.password = password
+            locked_sheets.append(ws.title)
+        return {"locked_sheets": locked_sheets,
+                "unlocked_inputs": unlocked}
+
+    def scrub(self, remove=("comments", "metadata", "personal",
+                            "hidden-sheets")):
+        """Strip delivery-inappropriate content (paper-xlsx, PLAN-v0.1
+        Batch 7). Returns a scrub REPORT — everything removed is listed,
+        everything that could NOT be removed is reported with its reason
+        (hidden sheets whose removal would strand references refuse the
+        removal and land in "skipped"; never silent).
+
+        remove: any of "comments" (in-session comment objects; sheets
+        with PRESERVED comment machinery are reported, not silently
+        stripped), "metadata" (core document properties reset),
+        "personal" (creator/lastModifiedBy cleared), "hidden-sheets"
+        (removed via the audited removal path)."""
+        from openpyxl.errors import PaperRefusal
+
+        report = {"removed": [], "skipped": []}
+        options = set(remove)
+        unknown = options - {"comments", "metadata", "personal",
+                             "hidden-sheets"}
+        if unknown:
+            raise ValueError("unknown scrub targets: {0}".format(
+                sorted(unknown)))
+        if "comments" in options:
+            for ws in self.worksheets:
+                for (row, col), cell in sorted(ws._cells.items()):
+                    if cell._comment is not None:
+                        cell.comment = None
+                        report["removed"].append(
+                            "comment at {0}!{1}".format(ws.title,
+                                                        cell.coordinate))
+            if self._paper_source is not None:
+                import io as _io
+                import zipfile as _zipfile
+
+                with _zipfile.ZipFile(
+                        _io.BytesIO(self._paper_source)) as zin:
+                    machinery = [n for n in zin.namelist()
+                                 if n.startswith("xl/comments")
+                                 or (n.startswith("xl/drawings/")
+                                     and n.endswith(".vml"))]
+                if machinery:
+                    report["skipped"].append(
+                        "preserved comment machinery ({0}) — editing "
+                        "preserved comment parts is not supported; "
+                        "comments added this session were "
+                        "removed".format(", ".join(sorted(machinery))))
+        if "metadata" in options:
+            props = self.properties
+            for attr in ("title", "subject", "description", "keywords",
+                         "category", "contentStatus", "identifier"):
+                if getattr(props, attr, None):
+                    setattr(props, attr, None)
+                    report["removed"].append(
+                        "core property {0}".format(attr))
+        if "personal" in options:
+            props = self.properties
+            for attr in ("creator", "lastModifiedBy"):
+                if getattr(props, attr, None):
+                    setattr(props, attr, None)
+                    report["removed"].append(
+                        "core property {0}".format(attr))
+        if "hidden-sheets" in options:
+            for ws in list(self.worksheets):
+                if ws.sheet_state == "visible":
+                    continue
+                try:
+                    self.remove(ws)
+                    report["removed"].append(
+                        "hidden sheet {0!r}".format(ws.title))
+                except PaperRefusal as exc:
+                    report["skipped"].append(
+                        "hidden sheet {0!r}: {1}".format(ws.title,
+                                                         exc))
+        return report
+
+    def set_pivot_refresh_on_load(self):
+        """Byte-patch ``refreshOnLoad="1"`` onto every pivotCacheDefinition
+        in the preserved package (paper-xlsx, PLAN-v0.1 Batch 7): pivots
+        are preserved verbatim, so refresh-on-load is how their data stays
+        honest after cell edits. Preserve mode only. Returns the list of
+        parts patched."""
+        if self._paper_ledger is None or not self._paper_ledger.armed:
+            raise ValueError(
+                "set_pivot_refresh_on_load() patches preserved pivot "
+                "parts and is only available under preserve mode.")
+        import io as _io
+        import zipfile as _zipfile
+
+        from openpyxl.preserve import crosspart
+
+        patched = []
+        with _zipfile.ZipFile(_io.BytesIO(self._paper_source)) as zin:
+            for name in sorted(zin.namelist()):
+                if not (name.startswith("xl/pivotCache/pivotCacheDefinition")
+                        and name.endswith(".xml")):
+                    continue
+                payload = zin.read(name)
+                root = crosspart.scan_small(payload,
+                                            "pivotCacheDefinition",
+                                            max_depth=1)
+                if root.attrs.get("refreshOnLoad") == "1":
+                    continue
+                start, end, head = crosspart._patch_attr(
+                    payload, root, "refreshOnLoad", "1")
+                self._paper_ledger.replaced_parts[name] = (
+                    payload[:start] + head + payload[end:])
+                patched.append(name)
+        return patched
+
     def model_map(self):
         """Role classification of every populated cell on formula-bearing
         sheets — inputs / calculations / outputs / constants (paper-xlsx,
