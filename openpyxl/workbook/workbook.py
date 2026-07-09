@@ -499,12 +499,10 @@ class Workbook:
         """
         if self.__write_only or self._read_only:
             raise ValueError("Cannot copy worksheets in read-only or write-only mode")
-        _ledger.refuse_sheet_lifecycle(
-            self, "copy_worksheet",
-            "the copy machinery rebuilds cell and style state in ways the "
-            "dirty ledger cannot attribute; copy the data into a sheet "
-            "created with create_sheet() instead.")
-
+        # v0.1 Batch 3: the copy registers as an ADDED sheet (create_sheet
+        # below is ledger-hooked) and is generated whole at save; charts/
+        # images do not copy (upstream's copier skips them), comments and
+        # hyperlinks ride the added-sheet generators
         new_title = u"{0} Copy".format(from_worksheet.title)
         to_worksheet = self.create_sheet(title=new_title)
         cp = WorksheetCopy(source_worksheet=from_worksheet, target_worksheet=to_worksheet)

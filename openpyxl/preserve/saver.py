@@ -151,6 +151,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             payload, sheet_rels = _generate_sheet_part(ws)
             payload = _rewrite_added_sheet_styles(payload, workbook,
                                                   translator)
+            sheet_rels = _plan_added_sheet_comments(
+                workbook, ws, part_plan, names, sheet_rels)
             new_sheet_parts.append((part_name, payload))
             if sheet_rels is not None:
                 new_rels_parts.append((_rels_path(part_name), sheet_rels))
@@ -669,10 +671,58 @@ def _check_added_sheet_supported(ws):
     if ws.tables:
         _refuse("sheet {0!r} was added with tables; table-part generation "
                 "is not supported in v0.".format(ws.title))
-    for cell in ws._cells.values():
-        if cell._comment is not None:
-            _refuse("sheet {0!r} was added with comments; comment-part "
-                    "generation is not supported in v0.".format(ws.title))
+    # comments on added sheets generate via the Batch-2 machinery (the
+    # stock writer emits <legacyDrawing r:id="anysvml"/> whenever the
+    # sheet has comments; the saver adds the matching parts + rels)
+
+
+def _plan_added_sheet_comments(workbook, ws, part_plan, names, sheet_rels):
+    """Comments on an ADDED sheet (PLAN-v0.1 3.2, enabling copy_worksheet
+    of commented sheets): the stock writer already emitted
+    <legacyDrawing r:id="anysvml"/> and collected CommentRecords during
+    generation; add the parts via the engine and the two rels the stock
+    archive writer would have added."""
+    if not ws._comments:
+        return sheet_rels
+    from openpyxl.comments.comment_sheet import CommentSheet
+    from openpyxl.xml.functions import tostring
+
+    from . import comments as comments_mod
+    from .comments import COMMENTS_CONTENT_TYPE, VML_CONTENT_TYPE
+
+    for record in ws._comments:
+        for text in (record.text.t or "",):
+            from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+            if ILLEGAL_CHARACTERS_RE.search(text or ""):
+                _refuse("comment on added sheet {0!r} contains characters "
+                        "that cannot be written to XML.".format(ws.title))
+    cs = CommentSheet.from_comments(ws._comments)
+    payload = tostring(cs.to_tree())
+    if not payload.startswith(b"<?xml"):
+        payload = (b'<?xml version="1.0" encoding="UTF-8" '
+                   b'standalone="yes"?>\n' + payload)
+    vml = cs.write_shapes(None)
+
+    all_names = set(names) | set(part_plan.added)
+    number = comments_mod._next_number(
+        all_names, r"xl/comments/comment(\d+)\.xml$")
+    comments_part = "xl/comments/comment{0}.xml".format(number)
+    vml_part = "xl/drawings/commentsDrawing{0}.vml".format(
+        comments_mod._next_number(
+            all_names, r"xl/drawings/commentsDrawing(\d+)\.vml$"))
+    part_plan.add_part(comments_part, payload,
+                       content_type=COMMENTS_CONTENT_TYPE)
+    part_plan.add_part(vml_part, vml)
+    part_plan.add_default("vml", VML_CONTENT_TYPE)
+
+    entries = [
+        ("comments", REL_NS + "/comments", "/" + comments_part, None),
+        ("anysvml", REL_NS + "/vmlDrawing", "/" + vml_part, None),
+    ]
+    if sheet_rels is None:
+        return crosspart.render_rels_document(entries)
+    return crosspart.rels_append(sheet_rels, entries)
 
 
 def _generate_sheet_part(ws):

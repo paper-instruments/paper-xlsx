@@ -505,14 +505,26 @@ class TestBatteryToday:
         with open(src2, "rb") as f:
             assert f.read() == before                 # atomic
 
-    # job 11 — today: refuse at call time. Batch 3 flips to correct copy.
-    def test_job11_copy_sheet_refuses(self, fixture_copy):
-        from openpyxl.errors import UnsupportedStructureError
-
-        wb = load_workbook(fixture_copy("gauntlet/gauntlet.xlsx"),
-                           preserve=True)
-        with pytest.raises(UnsupportedStructureError, match="copy"):
-            wb.copy_worksheet(wb["Model"])
+    # job 11 — Batch-3 state: CORRECT (the copy registers as an added
+    # sheet; comments ride the added-sheet generator; charts do not copy,
+    # matching upstream's copier).
+    def test_job11_copy_sheet_within_charted_workbook(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("gauntlet/gauntlet.xlsx")
+        wb = load_workbook(src, preserve=True)
+        cp = wb.copy_worksheet(wb["Model"])
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        copied = wb2[cp.title]
+        assert copied["B8"].value == wb2["Model"]["B8"].value
+        assert copied["B6"].value == "=B3-B4-B5"
+        # the ORIGINAL sheet's traps survive byte-wise
+        _, model_after = _sheet_payload(out, b"Quarterly Model")
+        assert b"sparklineGroups" in model_after
+        assert b"<x14:id>" in model_after
+        # the copied comment landed via the added-sheet generator
+        assert copied["B8"].comment is not None
 
     # job 12 — today: no scenario API. Batch 5 ships wb.evaluate().
     def test_job12_no_evaluate_api_yet(self):

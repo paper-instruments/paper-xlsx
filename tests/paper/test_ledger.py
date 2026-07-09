@@ -188,10 +188,12 @@ class TestSheetLifecycle:
         with pytest.raises(UnsupportedStructureError, match="move_sheet"):
             wb.move_sheet("Data", -1)
 
-    def test_copy_worksheet_refuses(self, preserved):
-        wb, _ = preserved
-        with pytest.raises(UnsupportedStructureError, match="copy_worksheet"):
-            wb.copy_worksheet(wb["Data"])
+    def test_copy_worksheet_registers_as_added(self, preserved):
+        # FLIPPED by v0.1 Batch 3 (was a refusal): the copy is an ADDED
+        # sheet, generated whole at save (battery job 11 covers the file)
+        wb, led = preserved
+        cp = wb.copy_worksheet(wb["Data"])
+        assert cp in led.added_sheets
 
     def test_rename_cascades_and_added_sheet_still_free(self, preserved):
         # FLIPPED by v0.1 Batch 3 (was a refusal): loaded-sheet renames
