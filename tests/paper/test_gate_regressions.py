@@ -278,3 +278,267 @@ class TestBatch1RemapAndCertifyGaps:
         ws = wb["Schedule"]
         remap = ws.insert_rows(1048570, 10)     # no occupied cell shifts
         assert remap is not None
+
+
+class TestBatch2EngineGaps:
+
+    def test_styles_creation_plus_added_sheet_share_the_rid_allocator(
+            self, fixture_copy, tmp_path):
+        # duplicate rId4 on workbook rels (gate critical): added sheets now
+        # reserve through the engine
+        import re
+
+        from openpyxl.styles import Font
+        from .test_lifecycle import TestStylesPartCreation
+
+        src = TestStylesPartCreation()._styleless(fixture_copy, tmp_path)
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"]["B2"] = 1
+        wb["Sheet1"]["B2"].font = Font(bold=True)   # styles.xml creation
+        wb.create_sheet("Fresh")["A1"] = 2
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        rels = part_payloads(out)["xl/_rels/workbook.xml.rels"]
+        rids = re.findall(rb'Id="(rId\d+)"', rels)
+        assert len(rids) == len(set(rids))          # all unique
+        wb2 = load_workbook(out)
+        assert wb2["Fresh"]["A1"].value == 2
+        assert wb2["Sheet1"]["B2"].font.bold is True
+
+    def test_table_removal_plus_hyperlink_add_both_land(
+            self, fixture_copy, tmp_path):
+        # the engine rels payload shadowed the hyperlink planner's (gate
+        # critical): compose on top instead
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        del ws.tables["RegionTable"]
+        ws["D1"].hyperlink = "https://example.org/x"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        ws2 = wb2.worksheets[0]
+        assert not ws2.tables
+        assert ws2["D1"].hyperlink.target == "https://example.org/x"
+
+    def test_replace_part_conflicts_refuse(self, fixture_copy, tmp_path):
+        from openpyxl.errors import RelationshipPolicyError
+        from openpyxl.errors import UnsupportedStructureError
+        from openpyxl.packaging.custom import StringProperty
+
+        # table parts joined the managed set: raw swaps refuse at CALL time
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        with pytest.raises(RelationshipPolicyError, match="managed"):
+            wb.replace_part("xl/tables/table1.xml", b"<table/>")
+
+        # a swap of an unmanaged part conflicting with a lifecycle removal
+        # refuses at SAVE (the payload must never vanish silently)
+        src2 = fixture_copy("minimal/minimal_clean.xlsx")
+        wb2 = load_workbook(src2, preserve=True)
+        wb2.custom_doc_props.append(StringProperty(name="Tmp", value="x"))
+        staged = str(tmp_path / "staged.xlsx")
+        wb2.save(staged)
+        wb3 = load_workbook(staged, preserve=True)
+        wb3.replace_part("docProps/custom.xml", b"<Properties/>")
+        del wb3.custom_doc_props["Tmp"]
+        with pytest.raises(UnsupportedStructureError, match="conflicts"):
+            wb3.save(str(tmp_path / "o.xlsx"))
+
+
+class TestBatch2TableGaps:
+
+    def _with_table_extlst(self, fixture_copy, tmp_path):
+        src = fixture_copy("features/tables.xlsx")
+        out = str(tmp_path / "alt.xlsx")
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name == "xl/tables/table1.xml":
+                    payload = payload.replace(
+                        b"</table>",
+                        b'<extLst><ext uri="{X}"><x14:table '
+                        b'xmlns:x14="http://schemas.microsoft.com/office/'
+                        b'spreadsheetml/2009/9/main" altText="alt"/></ext>'
+                        b"</extLst></table>", 1)
+                zout.writestr(name, payload)
+        return out
+
+    def test_table_with_extlst_refuses_mutation(self, fixture_copy,
+                                                tmp_path):
+        # to_tree() drops extLst (alt text!) — mutation must refuse, never
+        # silently strip accessibility metadata (gate critical)
+        from openpyxl.errors import UnsupportedStructureError
+        from openpyxl.preserve.tables import append_row
+
+        src = self._with_table_extlst(fixture_copy, tmp_path)
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        append_row(ws, "RegionTable", ["West2", 99])
+        with pytest.raises(UnsupportedStructureError, match="extension"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+    def test_sibling_basename_survives_removal(self, fixture_copy,
+                                               tmp_path):
+        # suffix-matching rel removal nuked mytable1.xml's rel when
+        # table1.xml was removed (gate critical): exact-target now
+        src = fixture_copy("features/tables.xlsx")
+        crafted = str(tmp_path / "two.xlsx")
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(crafted, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name == "xl/worksheets/_rels/sheet1.xml.rels":
+                    payload = payload.replace(
+                        b"</Relationships>",
+                        b'<Relationship Id="rId99" Type="http://schemas.'
+                        b'openxmlformats.org/officeDocument/2006/'
+                        b'relationships/table" '
+                        b'Target="../tables/mytable1.xml"/>'
+                        b"</Relationships>", 1)
+                if name == "xl/worksheets/sheet1.xml":
+                    payload = payload.replace(
+                        b'</tableParts>',
+                        b'<tablePart xmlns:r="http://schemas.openxmlformats'
+                        b'.org/officeDocument/2006/relationships" '
+                        b'r:id="rId99"/></tableParts>', 1)
+                    payload = payload.replace(
+                        b'<tableParts count="1">',
+                        b'<tableParts count="2">', 1)
+                if name == "[Content_Types].xml":
+                    payload = payload.replace(
+                        b"</Types>",
+                        b'<Override PartName="/xl/tables/mytable1.xml" '
+                        b'ContentType="application/vnd.openxmlformats-'
+                        b'officedocument.spreadsheetml.table+xml"/>'
+                        b"</Types>", 1)
+                zout.writestr(name, payload)
+            table2 = zin.read("xl/tables/table1.xml")
+            table2 = table2.replace(b'id="1"', b'id="7"', 1)
+            table2 = table2.replace(b'displayName="RegionTable"',
+                                    b'displayName="Other"', 1)
+            table2 = table2.replace(b'name="RegionTable"',
+                                    b'name="Other"', 1)
+            zout.writestr("xl/tables/mytable1.xml", table2)
+        wb = load_workbook(crafted, preserve=True)
+        ws = wb.worksheets[0]
+        assert set(ws.tables) == {"RegionTable", "Other"}
+        del ws.tables["RegionTable"]
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)                    # reload must not KeyError
+        assert set(wb2.worksheets[0].tables) == {"Other"}
+
+    def test_single_quoted_ref_keeps_anchor_guard(self, fixture_copy,
+                                                  tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+
+        src = fixture_copy("features/tables.xlsx")
+        crafted = str(tmp_path / "sq.xlsx")
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(crafted, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name == "xl/tables/table1.xml":
+                    payload = payload.replace(b'ref="A1:B5"', b"ref='A1:B5'")
+                zout.writestr(name, payload)
+        wb = load_workbook(crafted, preserve=True)
+        tbl = wb.worksheets[0].tables["RegionTable"]
+        tbl.ref = "D10:E14"
+        if tbl.autoFilter is not None:
+            tbl.autoFilter.ref = "D10:E14"
+        with pytest.raises(UnsupportedStructureError, match="anchor"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+    def test_append_row_refusal_is_atomic(self, fixture_copy, tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+        from openpyxl.preserve.tables import append_row
+        from openpyxl.worksheet.table import TableFormula
+
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        tbl = ws.tables["RegionTable"]
+        tbl.tableColumns[1].calculatedColumnFormula = TableFormula()
+        tbl.tableColumns[1].calculatedColumnFormula.attr_text = "1*2"
+        cells_before = dict(ws._cells)
+        with pytest.raises(UnsupportedStructureError, match="calculated"):
+            append_row(ws, "RegionTable", ["X", 42])
+        assert dict(ws._cells) == cells_before      # nothing mutated
+
+    def test_two_sheets_two_new_tables_one_save(self, fixture_copy,
+                                                tmp_path):
+        import re
+
+        from openpyxl.worksheet.table import Table
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws2 = wb.create_sheet("Two")
+        ws2["A1"] = "h"
+        ws2["A2"] = 1
+        wb["Sheet1"].add_table(Table(displayName="T1", ref="A1:B3"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        parts = part_payloads(out)
+        ids = []
+        for n, p in parts.items():
+            if n.startswith("xl/tables/"):
+                ids.append(re.search(rb'<table[^>]*\sid="(\d+)"', p).group(1))
+        assert len(ids) == len(set(ids))            # workbook-unique ids
+        wb2 = load_workbook(out)
+        assert "T1" in wb2["Sheet1"].tables
+
+    def test_display_name_vs_defined_name_refuses(self, fixture_copy,
+                                                  tmp_path):
+        from openpyxl.errors import UnsupportedStructureError
+        from openpyxl.workbook.defined_name import DefinedName
+        from openpyxl.worksheet.table import Table
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb.defined_names["Budget"] = DefinedName("Budget",
+                                                 attr_text="Sheet1!$A$1")
+        wb["Sheet1"].add_table(Table(displayName="BUDGET", ref="A1:B3"))
+        with pytest.raises(UnsupportedStructureError, match="defined name"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+
+class TestBatch2CommentGaps:
+
+    def test_two_sheets_first_comments_one_save(self, fixture_copy,
+                                                tmp_path):
+        from openpyxl.comments import Comment
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws2 = wb.create_sheet("Two")
+        ws2["A1"] = 1
+        wb["Sheet1"]["A1"].comment = Comment("one", "paper")
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Sheet1"]["A1"].comment is not None
+
+    def test_illegal_control_chars_refuse(self, fixture_copy, tmp_path):
+        from openpyxl.comments import Comment
+        from openpyxl.errors import UnsupportedStructureError
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"]["A1"].comment = Comment("bad \x0b char", "paper")
+        with pytest.raises(UnsupportedStructureError, match="XML"):
+            wb.save(str(tmp_path / "o.xlsx"))
+
+    def test_comment_resize_on_machinery_sheet_refuses(
+            self, fixture_copy, tmp_path):
+        # height/width were outside the snapshot: resizes vanished (gate)
+        from openpyxl.errors import UnsupportedStructureError
+
+        src = fixture_copy("gauntlet/gauntlet.xlsx")
+        wb = load_workbook(src, preserve=True)
+        cell = wb["Model"]["B8"]
+        assert cell.comment is not None
+        cell.comment.height = 999
+        with pytest.raises(UnsupportedStructureError, match="comment"):
+            wb.save(str(tmp_path / "o.xlsx"))

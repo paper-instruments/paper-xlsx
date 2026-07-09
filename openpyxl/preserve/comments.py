@@ -52,9 +52,21 @@ def plan_comment_creation(wb, ws, sheet_part, zin, part_plan, names):
                 "same save; their relationship allocations would collide. "
                 "Save between the two edits.".format(ws.title))
 
+    from openpyxl.utils.exceptions import IllegalCharacterError
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
     records = []
     for (_row, _col), cell in sorted(ws._cells.items()):
         if cell._comment is not None:
+            comment = cell._comment
+            for text in (comment.content or "", comment.author or ""):
+                if ILLEGAL_CHARACTERS_RE.search(text):
+                    # cell values get this guard in check_string; comments
+                    # must too, or the save writes an unparseable part
+                    # under the stdlib serializer (Batch-2 gate)
+                    _refuse("comment on {0}!{1} contains characters that "
+                            "cannot be written to XML (control "
+                            "bytes).".format(ws.title, cell.coordinate))
             records.append(CommentRecord.from_cell(cell))
     if not records:
         _refuse("internal: comment creation planned with no comments on "
@@ -67,11 +79,13 @@ def plan_comment_creation(wb, ws, sheet_part, zin, part_plan, names):
                    b'standalone="yes"?>\n' + payload)
     vml = cs.write_shapes(None)
 
-    number = _next_number(names, r"xl/comments/comment(\d+)\.xml$")
-    number = max(number, _next_number(names, r"xl/comments(\d+)\.xml$"))
+    all_names = set(names) | set(part_plan.added)
+    number = _next_number(all_names, r"xl/comments/comment(\d+)\.xml$")
+    number = max(number, _next_number(all_names, r"xl/comments(\d+)\.xml$"))
     comments_part = "xl/comments/comment{0}.xml".format(number)
     vml_part = "xl/drawings/commentsDrawing{0}.vml".format(
-        _next_number(names, r"xl/drawings/commentsDrawing(\d+)\.vml$"))
+        _next_number(all_names,
+                     r"xl/drawings/commentsDrawing(\d+)\.vml$"))
 
     rels_part = _rels_path(sheet_part)
     rels_payload = zin.read(rels_part) if rels_part in names else None

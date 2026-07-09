@@ -142,7 +142,6 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     wb_rels_appends = []
     if added:
         original_wb_rels = zin.read(wb_rels_part)
-        next_rid = crosspart.rels_next_rid(original_wb_rels)
         next_part_num = _next_sheet_number(names)
         next_sheet_id = _next_sheet_id(zin.read(wb_part))
         for i, ws in enumerate(added):
@@ -155,7 +154,10 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             new_sheet_parts.append((part_name, payload))
             if sheet_rels is not None:
                 new_rels_parts.append((_rels_path(part_name), sheet_rels))
-            rid = "rId{0}".format(next_rid + i)
+            # rIds reserved through the ENGINE's shared allocator: an
+            # engine append to workbook rels in the same save (styles.xml
+            # creation) must never collide (Batch-2 gate: duplicate rId4)
+            rid = part_plan.reserve_rid(wb_rels_part, original_wb_rels)
             new_sheet_entries.append(
                 (ws.title, next_sheet_id + i, rid, ws.sheet_state))
             wb_rels_appends.append(
@@ -369,7 +371,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     if drop_calcchain:
         part_plan.remove_part(
             _CALC_CHAIN,
-            referencing_rels=[(wb_rels_part, "calcChain.xml")])
+            referencing_rels=[(wb_rels_part, _CALC_CHAIN)])
 
     # ---- styles append (runs AFTER splices: resolution allocates new xfs) --
     styles_plan = None
@@ -439,7 +441,13 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     for rels_part in engine_rels:
         if rels_part == wb_rels_part:
             continue
-        existing = zin.read(rels_part) if rels_part in names else None
+        # compose ON TOP of the hyperlink planner's output when both touch
+        # one rels part (Batch-2 gate: the engine payload shadowed the
+        # hyperlink rel — dangling r:id in the saved sheet)
+        if rels_part in sheet_rels_updates:
+            existing = sheet_rels_updates.pop(rels_part)
+        else:
+            existing = zin.read(rels_part) if rels_part in names else None
         extra_rels_updates[rels_part] = part_plan.apply_rels(
             rels_part, existing)
 
@@ -498,6 +506,17 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         for part_name, payload in sheet_rels_updates.items():
             if part_name not in names:
                 zipio.write_entry(zout, part_name, payload)
+
+    # contradictory combos refuse rather than resolve silently
+    # (Batch-2 gate: replace_part payloads vanished under drops/re-renders)
+    for name in led.replaced_parts:
+        if name in part_plan.dropped:
+            _refuse("replace_part({0!r}) conflicts with this save removing "
+                    "the same part; drop one of the two edits.".format(name))
+        if name in plan:
+            _refuse("replace_part({0!r}) conflicts with model edits that "
+                    "re-render the same part; drop one of the two "
+                    "edits.".format(name))
 
     data = zipio.build_archive_bytes(build)
 

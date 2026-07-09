@@ -21,8 +21,9 @@ from openpyxl.xml.functions import fromstring, tostring
 from . import crosspart
 
 _TABLE_REL_TYPE_SUFFIX = "/table"
-_DISPLAY_NAME_RE = re.compile(br'displayName="([^"]*)"')
-_REF_RE = re.compile(br'<table[^>]*\sref="([^"]*)"')
+_DISPLAY_NAME_RE = re.compile(
+    br'displayName=(?:"([^"]*)"|\'([^\']*)\')')
+_REF_RE = re.compile(br'<table[^>]*\sref=(?:"([^"]*)"|\'([^\']*)\')')
 
 
 def _refuse(msg):
@@ -52,7 +53,8 @@ def sheet_table_parts(zin, sheet_part):
         payload = zin.read(part)
         m = _DISPLAY_NAME_RE.search(payload)
         if m:
-            out[m.group(1).decode("utf-8")] = (part, payload)
+            raw = m.group(1) if m.group(1) is not None else m.group(2)
+            out[_unescape(raw.decode("utf-8"))] = (part, payload)
     return out
 
 
@@ -109,14 +111,61 @@ def plan_table_mutations(wb, ws, sheet_part, zin, changed_names, plan):
                     "the original package (displayName not found in the "
                     "sheet rels).".format(name, ws.title))
         part_name, original = parts[name]
+        if b"<extLst" in original or b"xr:uid" in original \
+                or b"xmlns:xr" in original:
+            _refuse("table {0!r} on sheet {1!r} carries extension content "
+                    "(extLst / xr revision ids) the model cannot "
+                    "re-serialize; editing it would silently drop that "
+                    "content (e.g. alt text). Recreate the table or edit "
+                    "without preserve=True.".format(name, ws.title))
         m = _REF_RE.search(original)
-        original_ref = m.group(1).decode("ascii") if m else tbl.ref
+        if m:
+            raw = m.group(1) if m.group(1) is not None else m.group(2)
+            original_ref = raw.decode("ascii")
+        else:
+            # a table part whose ref we cannot locate cannot be guard-
+            # checked: refuse rather than silently disabling the anchor
+            # guard (Batch-2 gate: single-quoted ref no-op'd it)
+            _refuse("table {0!r}: the original part's ref attribute could "
+                    "not be located; the geometry guards cannot "
+                    "run.".format(name))
         validate_table(tbl, original_ref)
+        _check_display_name(wb, ws, tbl, original_names=set(parts))
         payload = tostring(tbl.to_tree())
         if not payload.startswith(b"<?xml"):
             payload = (b'<?xml version="1.0" encoding="UTF-8" '
                        b'standalone="yes"?>\n' + payload)
         plan[part_name] = payload
+
+
+_XML_UNESCAPES = (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                  ("&apos;", "'"), ("&amp;", "&"))
+
+
+def _unescape(text):
+    for entity, char in _XML_UNESCAPES:
+        text = text.replace(entity, char)
+    return text
+
+
+def _check_display_name(wb, ws, tbl, original_names):
+    """Table displayNames are workbook-unique and share a namespace with
+    defined names (case-insensitive, Excel semantics)."""
+    name = tbl.displayName
+    folded = name.casefold()
+    for other in wb.defined_names:
+        if other.casefold() == folded:
+            _refuse("table {0!r} collides with the defined name {1!r} "
+                    "(Excel treats table and defined names as one "
+                    "case-insensitive namespace).".format(name, other))
+    for sheet in wb.worksheets:
+        for other_name in getattr(sheet, "tables", {}):
+            if sheet is ws and other_name == name:
+                continue
+            if other_name.casefold() == folded:
+                _refuse("table {0!r} collides with table {1!r} on sheet "
+                        "{2!r}; displayNames are workbook-"
+                        "unique.".format(name, other_name, sheet.title))
 
 
 def append_row(ws, table_name, values):
@@ -166,12 +215,25 @@ def append_row(ws, table_name, values):
     # content below the table cannot be shifted here (tables are shift
     # blockers; PR-1 scope note) — refuse loudly
     below = max_row + 1
-    for (r, c) in ws._cells:
-        if r >= below and min_col <= c <= max_col:
+    for (r, c), cell in ws._cells.items():
+        if r >= below and min_col <= c <= max_col \
+                and (cell._value is not None or cell.has_style):
             _refuse("append_row: sheet {0!r} has content at or below row "
                     "{1} under table {2!r}; appending would need to shift "
                     "it. Move that content, or restructure the "
                     "edit.".format(ws.title, below, table_name))
+
+    # validate EVERY column before any mutation (Batch-2 gate: a late
+    # calc-column refusal left the totals row moved and half a data row
+    # written — "Nothing was written" must be true)
+    for i in range(n_cols):
+        tc = tbl.tableColumns[i] if i < len(tbl.tableColumns) else None
+        calc = getattr(tc, "calculatedColumnFormula", None) if tc else None
+        if calc is not None and getattr(calc, "attr_text", None) \
+                and row_values[i] is not None:
+            _refuse("append_row: column {0!r} is a calculated column; "
+                    "its value derives from the column formula "
+                    "(={1}).".format(tc.name, calc.attr_text))
 
     # totals row moves down one: rewrite its cells at +1 first
     if totals:
@@ -182,6 +244,10 @@ def append_row(ws, table_name, values):
             if src.has_style:
                 dst._style = src._style
             src.value = None
+            # the freed slot becomes a DATA row: style it like the row
+            # above, not like the totals row it used to be (Batch-2 gate)
+            model = ws.cell(row=max_row - 1, column=col)
+            src._style = model._style if model.has_style else None
 
     # write the new data row (calculated columns re-derive)
     for i, col in enumerate(range(min_col, max_col + 1)):
@@ -189,12 +255,8 @@ def append_row(ws, table_name, values):
         calc = getattr(tc, "calculatedColumnFormula", None) if tc else None
         given = row_values[i]
         if calc is not None and getattr(calc, "attr_text", None):
-            formula = "=" + calc.attr_text
-            if given is not None:
-                _refuse("append_row: column {0!r} is a calculated column; "
-                        "its value derives from the column formula "
-                        "({1}).".format(tc.name, formula))
-            ws.cell(row=new_data_row, column=col).value = formula
+            ws.cell(row=new_data_row, column=col).value = \
+                "=" + calc.attr_text
         elif calc is None and given is None and new_data_row - 1 > min_row:
             # no explicit calculatedColumnFormula: inherit the formula
             # PATTERN of the cell above when there is one (Excel behavior)
@@ -293,22 +355,30 @@ def plan_table_lifecycle(wb, ws, sheet_part, zin, armed_names, plan,
         part_name, _payload = original_parts[name]
         part_plan.remove_part(
             part_name,
-            referencing_rels=[(rels_part, part_name.rsplit("/", 1)[-1])])
+            referencing_rels=[(rels_part, part_name)])
 
     # additions: engine creates the part + CT + rel (explicit rIds so the
     # tablePart elements can reference them now)
     rels_payload = zin.read(rels_part) if rels_part in names else None
     existing_ids = set()
     existing_numbers = []
-    for n in names:
+    all_names = set(names) | set(part_plan.added)
+    for n in all_names:
         m = re.match(r"xl/tables/table(\d+)\.xml$", n)
         if m:
             existing_numbers.append(int(m.group(1)))
-    for payload_name, payload in ((p, b) for p, b in
-                                  original_parts.values()):
-        m = re.search(br'<table[^>]*\sid="(\d+)"', payload)
-        if m:
-            existing_ids.add(int(m.group(1)))
+    # table ids are WORKBOOK-unique (ECMA-376): scan every table part in
+    # the package, not just this sheet's (Batch-2 gate: duplicate id=1)
+    for n in names:
+        if n.startswith("xl/tables/") and n.endswith(".xml"):
+            m = re.search(br'<table[^>]*\sid="(\d+)"', zin.read(n))
+            if m:
+                existing_ids.add(int(m.group(1)))
+    for payload in part_plan.added.values():
+        if isinstance(payload, bytes):
+            m = re.search(br'<table[^>]*\sid="(\d+)"', payload)
+            if m:
+                existing_ids.add(int(m.group(1)))
     next_part_num = max(existing_numbers, default=0) + 1
     next_table_id = max(existing_ids, default=0) + 1
 
@@ -316,6 +386,7 @@ def plan_table_lifecycle(wb, ws, sheet_part, zin, armed_names, plan,
     for i, name in enumerate(added_names):
         tbl = ws.tables[name]
         validate_table(tbl, tbl.ref)
+        _check_display_name(wb, ws, tbl, original_names=set())
         tbl.id = next_table_id + i
         part_name = "xl/tables/table{0}.xml".format(next_part_num + i)
         payload = tostring(tbl.to_tree())

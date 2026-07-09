@@ -183,7 +183,10 @@ def _comment_snapshot(ws):
     for (row, col), cell in ws._cells.items():
         comment = getattr(cell, "_comment", None)
         if comment is not None:
-            snap[(row, col)] = (comment.text, comment.author)
+            # height/width included: a resize on a machinery-carrying
+            # sheet must refuse, not vanish (Batch-2 gate)
+            snap[(row, col)] = (comment.text, comment.author,
+                                comment.height, comment.width)
     return snap
 
 

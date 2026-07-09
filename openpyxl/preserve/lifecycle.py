@@ -24,6 +24,7 @@ _MODEL_MANAGED = (
     "xl/styles.xml",
     "xl/sharedStrings.xml",
 )
+_MANAGED_PREFIXES = ("xl/worksheets/", "xl/tables/")
 
 
 class PartPlan:
@@ -112,10 +113,16 @@ class PartPlan:
             payload = crosspart.ct_append_overrides(payload,
                                                     self.ct_overrides)
         for ext, ctype in self.ct_defaults:
-            marker = b'Extension="%s"' % ext.encode("ascii")
-            if marker not in payload:
+            existing = _default_content_type(payload, ext)
+            if existing is None:
                 payload = crosspart.ct_append_defaults(
                     payload, [(ext, ctype)])
+            elif existing != ctype:
+                raise RelationshipPolicyError(
+                    "the package already types extension {0!r} as {1!r}; "
+                    "the part being created needs {2!r} and re-typing a "
+                    "preserved Default is not supported. Nothing was "
+                    "written.".format(ext, existing, ctype))
         return payload
 
     def apply_rels(self, rels_part, payload):
@@ -126,8 +133,8 @@ class PartPlan:
             raise TargetNotFoundError(
                 "internal: relationship removals planned against a rels "
                 "part that does not exist ({0!r}).".format(rels_part))
-        for suffix in removals:
-            payload = crosspart.rels_remove_by_target_suffix(payload, suffix)
+        if removals:
+            payload = _rels_remove_exact(rels_part, payload, removals)
         appends = self.rel_appends.get(rels_part, ())
         if appends:
             if payload is None:
@@ -151,6 +158,61 @@ class PartPlan:
         return set(self.rel_appends) | set(self.rel_removals)
 
 
+def _default_content_type(ct_payload, extension):
+    """The ContentType an existing <Default> gives ``extension`` (matched
+    case-insensitively, either quote style — the first-cut substring check
+    missed both, Batch-2 gate), else None."""
+    root = crosspart.scan_small(ct_payload, "Types", max_depth=1)
+    for child in root.children:
+        if child.local() != "Default":
+            continue
+        if child.attrs.get("Extension", "").lower() == extension.lower():
+            return child.attrs.get("ContentType")
+    return None
+
+
+def _rels_remove_exact(rels_part, payload, part_names):
+    """Remove relationships whose RESOLVED target equals one of
+    ``part_names`` — never suffix matching (a sibling named mytable1.xml
+    must survive table1.xml's removal; Batch-2 gate)."""
+    owner = _owner_of_rels(rels_part)
+    targets = set(part_names)
+    root = crosspart.scan_small(payload, "Relationships", max_depth=1)
+    edits = []
+    for child in root.children:
+        if child.local() != "Relationship":
+            continue
+        resolved = _resolve_target(owner, child.attrs.get("Target", ""))
+        if resolved in targets:
+            edits.append((child.start, child.end, b""))
+    if not edits:
+        return payload
+    return crosspart.apply_edits(payload, edits)
+
+
+def _owner_of_rels(rels_part):
+    """xl/worksheets/_rels/sheet1.xml.rels -> xl/worksheets/sheet1.xml;
+    the package rels _rels/.rels -> "" (targets resolve from the root)."""
+    if rels_part.startswith("_rels/"):
+        base = rels_part[len("_rels/"):]
+        return base[:-5] if base.endswith(".rels") else base
+    folder, _, base = rels_part.rpartition("/_rels/")
+    name = base[:-5] if base.endswith(".rels") else base
+    return "{0}/{1}".format(folder, name) if folder else name
+
+
+def _resolve_target(from_part, target):
+    if target.startswith("/"):
+        return target[1:]
+    base = from_part.rpartition("/")[0].split("/") if "/" in from_part         else []
+    for piece in target.split("/"):
+        if piece == "..":
+            base = base[:-1]
+        elif piece != ".":
+            base.append(piece)
+    return "/".join(base)
+
+
 def check_replace_part(wb, name):
     """Guards for Workbook.replace_part (PR-1 §1.4): the part must exist,
     and model-managed or sheet parts refuse — replacing them raw would
@@ -165,7 +227,8 @@ def check_replace_part(wb, name):
         raise TargetNotFoundError(
             "part {0!r} does not exist in the package. Nothing was "
             "changed.".format(name))
-    if name in _MODEL_MANAGED or name.startswith("xl/worksheets/"):
+    if name in _MODEL_MANAGED or name.startswith(_MANAGED_PREFIXES) \
+            or "_rels" in name.split("/"):
         raise RelationshipPolicyError(
             "part {0!r} is actively managed by the model; replacing its "
             "bytes raw would desync the model from the file. Edit it "

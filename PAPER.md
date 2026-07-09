@@ -622,6 +622,55 @@ all fixed and fixtured (tests/paper/test_gate_regressions.py):
 
 Suite: 2975 both arms.
 
+## Batch 2 — adversarial gate report (2026-07-08)
+
+Four lenses, five criticals + six majors confirmed with live repros —
+all fixed and fixtured (tests/paper/test_gate_regressions.py Batch-2
+sections):
+
+- **CRITICAL, duplicate workbook rIds:** added sheets allocated rIds
+  outside the engine while styles.xml creation allocated inside it —
+  one save produced two rId4 Relationships (OPC unique-Id violation).
+  Added sheets now reserve through the engine's shared allocator.
+- **CRITICAL, shadowed hyperlink rels:** table REMOVAL + hyperlink add
+  on one sheet — the engine's rels payload was written with `continue`
+  before the hyperlink planner's, leaving a dangling r:id (reload
+  KeyError, URL lost). Engine rels now compose ON TOP of the planner
+  payload.
+- **CRITICAL, table extLst dropped:** to_tree() omits Table.extLst, so
+  mutating any table silently stripped alt-text/x14 extensions.
+  Mutation now refuses when the original part carries extLst or xr
+  revision ids (the splice's own region discipline, applied).
+- **CRITICAL, basename rel removal:** removing table1.xml also cut a
+  sibling mytable1.xml's relationship (suffix matching). Removal now
+  resolves each relationship target against the rels owner and removes
+  on exact equality.
+- **CRITICAL, comment control chars:** comment text/author had no
+  illegal-character guard (cells do): under the stdlib serializer the
+  save wrote an unparseable part. Typed refusal added.
+- **Majors:** single-quoted ref attributes silently disabled the anchor
+  guard (both-quote regex + refusal when ref is unlocatable);
+  append_row validated calc columns AFTER moving the totals row (now
+  validate-then-mutate, atomic, model untouched on refusal — and the
+  freed totals slot is restyled as a data row); table @id now
+  workbook-unique (scanned package-wide); multi-sheet table/comment
+  creation collided on part numbers (allocators consult engine-added
+  names); ct Default handling is semantic (either quote style,
+  case-insensitive extension; different ContentType refuses);
+  replace_part guards widened (rels + table parts managed) and
+  contradictory combos (swap + drop/re-render of one part) refuse at
+  save; comment height/width joined the snapshot (resizes on
+  machinery sheets refused, not dropped); displayName uniqueness
+  enforced against defined names and other tables (casefold).
+- **Accepted/noted:** replace_part + calcChain-drop combo refuses (the
+  cascade wins by refusal, never silently); removed parts may leave
+  grandchildren (queryTables) as OPC-legal orphans — dead weight noted
+  for the Batch-3 lifecycle audit; crosscheck still verifies worksheet
+  parts only (rels/table/comment parts are outside it) — noted as the
+  standing tooling gap, revisit with Batch 3's crosscheck extension;
+  corpus lacks styles-less/custom-props frozen fixtures (synthesized
+  inline in tests; queued for the next corpus regeneration).
+
 ## Pinned-surface debt ledger
 
 Debts are pinned surface not yet produced-and-tested; each names its
