@@ -572,26 +572,35 @@ class TestBatteryToday:
 
     # job 16 — Batch-1 state: REFUSE (flipped from silent staleness by
     # the 1.1 object guards). Batch 4 flips chart editing to correct.
-    def test_job16_chart_title_edit_refuses(self, fixture_copy, tmp_path):
+    def test_job16_chart_title_edit_is_correct(self, fixture_copy,
+                                               tmp_path):
+        # Batch-4 state (PLAN battery: "refuse or correct", flipped by
+        # 4.3): title text is chartpatch-expressible, so the edit LANDS;
+        # inexpressible mutations (anchor moves) keep refusing
         from openpyxl.errors import UnsupportedStructureError
 
         src = fixture_copy("features/chart_image.xlsx")
-        with open(src, "rb") as f:
-            before = f.read()
         wb = load_workbook(src, preserve=True)
         ws = next(w for w in wb.worksheets if w._charts)
-        ws._charts[0].title = "TAMPERED"
-        with pytest.raises(UnsupportedStructureError, match="chart"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        ws._charts[0].title = "Corrected Title"
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        chart = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/charts/chart"))
+        assert b"Corrected Title" in chart
+        wb2 = load_workbook(out)
+        assert len(next(w for w in wb2.worksheets if w._charts)._charts) == 1
+
+        # a mutation chartpatch cannot express refuses, atomically
+        with open(src, "rb") as f:
+            before = f.read()
+        wb3 = load_workbook(src, preserve=True)
+        ws3 = next(w for w in wb3.worksheets if w._images)
+        ws3._images[0].anchor._from.col = 9
+        with pytest.raises(UnsupportedStructureError, match="image"):
+            wb3.save(str(tmp_path / "o2.xlsx"))
         with open(src, "rb") as f:
             assert f.read() == before                 # atomic
-
-        # a MUTATION-ONLY session refuses too (no other dirt on the sheet)
-        wb2 = load_workbook(src, preserve=True)
-        ws2 = next(w for w in wb2.worksheets if w._images)
-        ws2._images[0].anchor._from.col = 9
-        with pytest.raises(UnsupportedStructureError, match="image"):
-            wb2.save(str(tmp_path / "o2.xlsx"))
 
     # job 17 — Batch-1 state (flipped by 1.2): a value edit feeding
     # formulas forces fullCalcOnLoad so stale caches can never masquerade
@@ -712,15 +721,22 @@ class TestBatteryToday:
         wb2 = load_workbook(out)
         assert wb2["Sheet1"]["B2"].value == 5
 
-    # job 22 — today: refuse at call time. Batch 4 flips to correct.
-    def test_job22_add_chart_refuses(self, fixture_copy):
-        from openpyxl.chart import BarChart
-        from openpyxl.errors import UnsupportedStructureError
+    # job 22 — Batch-4 state (flipped by 4.2): the chart lands as new
+    # parts through the lifecycle engine, everything else preserved
+    def test_job22_add_chart_is_correct(self, fixture_copy, tmp_path):
+        from openpyxl.chart import BarChart, Reference
 
         wb = load_workbook(fixture_copy("gauntlet/gauntlet.xlsx"),
                            preserve=True)
-        with pytest.raises(UnsupportedStructureError, match="chart"):
-            wb["Model"].add_chart(BarChart(), "H1")
+        ws = wb["Model"]
+        before = len(ws._charts)
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=2, min_row=2, max_row=5))
+        ws.add_chart(chart, "H1")
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert len(wb2["Model"]._charts) == before + 1
 
     # job 23 — today: no localization API. Batch 6 ships it (and finally
     # raises the pinned AmbiguousTargetError).

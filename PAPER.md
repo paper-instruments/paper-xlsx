@@ -710,6 +710,48 @@ sections):
   tables on the shifted sheet block the shift, bracketed operands are
   never rewritten (pinned by tests).
 
+## Batch 4 — Charts and images under preserve (2026-07-08, PLAN-v0.1)
+
+- **4.1 added sheets:** ws.add_chart/add_image on ADDED sheets — the
+  stock writer's own drawing serialization (SpreadsheetDrawing._write)
+  routed through the lifecycle engine (preserve/drawings.py): chart
+  parts, media parts (semantic ct Defaults per image format), drawing +
+  drawing-rels parts, and the sheet's drawing rel Target filled into the
+  generated payload. Zero splice risk. Charts are single-use across
+  sheets (refusal, mirroring stock's InvalidFileException).
+- **4.2 loaded sheets:** machinery-free sheets get a FRESH drawing part
+  via the engine plus exactly one `<drawing r:id>` element spliced at
+  its CT-schema position (inline xmlns:r — the tableParts lesson);
+  sheets with an EXISTING drawing get new anchors appended INTO the
+  original bytes — only when that drawing is anchor-only (top-level
+  children all anchors, no comments/CDATA/PI), with rIds reserved on the
+  original drawing rels, cNvPr shape ids bumped past the existing
+  maximum, and a default-xmlns declaration injected on appended anchors
+  when the host document is prefix-namespaced. Non-anchor-only drawings
+  refuse AT ADD TIME (atomic — the object never joins the model).
+  Battery 22: CORRECT.
+- **4.3 chart editing:** the Batch-1 blanket mutation refusal lifts
+  per-property. At save, the armed settled render and the current
+  settled render are compared with every expressible text span
+  neutralized (<c:f> formula texts + <a:t> text runs, namespace-aware
+  via chartpatch's leaf walker); if anything else differs, refuse naming
+  the property (e.g. "a property near <style> changed"). Expressible
+  drift patches the ORIGINAL part bytes positionally, each patch
+  verified against the arm state verbatim (mismatch = another rewrite
+  already touched it → refuse, advise separate sessions). New ranges
+  validate as sheet-qualified single-area A1 ranges on existing sheets;
+  new text validates against ILLEGAL_CHARACTERS_RE. Convenience verb
+  `chart.repoint(series_index, new_range)` (works in stock mode too);
+  title assignment expresses the same way. Cached series values stay —
+  Excel re-reads series from cells at render. Chart property edits +
+  shifts in ONE session refuse (composing the two rewrites would
+  double-shift the new range). The chart part name is stamped at read
+  (`chart._paper_part`) by reader/drawings.py. Battery 16: title edit
+  CORRECT, inexpressible mutations refuse (contract: "refuse or
+  correct").
+- Every 4.x output queued in agent_docs/FIXTURE-REQUESTS.md for
+  real-Excel open checks (the producer-sensitive surface).
+
 ## Batch 3 — adversarial gate report (2026-07-08)
 
 Four lenses, seven criticals + a major set confirmed with live repros —

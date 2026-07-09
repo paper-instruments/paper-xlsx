@@ -657,20 +657,44 @@ def refuse_sheet_lifecycle(wb, operation, detail):
 
 
 def refuse_chart_or_image_add(ws, what):
-    """Adding charts/images under preserve refuses in v0 (PR-0 D9 as
-    amended in Phase 2d): drawing-part generation against the preserved
-    package is out of scope, and silently dropping the object at save is
-    the forbidden outcome."""
+    """Call-time gate for add_chart/add_image under preserve (PLAN-v0.1
+    4.2, battery 22): additions are supported on added sheets, on loaded
+    sheets without drawing machinery (fresh drawing part + one spliced
+    element), and on loaded sheets whose existing drawing is anchor-only
+    (anchors appended into the original part). A drawing carrying anything
+    else refuses NOW — atomically, before the object joins the model."""
     led = _armed_ledger_for_ws(ws)
     if led is None:
         return
-    raise UnsupportedStructureError(
-        "add_{0}() is not supported in preserve mode (v0): generating "
-        "drawing parts alongside the preserved package is not implemented, "
-        "and the {0} would otherwise be silently absent from the saved "
-        "file. Build charts in a separate stock-mode workbook. Nothing was "
-        "changed.".format(what)
-    )
+    if ws in led.added_sheets:
+        return
+    wb = ws.parent
+    source = getattr(wb, "_paper_source", None)
+    if source is None:
+        return
+    import io
+    import zipfile
+
+    from . import drawings as drawings_mod
+    from .saver import _package_info
+
+    with zipfile.ZipFile(io.BytesIO(source)) as zin:
+        names = set(zin.namelist())
+        _wb_part, mapping = _package_info(zin)
+        part = mapping.get(led.renames.get(ws, ws.title))
+        if part is None:
+            raise UnsupportedStructureError(
+                "add_{0}(): the package part for sheet {1!r} could not be "
+                "located. Nothing was changed.".format(what, ws.title))
+        drawing_part = drawings_mod._existing_drawing_part(zin, names, part)
+        if drawing_part is not None \
+                and not drawings_mod._anchor_only(zin.read(drawing_part)):
+            raise UnsupportedStructureError(
+                "add_{0}() on sheet {1!r}: the sheet's existing drawing "
+                "carries content other than plain chart/image anchors "
+                "(shapes, alternate content, ...); appending into it is "
+                "not supported. Nothing was changed.".format(
+                    what, ws.title))
 
 
 def record_rename(sheet_child, new_title):

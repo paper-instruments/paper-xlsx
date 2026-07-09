@@ -322,3 +322,166 @@ def patch_chart_rename(payload, old_title, new_title):
     from .crosspart import apply_edits
 
     return apply_edits(payload, edits)
+
+
+# ---------------------------------------------------------------------
+# Batch 4 (PR-1 §3): per-property chart edits expressed as byte patches
+
+DRAWING_MAIN_NS = b"http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+def _text_sequences(data):
+    """([(start, end, text)] for <c:f> leaves, same for <a:t> leaves), in
+    document order — the two property families chartpatch can express."""
+    fs, ts = [], []
+    for ns, local, _parent, start, end in _walk_leaf_texts(data):
+        if local == b"f" and ns == CHART_NS:
+            fs.append((start, end, data[start:end]))
+        elif local == b"t" and ns == DRAWING_MAIN_NS:
+            ts.append((start, end, data[start:end]))
+    return fs, ts
+
+
+def _neutralized(data, fs, ts):
+    """The document with every expressible text span replaced by a
+    placeholder — what remains is the INexpressible surface."""
+    spans = sorted([(s, e) for s, e, _ in fs] + [(s, e) for s, e, _ in ts],
+                   reverse=True)
+    for start, end in spans:
+        data = data[:start] + b"#" + data[end:]
+    return data
+
+
+def _property_near(neutral_armed, neutral_current):
+    """A best-effort name for the first differing property between two
+    neutralized renders (for the refusal message)."""
+    limit = min(len(neutral_armed), len(neutral_current))
+    diff = limit
+    for i in range(limit):
+        if neutral_armed[i] != neutral_current[i]:
+            diff = i
+            break
+    lt = neutral_current.rfind(b"<", 0, diff + 1)
+    if lt == -1:
+        return "unknown"
+    m = re.match(br"</?([\w:]+)", neutral_current[lt:lt + 64])
+    return m.group(1).decode("ascii", "replace") if m else "unknown"
+
+
+_SHEET_RANGE_RE = re.compile(
+    r"^(?:'((?:[^']|'')+)'|([^'!\[\],{}]+))!"
+    r"(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)$")
+
+
+def parse_series_range(text):
+    """(sheet_title, range_part) for a sheet-qualified single-area range;
+    raises ValueError on anything else (external refs, multi-area, array
+    literals, unqualified ranges)."""
+    m = _SHEET_RANGE_RE.match(text)
+    if m is None:
+        raise ValueError(
+            "series ranges must be single-area, sheet-qualified A1 ranges "
+            "like \"'Data'!$B$2:$B$13\" (got {0!r})".format(text))
+    sheet = m.group(1).replace("''", "'") if m.group(1) is not None \
+        else m.group(2)
+    from openpyxl.utils.cell import range_boundaries
+    range_boundaries(m.group(3).replace("$", ""))   # bounds check
+    return sheet, m.group(3)
+
+
+def plan_property_edits(wb, ws, key, armed, current, original):
+    """A loaded chart's model drifted since arm: express the drift as byte
+    patches on the ORIGINAL part bytes, or refuse naming the first
+    property chartpatch cannot express (PLAN-v0.1 4.3). Expressible:
+    series/axis formula texts (<c:f>) and text runs (<a:t> — titles,
+    axis titles). Cached series values are left as-is: Excel re-reads
+    series from cells when it renders the chart."""
+    from openpyxl.errors import UnsupportedStructureError
+
+    def _refuse(detail):
+        raise UnsupportedStructureError(
+            "chart {0} on sheet {1!r} was modified, but the edit cannot "
+            "be expressed as a byte patch: {2}. Only title/axis text and "
+            "series ranges are editable on loaded charts. Nothing was "
+            "written.".format(key, ws.title, detail))
+
+    try:
+        armed_f, armed_t = _text_sequences(armed)
+        current_f, current_t = _text_sequences(current)
+        original_f, original_t = _text_sequences(original)
+    except ScanRefusal as exc:
+        _refuse(str(exc))
+    if len(armed_f) != len(current_f):
+        _refuse("series or formula references were added or removed "
+                "({0} -> {1})".format(len(armed_f), len(current_f)))
+    if len(armed_t) != len(current_t):
+        _refuse("text runs were added or removed ({0} -> {1}) — adding or "
+                "deleting a title is whole-element surgery".format(
+                    len(armed_t), len(current_t)))
+    neutral_armed = _neutralized(armed, armed_f, armed_t)
+    neutral_current = _neutralized(current, current_f, current_t)
+    if neutral_armed != neutral_current:
+        _refuse("a property near <{0}> changed".format(
+            _property_near(neutral_armed, neutral_current)))
+
+    f_changes = {i: (a[2], c[2])
+                 for i, (a, c) in enumerate(zip(armed_f, current_f))
+                 if a[2] != c[2]}
+    t_changes = {i: (a[2], c[2])
+                 for i, (a, c) in enumerate(zip(armed_t, current_t))
+                 if a[2] != c[2]}
+    if not f_changes and not t_changes:
+        return original
+
+    sheetnames = {t.casefold() for t in wb.sheetnames}
+    for i, (_old, new) in f_changes.items():
+        try:
+            text = _unescape(new).decode("utf-8")
+        except ScanRefusal as exc:
+            _refuse(str(exc))
+        try:
+            sheet, _rng = parse_series_range(text)
+        except ValueError as exc:
+            _refuse(str(exc))
+        if sheet.casefold() not in sheetnames:
+            _refuse("the new range {0!r} references sheet {1!r}, which "
+                    "does not exist in this workbook".format(text, sheet))
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    for i, (_old, new) in t_changes.items():
+        try:
+            text = _unescape(new).decode("utf-8")
+        except (ScanRefusal, UnicodeDecodeError) as exc:
+            _refuse(str(exc))
+        if ILLEGAL_CHARACTERS_RE.search(text):
+            _refuse("the new text contains characters that cannot be "
+                    "written to XML")
+
+    if len(original_f) != len(armed_f):
+        _refuse("the original part carries {0} formula references but the "
+                "model loaded {1} — the positional mapping is not "
+                "trustworthy".format(len(original_f), len(armed_f)))
+    if t_changes and len(original_t) != len(armed_t):
+        _refuse("the original part carries {0} text runs but the model "
+                "loaded {1} — the positional mapping is not "
+                "trustworthy".format(len(original_t), len(armed_t)))
+
+    edits = []
+    for i, (old, new) in f_changes.items():
+        o_start, o_end, o_text = original_f[i]
+        if _unescape(o_text) != _unescape(old):
+            _refuse("formula reference {0} in the original part ({1!r}) "
+                    "does not match the model's arm state ({2!r}) — "
+                    "another edit already rewrote it this session; do "
+                    "these edits in separate sessions".format(
+                        i, o_text, old))
+        edits.append((o_start, o_end, _escape(_unescape(new))))
+    for i, (old, new) in t_changes.items():
+        o_start, o_end, o_text = original_t[i]
+        if _unescape(o_text) != _unescape(old):
+            _refuse("text run {0} in the original part does not match the "
+                    "model's arm state".format(i))
+        edits.append((o_start, o_end, _escape(_unescape(new))))
+
+    for start, end, replacement in sorted(edits, reverse=True):
+        original = original[:start] + replacement + original[end:]
+    return original

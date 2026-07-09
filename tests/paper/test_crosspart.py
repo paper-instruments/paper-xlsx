@@ -137,32 +137,23 @@ class TestAddedSheets:
         wb2 = load_workbook(out)
         assert wb2["Links"]["A1"].hyperlink.target == "https://example.org/doc"
 
-    def test_chart_add_refuses_at_add_time(self, fixture_copy, tmp_path):
-        # since the final review: add_chart/add_image refuse IMMEDIATELY
-        # under preserve (v0, PR-0 D9 as amended) — the alternative was a
-        # chart accepted at add time and silently absent from the save
+    def test_added_sheet_with_chart_saves(self, fixture_copy, tmp_path):
+        # Batch 4 (PLAN-v0.1 4.1) lifted the v0 add-time refusal: charts
+        # on ADDED sheets are stock-writer output routed through the
+        # lifecycle engine — zero splice risk
         from openpyxl.chart import BarChart, Reference
 
         src = fixture_copy(GAUNTLET)
-        with open(src, "rb") as f:
-            before = f.read()
         wb = load_workbook(src, preserve=True)
         ws = wb.create_sheet("Charted")
         ws.append([1, 2, 3])
         chart = BarChart()
         chart.add_data(Reference(ws, min_col=1, min_row=1, max_col=3, max_row=1))
-        with pytest.raises(UnsupportedStructureError, match="add_chart"):
-            ws.add_chart(chart, "E1")
-        # ...and on LOADED sheets too (was: silently dropped at save)
-        with pytest.raises(UnsupportedStructureError, match="add_chart"):
-            wb["Data"].add_chart(chart, "E1")
-        from openpyxl.drawing.image import Image
-        with pytest.raises(UnsupportedStructureError, match="add_image"):
-            wb["Data"].add_image(object(), "E1")
-        wb["Model"]["B8"] = 0.2
-        wb.save(str(tmp_path / "o.xlsx"))     # the rest still saves fine
-        with open(src, "rb") as f:
-            assert f.read() == before
+        ws.add_chart(chart, "A3")
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert len(wb2["Charted"]._charts) == 1
 
     def test_pandas_append_full_flow(self, fixture_copy):
         pd = pytest.importorskip("pandas")

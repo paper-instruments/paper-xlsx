@@ -25,6 +25,7 @@ from openpyxl.errors import UnsupportedStructureError
 from openpyxl.xml.constants import ARC_CORE, ARC_CUSTOM, ARC_THEME, ARC_STYLE, REL_NS, WORKSHEET_TYPE
 
 from . import crosspart, zipio
+from . import drawings as drawings_mod
 from . import ledger as ledger_mod
 from .ledger import render_core_model, render_custom_model, _render_chartsheet
 from .regions import (
@@ -148,9 +149,13 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             _check_added_sheet_supported(ws)
             part_name = "xl/worksheets/sheet{0}.xml".format(next_part_num + i)
             ws._id = next_part_num + i    # keeps ws.path consistent
-            payload, sheet_rels = _generate_sheet_part(ws)
+            payload, rel_entries = _generate_sheet_part(ws)
             payload = _rewrite_added_sheet_styles(payload, workbook,
                                                   translator)
+            rel_entries = drawings_mod.plan_added_sheet_drawing(
+                workbook, ws, part_plan, names, rel_entries)
+            sheet_rels = crosspart.render_rels_document(rel_entries) \
+                if rel_entries else None
             sheet_rels = _plan_added_sheet_comments(
                 workbook, ws, part_plan, names, sheet_rels)
             new_sheet_parts.append((part_name, payload))
@@ -180,14 +185,80 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             continue
         changed_objects = ledger_mod.diff_objects(
             ws, led.object_snapshots.get(ws))
-        _armed_tables = set(
-            (led.object_snapshots.get(ws) or {}).get("table", {}))
+        armed_snap = led.object_snapshots.get(ws) or {}
+        _armed_tables = set(armed_snap.get("table", {}))
         table_changes = [key for kind, key in changed_objects
                          if kind == "table"
                          and key in _armed_tables
                          and key in getattr(ws, "tables", {})]
         changed_objects = [(kind, key) for kind, key in changed_objects
                            if kind != "table"]
+        # Batch 4 (PR-1 §3): chart/image ADDITIONS on loaded sheets become
+        # new parts through the engine; per-property chart MUTATIONS
+        # become byte patches when chartpatch can express them
+        new_drawables = [
+            (kind, key) for kind, key in changed_objects
+            if kind in ("chart", "image")
+            and key not in armed_snap.get(kind, {})
+            and key < len(getattr(ws, "_" + kind + "s", []) or [])]
+        changed_objects = [co for co in changed_objects
+                           if co not in new_drawables]
+        chart_prop_parts = {}     # chart part -> patched payload
+        chart_mutations = [
+            key for kind, key in changed_objects
+            if kind == "chart" and key in armed_snap.get("chart", {})
+            and key < len(getattr(ws, "_charts", []) or [])]
+        if chart_mutations:
+            from openpyxl.xml.functions import tostring
+
+            from . import chartpatch as chartpatch_mod
+
+            if any(led.shifts.values()):
+                # a shift rewrites chart <c:f> texts itself; composing a
+                # property edit on top would shift the NEW range too
+                # (silent double-shift). Refuse, never guess.
+                _refuse("chart(s) on sheet {0!r} were edited in the same "
+                        "session as a row/column shift; the two rewrites "
+                        "cannot be composed faithfully — do these edits "
+                        "in separate sessions.".format(ws.title))
+            for key in chart_mutations:
+                chart = ws._charts[key]
+                armed_render, armed_anchor = armed_snap["chart"][key]
+                part_name = getattr(chart, "_paper_part", None)
+                if part_name is None or part_name not in names:
+                    _refuse("chart {0} on sheet {1!r} was modified but its "
+                            "package part could not be located; the edit "
+                            "cannot be expressed. Reopen without "
+                            "preserve=True to rewrite the workbook "
+                            "lossily.".format(key, ws.title))
+                if ledger_mod._anchor_fingerprint(chart) != armed_anchor:
+                    _refuse("chart {0} on sheet {1!r}: the anchor "
+                            "(position/size) changed; anchors live in the "
+                            "preserved drawing part and cannot be patched. "
+                            "Only title text and series ranges are "
+                            "editable on loaded charts.".format(
+                                key, ws.title))
+                current_render, settled = ledger_mod._settled(
+                    lambda c=chart: tostring(c._write()))
+                if not settled:
+                    _refuse("chart {0} on sheet {1!r}: its serializer is "
+                            "impure, so the edit cannot be expressed "
+                            "faithfully.".format(key, ws.title))
+                base = chart_prop_parts.get(part_name)
+                if base is None:
+                    # compose over an earlier shift's chart patch, never
+                    # over the raw source (the Phase-6b overrides lesson)
+                    base = plan.get(part_name)
+                if base is None:
+                    base = zin.read(part_name)
+                chart_prop_parts[part_name] = \
+                    chartpatch_mod.plan_property_edits(
+                        workbook, ws, key, armed_render, current_render,
+                        base)
+            plan.update(chart_prop_parts)
+            changed_objects = [
+                (kind, k) for kind, k in changed_objects
+                if not (kind == "chart" and k in chart_mutations)]
         if changed_objects:
             # the boundary class (PLAN-v0.1 1.1): these objects' backing
             # parts are preserved bytes the splice never re-serializes —
@@ -225,7 +296,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         shift_ops = led.shifts.get(ws, [])
         if not (ledger_dirty or all_region_changes or row_changes
                 or comments_changed or shift_ops or led.rich_text_mode
-                or table_changes):
+                or table_changes or new_drawables):
             continue
         table_lifecycle = "tableParts" in all_region_changes
 
@@ -303,6 +374,39 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             region_changes["tableParts"] = table_parts_bytes
         if legacy_drawing_bytes is not None:
             region_changes["legacyDrawing"] = legacy_drawing_bytes
+        if new_drawables:
+            # Batch 4 (PR-1 §3): new chart/image objects become fresh
+            # parts through the engine; the sheet gains ONE spliced
+            # <drawing r:id> element, or the anchors land in the sheet's
+            # EXISTING drawing part (anchor-only originals only)
+            new_charts = [ws._charts[k] for kind, k in new_drawables
+                          if kind == "chart"]
+            new_images = [ws._images[k] for kind, k in new_drawables
+                          if kind == "image"]
+            existing_drawing = drawings_mod._existing_drawing_part(
+                zin, names, part)
+            if existing_drawing is None:
+                if scan.regions.get("drawing"):
+                    _refuse("sheet {0!r} carries a drawing element whose "
+                            "relationship target cannot be resolved; "
+                            "adding charts/images to it is not "
+                            "possible.".format(ws.title))
+                rels_part = _rels_path(part)
+                original_rels = zin.read(rels_part) \
+                    if rels_part in names else None
+                region_changes["drawing"] = drawings_mod.plan_fresh_drawing(
+                    workbook, ws, part_plan, names, part, original_rels,
+                    new_charts, new_images)
+            else:
+                drawing_base = plan.get(existing_drawing)
+                if drawing_base is None:
+                    drawing_base = zin.read(existing_drawing)
+                drels = _rels_path(existing_drawing)
+                plan[existing_drawing] = drawings_mod.plan_drawing_append(
+                    workbook, ws, part_plan, names, existing_drawing,
+                    drawing_base,
+                    zin.read(drels) if drels in names else None,
+                    new_charts, new_images)
 
         # PR-0 D2 applies to ROW and COLUMN styles too: dict(RowDimension)
         # and ColumnDimension.to_tree() carry MODEL style indices — every
@@ -701,10 +805,8 @@ def _next_sheet_id(wb_xml):
 
 
 def _check_added_sheet_supported(ws):
-    if getattr(ws, "_charts", None) or getattr(ws, "_images", None):
-        _refuse("sheet {0!r} was added with charts or images; generating "
-                "drawing parts under preserve mode is not supported in v0 "
-                "(PR-0 D9 partial deferral).".format(ws.title))
+    # charts/images on added sheets generate via the Batch-4 machinery
+    # (preserve/drawings.py — stock writer output through the engine)
     if getattr(ws, "_pivots", None):
         _refuse("sheet {0!r} was added with pivot tables; not supported in "
                 "v0.".format(ws.title))
@@ -821,18 +923,16 @@ def _plan_added_sheet_comments(workbook, ws, part_plan, names, sheet_rels):
 def _generate_sheet_part(ws):
     """Generate a NEW sheet's part payload with the stock writer (the sheet
     exists only in the model — there is nothing to splice against). Returns
-    (payload, rels_payload_or_None)."""
+    (payload, rel_entries) — entries as (rid, type, target, mode) tuples so
+    downstream planners (drawings) can fill targets before rendering."""
     from openpyxl.worksheet._writer import WorksheetWriter
 
     writer = WorksheetWriter(ws, out=io.BytesIO())
     writer.write()
     payload = writer.read()
-    rels_payload = None
-    if len(writer._rels):
-        entries = [(rel.Id, rel.Type, rel.Target,
-                    rel.TargetMode or None) for rel in writer._rels]
-        rels_payload = crosspart.render_rels_document(entries)
-    return payload, rels_payload
+    entries = [(rel.Id, rel.Type, rel.Target,
+                rel.TargetMode or None) for rel in writer._rels]
+    return payload, entries
 
 
 def _translate_row_styles(ws, row_changes, translator):
