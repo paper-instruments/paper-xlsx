@@ -753,3 +753,61 @@ class TestBatch3CmVmGaps:
         wb2 = load_workbook(out)
         assert "Overview" in wb2.sheetnames
         assert wb2["Overview"].sheet_state == "hidden"
+
+
+class TestBatch4DrawingGaps:
+
+    def test_second_save_replans_identically(self, fixture_copy, tmp_path):
+        # the chart single-use seen-set lived on the WORKBOOK, so a second
+        # save of the same workbook false-refused (gate: found pre-gate);
+        # it lives on the per-save part plan now
+        from openpyxl.chart import BarChart, Reference
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Sheet1"]
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=1, min_row=1, max_row=3))
+        ws.add_chart(chart, "F2")
+        out1 = str(tmp_path / "o1.xlsx")
+        out2 = str(tmp_path / "o2.xlsx")
+        wb.save(out1)
+        wb.save(out2)                       # idempotent, no false refusal
+        p1, p2 = part_payloads(out1), part_payloads(out2)
+        assert set(p1) == set(p2)
+        assert all(p1[n] == p2[n] for n in p1)
+
+    def test_added_chart_follows_shift(self, fixture_copy, tmp_path):
+        # an in-session chart's ranges silently pointed at pre-shift cells
+        # (gate: found pre-gate) — model fixups now cover added charts
+        from openpyxl.chart import BarChart, Reference
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Sheet1"]
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=1, min_row=1, max_row=3))
+        ws.add_chart(chart, "F2")
+        ws.insert_rows(1)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        chart_xml = next(p for n, p in part_payloads(out).items()
+                         if n.startswith("xl/charts/chart"))
+        assert b"$A$2:$A$4" in chart_xml    # followed the insert
+        assert b"$A$1:$A$3" not in chart_xml
+
+    def test_delete_stranding_added_chart_blocks_premove(
+            self, fixture_copy, tmp_path):
+        from openpyxl.chart import BarChart, Reference
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Sheet1"]
+        chart = BarChart()
+        chart.add_data(Reference(ws, min_col=1, min_row=2, max_row=3))
+        ws.add_chart(chart, "F2")
+        with pytest.raises(UnsupportedStructureError, match="in-session"):
+            ws.delete_rows(2, 2)
+        # pre-move atomicity: neither cells nor the chart moved
+        assert ws["A2"].value is not None
+        assert chart.series[0].val.numRef.f == "'Sheet1'!$A$2:$A$3"

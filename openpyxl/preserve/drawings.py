@@ -125,18 +125,20 @@ def _register_objects(workbook, ws, part_plan, names, charts, images):
     drawing) is final. Returns nothing; raises before ANY registration on
     invalid input (validate-then-mutate)."""
     taken = _taken(names, part_plan)
-    # validate everything first: image data readable, charts single-use
+    # validate everything first: image data readable, charts single-use.
+    # the seen-set lives on the PART PLAN (one save), not the workbook —
+    # a second save of the same workbook replans the same additions and
+    # must not false-refuse (Batch-4 gate suspicion, confirmed)
     image_data = [_image_payload(img) for img in images]
-    seen = getattr(workbook, "_paper_drawn_charts", None)
+    seen = getattr(part_plan, "_drawn_charts", None)
     if seen is None:
         seen = set()
-        workbook._paper_drawn_charts = seen
+        part_plan._drawn_charts = seen
     for chart in charts:
         if id(chart) in seen:
-            _refuse("the same chart object was added to more than one "
-                    "sheet; charts are single-use (sheet {0!r}).".format(
+            _refuse("the same chart object was added more than once; "
+                    "charts are single-use (sheet {0!r}).".format(
                         ws.title))
-    for chart in charts:
         seen.add(id(chart))
 
     next_chart = _next_number(taken, r"xl/charts/chart(\d+)\.xml$")
