@@ -65,6 +65,9 @@ class Workbook:
     # PRESERVE-MODE workbooks only in v0.1 (the check rides the armed
     # ledger); on stock loads the flag is inert.
     strict_protection = False
+    # formula pre-flight lint mode at the value-bind chokepoint
+    # (PLAN-v0.1 5.2; preserve-mode workbooks only): "off"|"warn"|"refuse"
+    formula_lint = "warn"
     template = False
     path = "/xl/workbook.xml"
 
@@ -189,6 +192,31 @@ class Workbook:
         if not isinstance(payload, bytes):
             raise TypeError("payload must be bytes")
         self._paper_ledger.replaced_parts[name] = payload
+
+    def evaluate(self, set, read, *, timeout=120.0):
+        """What-if scenario against THIS workbook's preserved source
+        bytes (PLAN-v0.1 5.1): inputs applied to a temp copy through the
+        spine, LibreOffice recalculates, outputs harvested. Neither the
+        original file nor this live workbook is touched.
+
+        NOTE: the run starts from the preserved AS-LOADED bytes — unsaved
+        in-session edits are not part of the scenario (save first if they
+        should be).
+
+        ``set``: {address: value} single-cell inputs; ``read``: list of
+        addresses to harvest. Addresses are sheet-qualified A1
+        ("Model!B2") or defined names. Returns
+        :class:`openpyxl.oracle.Evaluation`.
+        """
+        if not self._preserve or self._paper_source is None:
+            raise ValueError(
+                "evaluate() runs against the preserved source bytes and "
+                "is only available on workbooks loaded with "
+                "preserve=True.")
+        from openpyxl import oracle
+
+        return oracle.evaluate(self._paper_source, set, read,
+                               timeout=timeout)
 
     def manifest(self):
         """A structured description of this workbook: sheets, formulas,

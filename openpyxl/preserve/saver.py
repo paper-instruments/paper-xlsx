@@ -288,6 +288,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                     "editing loaded objects of these kinds is not "
                     "supported yet"))
         ledger_dirty = led.dirty_coordinates(ws)
+        cache_writes = led.cache_writes.get(ws, {})
         all_region_changes = diff_regions(ws, led.region_snapshots.get(ws, {}))
         pinned_hits = sorted(
             led.pinned_regions.get(ws, set()) & set(all_region_changes))
@@ -307,7 +308,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         shift_ops = led.shifts.get(ws, [])
         if not (ledger_dirty or all_region_changes or row_changes
                 or comments_changed or shift_ops or led.rich_text_mode
-                or table_changes or new_drawables):
+                or table_changes or new_drawables or cache_writes):
             continue
         table_lifecycle = "tableParts" in all_region_changes
 
@@ -486,7 +487,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
         if not (dirty or region_changes or row_changes or shift_ops
                 or cf_replacement is not None
-                or hyperlinks_replacement is not None):
+                or hyperlinks_replacement is not None
+                or cache_writes):
             continue
         if translator is None:
             # no styles.xml in the package: the part is CREATED from the
@@ -505,8 +507,11 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             cf_replacement=cf_replacement,
             hyperlinks_replacement=hyperlinks_replacement,
             style_resolver=resolver,
-            value_overwrites=led.value_overwrites.get(ws, frozenset()))
-        dirty_by_part[part] = dirty
+            value_overwrites=led.value_overwrites.get(ws, frozenset()),
+            cache_writes=cache_writes)
+        # cache-written cells are CLAIMED changes: the crosscheck verifies
+        # them exactly like dirty cells (PLAN-v0.1 5.3)
+        dirty_by_part[part] = dirty | set(cache_writes)
         claims = set(region_changes)
         if cf_replacement is not None:
             claims.add("conditionalFormatting")

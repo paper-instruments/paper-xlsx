@@ -752,6 +752,51 @@ sections):
 - Every 4.x output queued in agent_docs/FIXTURE-REQUESTS.md for
   real-Excel open checks (the producer-sensitive surface).
 
+## Batch 5 — Computation layer (2026-07-08, PLAN-v0.1)
+
+- **5.1 scenario runner:** `wb.evaluate(set={...}, read=[...])` (preserve
+  workbooks; runs against the AS-LOADED source bytes) and
+  `oracle.evaluate(source, ...)`: inputs applied to a temp copy through
+  the SPINE (every preserve guard applies), LibreOffice recalculates,
+  outputs harvested; the original file and live workbook untouched
+  (asserted). ONE LibreOffice run serves both the outputs and the
+  certification: original caches vs computed, with input-downstream
+  cells excluded as the new `input_excluded` class (CertificationResult
+  gained the field, additive). Addresses: sheet-qualified single-cell A1
+  or defined names; everything else refuses typed (TargetNotFoundError).
+  `oracle.evaluate_many(source, cases, read, pool_size=2)`: warm
+  per-thread LibreOffice profiles, created lazily, crash-replaced once,
+  destroyed before return (PR-1 delegated decision). `Evaluation` pinned
+  (schema "evaluation" v1). Battery 12: CORRECT.
+- **5.2 pre-flight linter:** `openpyxl.formula.lint.lint_formula` —
+  tokenizer-based, never evaluates. Codes: parse-error,
+  unbalanced-parens, semicolon-separator (the locale-canonical trap; ';'
+  outside array constants only), unknown-function (pinned catalog in
+  formula/catalog.py; `_xlfn.` stripped; a warning, never a gate — UDFs
+  are legal), unknown-sheet/-name/-table/-column (with workbook;
+  structured refs against real table columns; 3-D span endpoints).
+  LET/LAMBDA formulas skip name checks (locals are invisible without
+  evaluation — documented). Wired into the value-bind chokepoint under
+  preserve via `wb.formula_lint` = off|warn|refuse (default warn);
+  refusal restores the pre-bind type, dirties nothing. `LintWarning`
+  pinned.
+- **5.3 certification-gated write-back:** `oracle.write_back(path)`
+  recalcs a temp copy, then splices computed values into the ORIGINAL
+  package — a NEW splice channel (`cache_writes`): the `<f>` bytes stay
+  verbatim, only `<v>`/`t` change, cells claimed to the crosscheck like
+  dirty cells; LO bytes never enter the output (macro-safe, vbaProject
+  byte-identical, tested). Gated: DIVERGED/BASELINE_UNVERIFIABLE refuse
+  unless allow_uncertified=True (loud `uncertified` stamp). Only
+  verified or previously cache-less cells are written;
+  volatile/external/unsupported classes never. fullCalcOnLoad clears
+  only on full coverage. Package-diff confession in the result.
+  `WriteBackResult` pinned (schema "oracle_write_back" v1). Battery 24:
+  CORRECT, certification-gated.
+- **5.4 fresh-generation recalc flag:** satisfied by UPSTREAM behavior —
+  stock CalcProperties defaults `fullCalcOnLoad=True`, so every
+  fresh-generated workbook already saves with the flag (verified;
+  no change needed, recorded here per the PR-1 stock-visible note).
+
 ## Batch 4 — adversarial gate report (2026-07-08)
 
 Four lenses (Workflow orchestration), 21 findings confirmed with live

@@ -229,6 +229,16 @@ class Cell(StyleableObject):
         elif dt == "s" and not isinstance(value, CellRichText):
             value = self.check_string(value)
             if len(value) > 1 and value.startswith("="):
+                if paper_armed:
+                    # pre-flight lint (PLAN-v0.1 5.2): warns or refuses
+                    # BEFORE the value lands (a refusal restores the
+                    # pre-bind type; nothing was assigned yet)
+                    from openpyxl.formula.lint import lint_on_bind
+                    try:
+                        lint_on_bind(self, value)
+                    except Exception:
+                        self._data_type = old_data_type
+                        raise
                 self._data_type = 'f'
             elif value in ERROR_CODES:
                 self._data_type = 'e'

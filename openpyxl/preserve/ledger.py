@@ -49,7 +49,7 @@ class DirtyLedger:
                  "sheet_order", "removed_sheets", "value_overwrites",
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
-                 "template_flag")
+                 "template_flag", "cache_writes")
 
     def __init__(self):
         self.armed = False
@@ -86,6 +86,8 @@ class DirtyLedger:
         self.named_styles_len = 0
         self.shifts = {}               # ws -> [(operation, index, amount)]
         self.template_flag = False
+        self.cache_writes = {}         # ws -> {(row, col): computed value}
+                                       # (oracle write-back, PLAN-v0.1 5.3)
 
     # -- arming --------------------------------------------------------
 

@@ -529,10 +529,16 @@ class TestBatteryToday:
         assert copied["B8"].comment is not None
 
     # job 12 — today: no scenario API. Batch 5 ships wb.evaluate().
-    def test_job12_no_evaluate_api_yet(self):
+    # job 12 — Batch-5 state (flipped by 5.1): one evaluate() call,
+    # certified (the full LibreOffice path runs in test_compute.py; this
+    # job pins the API surface and the preserve requirement)
+    def test_job12_evaluate_api_exists(self, fixture_copy):
         from openpyxl.workbook import Workbook
 
-        assert not hasattr(Workbook, "evaluate")
+        assert callable(Workbook.evaluate)
+        wb = load_workbook(fixture_copy("features/schedule_calc.xlsx"))
+        with pytest.raises(ValueError, match="preserve"):
+            wb.evaluate(set={"Schedule!B2": 1}, read=["Summary!B1"])
 
     # job 13 — Batch-1 state (flipped by 1.5): typed refusal naming the
     # encryption and the decrypt route, on both load arms.
@@ -745,9 +751,28 @@ class TestBatteryToday:
         assert not hasattr(wb, "locate")
         assert not hasattr(wb.active, "find_by_label")
 
-    # job 24 — today: no oracle write-back. Batch 5 ships it,
-    # certification-gated.
-    def test_job24_no_oracle_writeback_yet(self):
+    # job 24 — Batch-5 state (flipped by 5.3): write-back exists and is
+    # CERTIFICATION-GATED; the full LibreOffice path is exercised in
+    # test_compute.py (this job pins the gate without needing soffice)
+    def test_job24_oracle_writeback_certification_gated(
+            self, fixture_copy, tmp_path, monkeypatch):
         from openpyxl import oracle
+        from openpyxl.errors import UnsupportedStructureError
 
-        assert not hasattr(oracle, "write_back")
+        assert callable(oracle.write_back)
+        src = fixture_copy("features/schedule_calc.xlsx")
+        with open(src, "rb") as f:
+            before = f.read()
+        # a DIVERGED certification refuses without allow_uncertified
+        monkeypatch.setattr(
+            oracle, "_certify_impl",
+            lambda data, timeout, recalculated=None, input_seeds=None: (
+                oracle.CertificationResult(
+                    oracle.CertificationResult.DIVERGED, 3,
+                    [{"address": "Schedule!B12", "cached": 1,
+                      "computed": 2}], [], []), b""))
+        with pytest.raises(UnsupportedStructureError,
+                           match="certification-gated"):
+            oracle.write_back(src)
+        with open(src, "rb") as f:
+            assert f.read() == before               # atomic

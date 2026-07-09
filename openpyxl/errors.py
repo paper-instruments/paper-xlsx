@@ -59,6 +59,13 @@ class StructuralShiftWarning(UserWarning):
     ranges keep pointing at the old cells."""
 
 
+class LintWarning(UserWarning):
+    """Formula pre-flight lint findings at the value-bind chokepoint
+    (PLAN-v0.1 5.2): the formula was accepted, but Excel will likely show
+    #NAME? or compute wrongly. Set ``wb.formula_lint = "refuse"`` to turn
+    these into typed refusals, or ``"off"`` to silence them."""
+
+
 class LossySaveWarning(UserWarning):
     """Loud warning on a save path that is about to rebuild or drop content
     it cannot preserve.

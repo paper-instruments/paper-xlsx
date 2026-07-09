@@ -130,9 +130,12 @@ def _find_workbook_part_name(zin):
     raise OracleUnavailableError("the package has no workbook part")
 
 
-def _recalculate_bytes(data, timeout, suffix=".xlsx"):
+def _recalculate_bytes(data, timeout, suffix=".xlsx", profile_root=None):
     """Round-trip ``data`` through headless LibreOffice; returns the
-    recalculated package bytes. Never touches any caller path."""
+    recalculated package bytes. Never touches any caller path.
+    ``profile_root``: reuse (and lazily seed) a persistent profile
+    directory — the evaluate_many warm pool; None keeps the fully
+    isolated per-call profile."""
     soffice = find_soffice()
     if soffice is None:
         raise OracleUnavailableError(
@@ -143,17 +146,21 @@ def _recalculate_bytes(data, timeout, suffix=".xlsx"):
 
     workdir = tempfile.mkdtemp(prefix="paper_oracle_")
     try:
-        profile = os.path.join(workdir, "profile")
-        # pre-seed the fresh profile with "always recalculate on load":
+        if profile_root is not None:
+            profile = os.path.join(profile_root, "profile")
+        else:
+            profile = os.path.join(workdir, "profile")
+        # pre-seed the profile with "always recalculate on load":
         # without it LibreOffice keeps whatever cached values the file
         # carries and the oracle would "compute" the cache under test
         # (measured on a tampered fixture; calcPr flags alone are not
         # honored by the headless converter)
         userdir = os.path.join(profile, "user")
-        os.makedirs(userdir)
-        with open(os.path.join(userdir, "registrymodifications.xcu"),
-                  "w") as f:
-            f.write(_RECALC_ALWAYS_XCU)
+        if not os.path.isdir(userdir):
+            os.makedirs(userdir)
+            with open(os.path.join(userdir, "registrymodifications.xcu"),
+                      "w") as f:
+                f.write(_RECALC_ALWAYS_XCU)
         outdir = os.path.join(workdir, "out")
         os.makedirs(outdir)
         tmp_input = os.path.join(workdir, "input" + suffix)
@@ -305,7 +312,7 @@ class CertificationResult:
 
     def __init__(self, status, checked, divergences, volatile_excluded,
                  unverifiable, external_excluded=None,
-                 unsupported_excluded=None):
+                 unsupported_excluded=None, input_excluded=None):
         self.status = status
         self.checked = checked
         self.divergences = divergences          # [{"address", "cached", "computed"}]
@@ -316,6 +323,10 @@ class CertificationResult:
         # named, never silently checked-and-wrong or silently skipped
         self.external_excluded = external_excluded or []
         self.unsupported_excluded = unsupported_excluded or []
+        # scenario-runner inputs and their downstream cells (PLAN-v0.1
+        # 5.1): legitimately different from the file's caches, never a
+        # divergence
+        self.input_excluded = input_excluded or []
 
     def to_dict(self):
         return {
@@ -327,6 +338,7 @@ class CertificationResult:
             "volatile_excluded": list(self.volatile_excluded),
             "external_excluded": list(self.external_excluded),
             "unsupported_excluded": list(self.unsupported_excluded),
+            "input_excluded": list(self.input_excluded),
             "unverifiable": list(self.unverifiable),
         }
 
@@ -354,13 +366,21 @@ def certify(source, *, timeout=120.0):
     """The divergence check: does LibreOffice reproduce the file's own
     cached values? Pre-flights on an untouched temp copy; the caller's file
     is never modified. Returns measurements, never judgments."""
+    result, _recalculated = _certify_impl(_read_source(source), timeout)
+    return result
+
+
+def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
+    """certify()'s engine, reusable with an EXISTING recalc result (one
+    LibreOffice run serves evaluation + certification) and with extra
+    taint seeds for scenario inputs. Returns (result, recalculated_bytes)
+    — the bytes are None when certification early-returned before any
+    recalc was needed."""
     from openpyxl.reader.excel import load_workbook
     from openpyxl.preserve.perception import (
         VOLATILE_NONDETERMINISTIC,
         dependency_sketch,
     )
-
-    data = _read_source(source)
 
     wb_formulas = load_workbook(io.BytesIO(data), data_only=False)
     wb_cached = load_workbook(io.BytesIO(data), data_only=True)
@@ -372,6 +392,8 @@ def certify(source, *, timeout=120.0):
     # silent shrink of the check. Downstream cells inherit the taint.
     sketch = dependency_sketch(wb_formulas)
     reasons = _exclusion_seeds(wb_formulas)
+    for key in (input_seeds or ()):
+        reasons[key] = "input"
     tainted = set(reasons)
     changed = True
     while changed:
@@ -401,16 +423,18 @@ def certify(source, *, timeout=120.0):
 
     if not formula_cells:
         return CertificationResult(
-            CertificationResult.BASELINE_UNVERIFIABLE, 0, [], [], [])
+            CertificationResult.BASELINE_UNVERIFIABLE, 0, [], [],
+            []), recalculated
     if all(cached is None or cached == ""
            for (_s, _r, _c, _coord, cached) in formula_cells):
         # openpyxl-written files carry empty <v></v>: no answer key exists
         return CertificationResult(
             CertificationResult.BASELINE_UNVERIFIABLE, 0, [], [],
             ["{0}!{1}".format(s, coord)
-             for (s, _r, _c, coord, _v) in formula_cells])
+             for (s, _r, _c, coord, _v) in formula_cells]), recalculated
 
-    recalculated = _recalculate_bytes(data, timeout)
+    if recalculated is None:
+        recalculated = _recalculate_bytes(data, timeout)
     wb_computed = load_workbook(io.BytesIO(recalculated), data_only=True)
 
     checked = 0
@@ -418,6 +442,7 @@ def certify(source, *, timeout=120.0):
     volatile_excluded = []
     external_excluded = []
     unsupported_excluded = []
+    input_excluded = []
     unverifiable = []
     for (sheet, row, col, coord, cached) in formula_cells:
         address = "{0}!{1}".format(sheet, coord)
@@ -425,6 +450,8 @@ def certify(source, *, timeout=120.0):
         if reason is not None:
             if reason == "external-link":
                 external_excluded.append(address)
+            elif reason == "input":
+                input_excluded.append(address)
             elif reason.startswith("unsupported:"):
                 unsupported_excluded.append(
                     "{0} ({1})".format(address, reason[12:]))
@@ -444,12 +471,13 @@ def certify(source, *, timeout=120.0):
 
     status = (CertificationResult.DIVERGED if divergences
               else CertificationResult.CERTIFIED)
-    return CertificationResult(status, checked, divergences,
-                               sorted(volatile_excluded),
-                               sorted(unverifiable),
-                               external_excluded=sorted(external_excluded),
-                               unsupported_excluded=sorted(
-                                   unsupported_excluded))
+    return CertificationResult(
+        status, checked, divergences,
+        sorted(volatile_excluded),
+        sorted(unverifiable),
+        external_excluded=sorted(external_excluded),
+        unsupported_excluded=sorted(unsupported_excluded),
+        input_excluded=sorted(input_excluded)), recalculated
 
 
 # functions LibreOffice's recalc cannot be trusted to reproduce (version-
@@ -542,3 +570,398 @@ def _bounds_hit_tainted(sheet, bounds, tainted):
         if min_row <= t_row <= max_row and min_col <= t_col <= max_col:
             return (t_sheet, t_row, t_col)
     return None
+
+
+# ---------------------------------------------------------------------
+# scenario runner (PLAN-v0.1 5.1, PR-1 §4.1)
+
+class Evaluation:
+    """One what-if run: inputs applied to a TEMP COPY through the spine,
+    LibreOffice recalculated, outputs harvested. Pinned surface."""
+
+    SCHEMA = "evaluation"
+    VERSION = 1
+
+    def __init__(self, inputs, outputs, errors, certification):
+        self.inputs = inputs            # {address: value} as given
+        self.outputs = outputs          # {address: computed value}
+        self.errors = errors            # [{"sheet", "cell", "value"}]
+        self.certification = certification
+
+    @property
+    def status(self):
+        return "errors" if self.errors else "ok"
+
+    @property
+    def error_cells(self):
+        return ["{0}!{1}".format(e["sheet"], e["cell"])
+                for e in self.errors]
+
+    def to_dict(self):
+        return {
+            "schema": self.SCHEMA,
+            "version": self.VERSION,
+            "status": self.status,
+            "inputs": dict(self.inputs),
+            "outputs": dict(self.outputs),
+            "error_cells": list(self.error_cells),
+            "certification": self.certification.to_dict()
+            if self.certification is not None else None,
+        }
+
+    def __repr__(self):
+        return "Evaluation(status={0!r}, outputs={1})".format(
+            self.status, len(self.outputs))
+
+
+def _resolve_single_cell(wb, address):
+    """(worksheet, row, col) for a sheet-qualified single-cell A1 address
+    or a defined name resolving to one cell. Typed refusals otherwise."""
+    from openpyxl.errors import TargetNotFoundError
+    from openpyxl.utils.cell import range_boundaries
+
+    def _fail(msg):
+        raise TargetNotFoundError(
+            "{0!r}: {1}".format(address, msg))
+
+    ref = address
+    if "!" not in ref:
+        dn = wb.defined_names.get(ref)
+        if dn is None:
+            for ws in wb.worksheets:
+                if ref in ws.defined_names:
+                    dn = ws.defined_names[ref]
+                    break
+        if dn is None:
+            _fail("not a sheet-qualified address and no defined name of "
+                  "this name exists (defined names and 'Sheet1!B2' "
+                  "addresses are accepted)")
+        destinations = list(dn.destinations)
+        if len(destinations) != 1:
+            _fail("the defined name resolves to {0} areas; single cells "
+                  "only".format(len(destinations)))
+        title, coord = destinations[0]
+        ref = "'{0}'!{1}".format(title.replace("'", "''"),
+                                 coord.replace("$", ""))
+    if ref.startswith("'"):
+        end = ref.index("'!", 1)
+        title = ref[1:end].replace("''", "'")
+        coord = ref[end + 2:]
+    else:
+        title, coord = ref.split("!", 1)
+    matches = [ws for ws in wb.worksheets
+               if ws.title.casefold() == title.casefold()]
+    if not matches:
+        _fail("sheet {0!r} does not exist".format(title))
+    coord = coord.replace("$", "")
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(coord)
+    except ValueError as exc:
+        _fail(str(exc))
+    if (min_col, min_row) != (max_col, max_row) or min_col is None \
+            or min_row is None:
+        _fail("must resolve to a SINGLE cell (got {0})".format(coord))
+    return matches[0], min_row, min_col
+
+
+def _scan_errors(recalculated):
+    from openpyxl.reader.excel import load_workbook
+
+    wb_values = load_workbook(io.BytesIO(recalculated), data_only=True)
+    errors = []
+    for ws in wb_values.worksheets:
+        for (row, col), cell in sorted(ws._cells.items()):
+            value = cell._value
+            if isinstance(value, str) and value.strip() in ERROR_TOKENS:
+                errors.append({"sheet": ws.title, "cell": cell.coordinate,
+                               "value": value.strip()})
+    return errors
+
+
+def evaluate(source, set, read, *, timeout=120.0):
+    """Scenario run against ``source`` (path/bytes/file-like): apply
+    ``set`` inputs to a temp copy through the preserve spine, recalculate
+    with LibreOffice, harvest ``read`` outputs. The source and every
+    caller file stay untouched. One LibreOffice run serves both the
+    outputs and the certification (original caches vs computed, with
+    inputs' downstream cells excluded as ``input_excluded``)."""
+    from openpyxl.reader.excel import load_workbook
+
+    data = _read_source(source)
+    wb = load_workbook(io.BytesIO(data), preserve=True)
+    input_seeds = []
+    for address in sorted(set or {}):
+        ws, row, col = _resolve_single_cell(wb, address)
+        ws.cell(row=row, column=col, value=set[address])
+        input_seeds.append((ws.title, row, col))
+    buf = io.BytesIO()
+    wb.save(buf)
+    spliced = buf.getvalue()
+
+    recalculated = _recalculate_bytes(spliced, timeout)
+    wb_values = load_workbook(io.BytesIO(recalculated), data_only=True)
+    outputs = {}
+    for address in (read or []):
+        ws, row, col = _resolve_single_cell(wb_values, address)
+        cell = ws._cells.get((row, col))
+        outputs[address] = cell._value if cell is not None else None
+    errors = _scan_errors(recalculated)
+    certification, _ = _certify_impl(spliced, timeout,
+                                     recalculated=recalculated,
+                                     input_seeds=input_seeds)
+    return Evaluation(dict(set or {}), outputs, errors, certification)
+
+
+def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
+    """``evaluate`` for a list of input dicts, sharing warm LibreOffice
+    profiles across cases (PR-1 §4.1: the pool is an implementation
+    detail — ``pool_size`` per-thread-isolated profiles, created lazily,
+    crash-replaced once, destroyed before return)."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from openpyxl.reader.excel import load_workbook
+
+    data = _read_source(source)
+    if not cases:
+        return []
+    pool_size = max(1, min(int(pool_size), len(cases)))
+
+    # spine work is model-side and fast: build every spliced copy first
+    prepared = []
+    for case in cases:
+        wb = load_workbook(io.BytesIO(data), preserve=True)
+        seeds = []
+        for address in sorted(case or {}):
+            ws, row, col = _resolve_single_cell(wb, address)
+            ws.cell(row=row, column=col, value=case[address])
+            seeds.append((ws.title, row, col))
+        buf = io.BytesIO()
+        wb.save(buf)
+        prepared.append((case, buf.getvalue(), seeds))
+
+    local = threading.local()
+    roots = []
+    roots_lock = threading.Lock()
+
+    def _profile_root():
+        root = getattr(local, "root", None)
+        if root is None:
+            root = _tempfile.mkdtemp(prefix="paper_oracle_pool_")
+            local.root = root
+            with roots_lock:
+                roots.append(root)
+        return root
+
+    def _run(prepared_case):
+        case, spliced, seeds = prepared_case
+        try:
+            recalculated = _recalculate_bytes(
+                spliced, timeout, profile_root=_profile_root())
+        except (OracleUnavailableError, OracleTimeoutError):
+            # crash-replaced once: a poisoned profile must not sink every
+            # following case on this worker
+            root = local.root
+            local.root = None
+            _shutil.rmtree(root, ignore_errors=True)
+            recalculated = _recalculate_bytes(
+                spliced, timeout, profile_root=_profile_root())
+        wb_values = load_workbook(io.BytesIO(recalculated), data_only=True)
+        outputs = {}
+        for address in (read or []):
+            ws, row, col = _resolve_single_cell(wb_values, address)
+            cell = ws._cells.get((row, col))
+            outputs[address] = cell._value if cell is not None else None
+        errors = _scan_errors(recalculated)
+        certification, _ = _certify_impl(spliced, timeout,
+                                         recalculated=recalculated,
+                                         input_seeds=seeds)
+        return Evaluation(dict(case or {}), outputs, errors, certification)
+
+    try:
+        with ThreadPoolExecutor(max_workers=pool_size) as pool:
+            return list(pool.map(_run, prepared))
+    finally:
+        with roots_lock:
+            for root in roots:
+                _shutil.rmtree(root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------
+# certification-gated write-back (PLAN-v0.1 5.3, PR-1 §4.3; battery 24)
+
+class WriteBackResult:
+
+    SCHEMA = "oracle_write_back"
+    VERSION = 1
+
+    def __init__(self, cells_written, written, verified_unchanged,
+                 excluded, uncertified, cleared_fullcalc, certification,
+                 package_diff):
+        self.cells_written = cells_written
+        self.written = written                    # addresses updated
+        self.verified_unchanged = verified_unchanged
+        self.excluded = excluded                  # {address: reason}
+        self.uncertified = uncertified
+        self.cleared_fullcalc = cleared_fullcalc
+        self.certification = certification
+        self.package_diff = package_diff          # part names that changed
+
+    def to_dict(self):
+        return {
+            "schema": self.SCHEMA,
+            "version": self.VERSION,
+            "cells_written": self.cells_written,
+            "written": list(self.written),
+            "verified_unchanged": list(self.verified_unchanged),
+            "excluded": dict(self.excluded),
+            "uncertified": self.uncertified,
+            "cleared_fullcalc": self.cleared_fullcalc,
+            "certification": self.certification.to_dict()
+            if self.certification is not None else None,
+            "package_diff": list(self.package_diff),
+        }
+
+    def __repr__(self):
+        return ("WriteBackResult(written={0}, excluded={1}, "
+                "uncertified={2})".format(
+                    self.cells_written, len(self.excluded),
+                    self.uncertified))
+
+
+def _clear_fullcalc(package_bytes):
+    """Remove fullCalcOnLoad/forceFullCalc from the package's calcPr.
+    Returns (new_bytes, changed)."""
+    from openpyxl.preserve import crosspart
+
+    with zipfile.ZipFile(io.BytesIO(package_bytes)) as zin:
+        wb_part = _find_workbook_part_name(zin)
+        payload = zin.read(wb_part)
+    changed = False
+    for attr in ("fullCalcOnLoad", "forceFullCalc"):
+        root = crosspart.scan_small(payload, "workbook", max_depth=1)
+        for child in root.children:
+            if child.local() == "calcPr" and attr in child.attrs:
+                start, end, head = crosspart._patch_attr(
+                    payload, child, attr, "1", drop_value="1")
+                payload = payload[:start] + head + payload[end:]
+                changed = True
+                break
+    if not changed:
+        return package_bytes, False
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(package_bytes)) as zin, \
+            zipfile.ZipFile(out, "w") as zout:
+        from openpyxl.preserve import zipio
+        for info in zin.infolist():
+            if info.filename == wb_part:
+                zipio.write_entry(zout, wb_part, payload)
+            else:
+                zipio.copy_entry(zin, info, zout)
+    return out.getvalue(), True
+
+
+def write_back(source, *, timeout=120.0, allow_uncertified=False):
+    """Recalculate a temp copy with LibreOffice and splice the computed
+    cached values into the ORIGINAL package at ``source`` (a filesystem
+    path) — values only, formulas untouched, LibreOffice bytes never
+    enter the output (macro-safe by construction).
+
+    Certification-gated (PLAN-v0.1 5.3): on DIVERGED or
+    BASELINE_UNVERIFIABLE the call refuses unless
+    ``allow_uncertified=True``, and then the result carries a loud
+    ``uncertified=True``. Cells excluded from certification
+    (volatile/external/unsupported and their downstream) are never
+    written. fullCalcOnLoad clears only when every formula cell ended
+    verified or written."""
+    from openpyxl.errors import UnsupportedStructureError
+    from openpyxl.reader.excel import load_workbook
+
+    if not isinstance(source, (str, os.PathLike)):
+        raise ValueError(
+            "write_back writes the recalculated values INTO the source; "
+            "pass a filesystem path")
+    data = _read_source(source)
+
+    certification, recalculated = _certify_impl(data, timeout)
+    uncertified = certification.status != CertificationResult.CERTIFIED
+    if uncertified and not allow_uncertified:
+        raise UnsupportedStructureError(
+            "write-back is certification-gated and this workbook is {0} "
+            "({1} divergences, {2} unverifiable). Nothing was written. "
+            "Inspect certify(...).to_dict(), or pass "
+            "allow_uncertified=True to write anyway with a loud "
+            "uncertified stamp.".format(
+                certification.status, len(certification.divergences),
+                len(certification.unverifiable)))
+    if recalculated is None:
+        recalculated = _recalculate_bytes(data, timeout)
+
+    wb = load_workbook(io.BytesIO(data), preserve=True)
+    wb_computed = load_workbook(io.BytesIO(recalculated), data_only=True)
+
+    excluded = {}
+    for a in certification.volatile_excluded:
+        excluded[a] = "volatile"
+    for a in certification.external_excluded:
+        excluded[a] = "external-link"
+    for a in certification.unsupported_excluded:
+        addr = a.rsplit(" (", 1)[0]
+        excluded[addr] = "oracle-unsupported"
+    diverged = {d["address"] for d in certification.divergences}
+
+    led = wb._paper_ledger
+    written = []
+    verified_unchanged = []
+    covered = True
+    for ws in wb.worksheets:
+        computed_ws = wb_computed[ws.title]
+        for (row, col), cell in sorted(ws._cells.items()):
+            if cell.data_type != "f":
+                continue
+            address = "{0}!{1}".format(ws.title, cell.coordinate)
+            if address in excluded:
+                covered = False
+                continue
+            ccell = computed_ws._cells.get((row, col))
+            computed = ccell._value if ccell is not None else None
+            if computed is None:
+                excluded[address] = "no-computed-value"
+                covered = False
+                continue
+            if address in diverged:
+                # reachable only under allow_uncertified
+                led.cache_writes.setdefault(ws, {})[(row, col)] = computed
+                written.append(address)
+                continue
+            if address in set(certification.unverifiable):
+                # previously cache-less: the whole point (battery 24)
+                led.cache_writes.setdefault(ws, {})[(row, col)] = computed
+                written.append(address)
+                continue
+            # verified: the cache already equals the computed value
+            verified_unchanged.append(address)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    out = buf.getvalue()
+    cleared = False
+    if covered:
+        out, cleared = _clear_fullcalc(out)
+
+    package_diff = []
+    with zipfile.ZipFile(io.BytesIO(data)) as za, \
+            zipfile.ZipFile(io.BytesIO(out)) as zb:
+        names_a, names_b = set(za.namelist()), set(zb.namelist())
+        for name in sorted(names_a | names_b):
+            if name not in names_a or name not in names_b \
+                    or za.read(name) != zb.read(name):
+                package_diff.append(name)
+
+    from openpyxl.preserve import zipio
+    zipio.deliver(out, os.fspath(source))
+    return WriteBackResult(len(written), written, verified_unchanged,
+                           excluded, uncertified, cleared, certification,
+                           package_diff)

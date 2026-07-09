@@ -35,13 +35,15 @@ PINNED_EXCEPTIONS = [
     "LossySaveWarning",
     "StructuralShiftWarning",
     "ProtectedWriteWarning",
+    "LintWarning",
 ]
 
 # result states pinned by PR-0 §7 (oracle) — each must be produced somewhere
 PINNED_RESULT_STATES = ["CERTIFIED", "DIVERGED", "BASELINE_UNVERIFIABLE"]
 
 # return types pinned by CONVENTIONS §2 (structural edits return a remap)
-PINNED_RETURN_TYPES = ["AddressRemap"]
+# + PR-1 §4 (computation layer results)
+PINNED_RETURN_TYPES = ["AddressRemap", "Evaluation", "WriteBackResult"]
 
 
 def _source_files(root):

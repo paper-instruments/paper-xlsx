@@ -14,6 +14,8 @@ from openpyxl.errors import UnsupportedStructureError
 from openpyxl.utils.cell import range_boundaries
 
 from . import emit
+import re
+
 from .regions import (CT_ORDER_INDEX, REGION_BY_TAG, DETECT_ONLY_REGIONS,
                       SAVER_CRAFTED_REGIONS)
 from .xmlscan import scan_sheet
@@ -123,7 +125,7 @@ def _col_letter(col):
 def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                  scan=None, cf_replacement=None, hyperlinks_replacement=None,
                  style_resolver=None,
-                 value_overwrites=frozenset()):
+                 value_overwrites=frozenset(), cache_writes=None):
     """Return the new part payload for one worksheet.
 
     ``dirty_cells``: resolved coordinate set (see resolve_dirty_cells).
@@ -137,6 +139,10 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     ``hyperlinks_replacement``: bytes replacing the hyperlinks element.
     ``style_resolver``: cell -> FILE xf index (StyleTranslator; PR-0 D2) —
     model style indices must never reach the spliced bytes.
+    ``cache_writes``: {(row, col): computed_value} — cached-value updates
+    for UNTOUCHED formula cells (oracle write-back, PLAN-v0.1 5.3): the
+    <f> bytes stay verbatim, only the cached <v> (and its t attribute)
+    change.
     """
     if scan is None:
         scan = scan_sheet(original)
@@ -231,6 +237,14 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                  in _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes,
                                      style_resolver,
                                      value_overwrites=value_overwrites))
+    if cache_writes:
+        overlap = set(cache_writes) & set(dirty_cells)
+        if overlap:
+            raise SpliceRefusal(
+                "internal: cache writes and dirty cells overlap at "
+                "{0}".format(sorted(overlap)[:4]))
+        edits.extend((s, e, r, 0) for (s, e, r)
+                     in _cache_value_edits(ws, scan, original, cache_writes))
 
     # ------- apply (sorted, non-overlapping by construction) -------------
     edits.sort(key=lambda e: (e[0], e[1], e[3]))
@@ -427,3 +441,85 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve,
                 offset = row_span.content_end
             edits.append((offset, offset, rendered))
     return edits
+
+
+# ---------------------------------------------------------------------
+# oracle write-back (PLAN-v0.1 5.3): cached-value updates on untouched
+# formula cells — the <f> bytes verbatim, the <v> replaced
+
+_F_BLOCK_RE = re.compile(br"<f\b[^>]*?(?:/>|>.*?</f>)", re.S)
+_CELL_HEAD_RE = re.compile(br"<c\b([^>]*?)(/?)>", re.S)
+
+
+def _serialize_cached_value(value, epoch):
+    """(t_attr_or_None, v_text) for a computed value; the mirror of what
+    Excel itself writes for a formula cell's cache."""
+    import datetime
+
+    from openpyxl.utils.datetime import to_excel
+
+    if isinstance(value, bool):
+        return b"b", b"1" if value else b"0"
+    if isinstance(value, (int, float)):
+        return None, repr(value).encode("ascii")
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time,
+                          datetime.timedelta)):
+        return None, repr(to_excel(value, epoch)).encode("ascii")
+    if isinstance(value, str):
+        from openpyxl.cell.cell import ERROR_CODES
+
+        text = value.encode("utf-8")
+        text = (text.replace(b"&", b"&amp;").replace(b"<", b"&lt;")
+                .replace(b">", b"&gt;"))
+        if value.strip() in ERROR_CODES:
+            return b"e", text
+        return b"str", text
+    raise SpliceRefusal(
+        "cache write value {0!r} has no cached-value serialization. "
+        "Nothing was written.".format(value))
+
+
+def _cache_value_edits(ws, scan, original, cache_writes):
+    edits = []
+    epoch = ws.parent.epoch
+    for (row, col), value in sorted(cache_writes.items()):
+        label = "{0}!r{1}c{2}".format(ws.title, row, col)
+        row_span = scan.rows.get(row)
+        cell_span = row_span.cells.get(col) if row_span is not None else None
+        if cell_span is None:
+            raise SpliceRefusal(
+                "cache write target {0} does not exist in the original "
+                "bytes. Nothing was written.".format(label))
+        cell_bytes = original[cell_span.start:cell_span.end]
+        edits.append((cell_span.start, cell_span.end,
+                      _patch_cached_value(cell_bytes, value, epoch, label)))
+    return edits
+
+
+def _patch_cached_value(cell_bytes, value, epoch, label):
+    head = _CELL_HEAD_RE.match(cell_bytes)
+    if head is None or head.group(2) == b"/":
+        raise SpliceRefusal(
+            "cache write target {0} is not a formula cell. Nothing was "
+            "written.".format(label))
+    f_m = _F_BLOCK_RE.search(cell_bytes)
+    if f_m is None:
+        raise SpliceRefusal(
+            "cache write target {0} carries no formula. Nothing was "
+            "written.".format(label))
+    # the cell must hold nothing but its formula and cache: any other
+    # child (extLst, inline string) is content this surgery would drop
+    rest = _F_BLOCK_RE.sub(b"", cell_bytes[head.end():-len(b"</c>")], 1)
+    rest = re.sub(br"<v\b[^>]*?(?:/>|>.*?</v>)", b"", rest, 1, re.S)
+    if rest.strip():
+        raise SpliceRefusal(
+            "cache write target {0} carries content besides its formula "
+            "and cached value; updating it is not supported. Nothing was "
+            "written.".format(label))
+    t_attr, v_text = _serialize_cached_value(value, epoch)
+    attr_blob = head.group(1)
+    attr_blob = re.sub(br"\st=(?:\"[^\"]*\"|'[^']*')", b"", attr_blob)
+    if t_attr is not None:
+        attr_blob += b' t="' + t_attr + b'"'
+    return (b"<c" + attr_blob + b">" + f_m.group(0)
+            + b"<v>" + v_text + b"</v></c>")
