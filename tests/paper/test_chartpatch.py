@@ -1,4 +1,4 @@
-"""Phase 6c: chart-range rewriting inside preserved bytes (PLAN Phase 6c)."""
+"""Chart-range rewriting inside preserved bytes."""
 from __future__ import annotations
 
 import re

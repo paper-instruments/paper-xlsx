@@ -1,4 +1,4 @@
-"""Batch 7 (PLAN-v0.1 §7, PR-1 §6): delivery verbs and hardening."""
+"""Delivery verbs and hardening."""
 from __future__ import annotations
 
 import io

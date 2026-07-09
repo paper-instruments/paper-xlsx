@@ -1,4 +1,4 @@
-# paper-xlsx: typed refusals and structured warnings (CONVENTIONS §2, PR-0 §2)
+# paper-xlsx: typed refusals and structured warnings
 
 """Typed exceptions for paper-xlsx safety refusals.
 
@@ -20,7 +20,7 @@ class PaperRefusal(Exception):
     ledger, and every file on disk are exactly as they were before the
     refused operation began.
 
-    Structured fields (PLAN-v0.1 6.7, populated progressively — message
+    Structured fields (populated progressively — message
     text is always the source of truth):
 
     - ``kind``: stable machine-readable string ("ambiguous-label", ...)
@@ -74,8 +74,8 @@ class StructuralShiftWarning(UserWarning):
 
 
 class LintWarning(UserWarning):
-    """Formula pre-flight lint findings at the value-bind chokepoint
-    (PLAN-v0.1 5.2): the formula was accepted, but Excel will likely show
+    """Formula pre-flight lint findings at the value-bind chokepoint: the
+    formula was accepted, but Excel will likely show
     #NAME? or compute wrongly. Set ``wb.formula_lint = "refuse"`` to turn
     these into typed refusals, or ``"off"`` to silence them."""
 
@@ -94,9 +94,9 @@ class LossySaveWarning(UserWarning):
 
 
 class ProtectedWriteWarning(UserWarning):
-    """A write landed on a locked cell of a protected sheet (PLAN-v0.1
-    1.6). The write proceeds — openpyxl-level protection is advisory, and
-    this library reports it rather than enforcing or bypassing it — but
+    """A write landed on a locked cell of a protected sheet. The write
+    proceeds — openpyxl-level protection is advisory, and this library
+    reports it rather than enforcing or bypassing it — but
     the human who protected the sheet expected the cell to be read-only.
     Set ``wb.strict_protection = True`` to turn these writes into typed
     refusals."""

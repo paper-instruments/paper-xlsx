@@ -1,4 +1,4 @@
-# paper-xlsx: the part-lifecycle engine (PLAN-v0.1 Batch 2; PR-1 §1.1)
+# paper-xlsx: the part-lifecycle engine
 
 """One primitive, both directions: every part a save creates or deletes
 routes through a :class:`PartPlan` — part payload + content-type override
@@ -17,7 +17,7 @@ from openpyxl.errors import (
 from . import crosspart
 
 # parts the model actively manages: replacing them raw would desync the
-# model from the file (PR-1 §1.4)
+# model from the file
 _MODEL_MANAGED = (
     "[Content_Types].xml",
     "xl/workbook.xml",
@@ -161,7 +161,7 @@ class PartPlan:
 def _default_content_type(ct_payload, extension):
     """The ContentType an existing <Default> gives ``extension`` (matched
     case-insensitively, either quote style — the first-cut substring check
-    missed both, Batch-2 gate), else None."""
+    missed both), else None."""
     root = crosspart.scan_small(ct_payload, "Types", max_depth=1)
     for child in root.children:
         if child.local() != "Default":
@@ -174,7 +174,7 @@ def _default_content_type(ct_payload, extension):
 def _rels_remove_exact(rels_part, payload, part_names):
     """Remove relationships whose RESOLVED target equals one of
     ``part_names`` — never suffix matching (a sibling named mytable1.xml
-    must survive table1.xml's removal; Batch-2 gate)."""
+    must survive table1.xml's removal)."""
     owner = _owner_of_rels(rels_part)
     targets = set(part_names)
     root = crosspart.scan_small(payload, "Relationships", max_depth=1)
@@ -214,7 +214,7 @@ def _resolve_target(from_part, target):
 
 
 def check_replace_part(wb, name):
-    """Guards for Workbook.replace_part (PR-1 §1.4): the part must exist,
+    """Guards for Workbook.replace_part: the part must exist,
     and model-managed or sheet parts refuse — replacing them raw would
     desync the model."""
     import io

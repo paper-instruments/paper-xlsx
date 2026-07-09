@@ -1,10 +1,10 @@
-# paper-xlsx: cell-level semantic diff (PLAN Phase 4; PR-0 §5)
+# paper-xlsx: cell-level semantic diff
 
 """``diff_cells(a, b)``: which cells changed between two workbooks, as
 (address, old/new value, old/new formula) — the same machinery family the
 ledger cross-check uses, packaged for agents and tests.
 
-SCOPE (by design, PLAN Phase 4): values and formulas only. Style-only
+SCOPE (by design): values and formulas only. Style-only
 changes are invisible here — use ``diff_package`` (part-level, semantic)
 to see styling churn."""
 
@@ -52,7 +52,7 @@ def _snapshot(source):
 
     # a READ-ONLY diagnostic must not announce losses it will never cause:
     # the stock loader's "will be removed" warnings describe saves, and
-    # nothing here saves (PLAN-v0.1 1.5)
+    # nothing here saves
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         wb_formulas = load_workbook(source, data_only=False,

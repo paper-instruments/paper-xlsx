@@ -1,9 +1,9 @@
-# paper-xlsx: model-to-bytes emission for the splice (CONVENTIONS §3.6; PR-0 D2)
+# paper-xlsx: model-to-bytes emission for the splice
 
 """Serialize single cells and rows from the model as bare fragments ready to
 splice into a default-namespace worksheet stream.
 
-Per PR-0 D2 this is a THIN VARIANT of upstream's cell writer
+This is a THIN VARIANT of upstream's cell writer
 (openpyxl/cell/_writer.py), not a direct call: the style index is an
 explicit parameter — the file's xf numbering, from the StyleTranslator —
 never ``cell.style_id`` (which interns into the MODEL's numbering; model and
@@ -101,19 +101,18 @@ _ENTITIES = (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
 
 def _unescape_value(value):
     """Scanner attribute values keep their raw entity escapes; expand them
-    before re-escaping so carried values stay verbatim (PR-0 D6)."""
+    before re-escaping so carried values stay verbatim."""
     for entity, char in _ENTITIES:
         value = value.replace(entity, char)
     return value
 
 
 def carry_attributes(new_cell_bytes, original_attrs, drop_metadata=False):
-    """PR-0 D6 attribute-carry rule: re-attach every original cell attribute
+    """Attribute-carry rule: re-attach every original cell attribute
     the replacement does not intentionally rewrite (everything except r, s,
     t). cm/vm rich-value metadata drops ONLY when the cell's VALUE was
     overwritten (the cell stops being a rich value) — style-only edits,
-    move re-emissions and dissolution re-emits must carry it
-    (PLAN-v0.1 3.4, corrected by the Batch-3 gate)."""
+    move re-emissions and dissolution re-emits must carry it."""
     skip = ("r", "s", "t", "cm", "vm") if drop_metadata else ("r", "s", "t")
     carried = {}
     for k, v in original_attrs.items():

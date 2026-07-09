@@ -1,11 +1,11 @@
-# paper-xlsx: chart-range rewriting in preserved bytes (PLAN Phase 6c)
+# paper-xlsx: chart-range rewriting in preserved bytes
 
 """Targeted patches of series references inside PRESERVED chart parts, and
 of anchor positions inside preserved drawing parts, so row/column shifts can
 proceed on chart-referenced sheets.
 
-Scope is honest (PLAN: "if it slips, the refusal stands — never the silent
-third option"): only ``<c:f>`` reference texts and ``<xdr:from>/<xdr:to>``
+Scope is honest — "if it slips, the refusal stands — never the silent
+third option": only ``<c:f>`` reference texts and ``<xdr:from>/<xdr:to>``
 anchor markers are rewritten, located namespace-aware (openpyxl writes both
 families with DEFAULT namespaces; Excel and LibreOffice write ``c:``/``xdr:``
 prefixes — both forms are handled by resolving names, never by matching
@@ -112,7 +112,7 @@ def _unescape(text):
     if b"&#" in text:
         raise ScanRefusal("numeric character references in chart text")
     # single pass: chained str.replace decodes '&amp;lt;' twice, silently
-    # corrupting literal entity-like text (Batch-4 gate)
+    # corrupting literal entity-like text
     return _ENTITY_RE.sub(lambda m: _ENTITY_BY_NAME[m.group(1)], text)
 
 
@@ -261,7 +261,7 @@ def _sheet_drawing_part(zin, sheet_title):
 
 def patch_chart_renames(payload, mapping):
     """Rewrite chart formula texts through a SIMULTANEOUS title mapping
-    (title swaps must never merge reference classes — Batch-3 gate).
+    (title swaps must never merge reference classes).
     Returns the patched payload or None when nothing matched."""
     from openpyxl.errors import UnsupportedStructureError
 
@@ -296,7 +296,7 @@ def patch_chart_renames(payload, mapping):
 
 def patch_chart_rename(payload, old_title, new_title):
     """Rewrite every chart formula text (<c:f>) referencing ``old_title``
-    to ``new_title`` (PLAN-v0.1 3.2). Returns the patched payload, or None
+    to ``new_title``. Returns the patched payload, or None
     when nothing referenced the old title. Refuses when the chart carries
     machinery whose references the patch cannot see (the same blocker set
     as shift patching)."""
@@ -333,7 +333,7 @@ def patch_chart_rename(payload, old_title, new_title):
 
 
 # ---------------------------------------------------------------------
-# Batch 4 (PR-1 §3): per-property chart edits expressed as byte patches
+# per-property chart edits expressed as byte patches
 
 DRAWING_MAIN_NS = b"http://schemas.openxmlformats.org/drawingml/2006/main"
 
@@ -344,7 +344,7 @@ def _text_sequences(data):
     the two property families chartpatch can express. The path anchors
     the positional mapping structurally: two documents that serialize
     the same elements in different orders (valAx before catAx) must
-    never cross-patch (Batch-4 gate)."""
+    never cross-patch."""
     fs, ts = [], []
     for ns, local, _parent, start, end, path in _walk_leaf_texts(data):
         if local == b"f" and ns == CHART_NS:
@@ -404,7 +404,7 @@ def parse_series_range(text):
 def plan_property_edits(wb, ws, key, armed, current, original):
     """A loaded chart's model drifted since arm: express the drift as byte
     patches on the ORIGINAL part bytes, or refuse naming the first
-    property chartpatch cannot express (PLAN-v0.1 4.3). Expressible:
+    property chartpatch cannot express. Expressible:
     series/axis formula texts (<c:f>) and text runs (<a:t> — titles,
     axis titles). Cached series values are left as-is: Excel re-reads
     series from cells when it renders the chart."""
@@ -485,7 +485,7 @@ def plan_property_edits(wb, ws, key, armed, current, original):
 
     # the original document may serialize sibling elements in a different
     # order than the model render (valAx before catAx is schema-legal):
-    # map leaves within PATH GROUPS, never by flat index (Batch-4 gate:
+    # map leaves within PATH GROUPS, never by flat index (
     # the flat mapping patched the wrong axis title)
     def _groups(leaves):
         groups = {}

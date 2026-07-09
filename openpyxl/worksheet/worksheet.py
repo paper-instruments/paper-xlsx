@@ -63,9 +63,8 @@ from openpyxl.preserve.ledger import (
 
 def _structural_guard(ws, operation, index, amount=1):
     """Preserve mode: fully-modeled sheets get Excel-semantics reference
-    rewriting (Phase 6b, returns True so the caller runs the fixups);
-    unmodeled range-bearing content refuses with the victim analysis
-    (Phase 6a). Stock mode on a LOADED workbook: loud warning — the shift
+    rewriting (returns True so the caller runs the fixups);
+    unmodeled range-bearing content refuses with the victim analysis. Stock mode on a LOADED workbook: loud warning — the shift
     updates nothing that points at the moved cells."""
     wb = getattr(ws, "parent", None)
     led = getattr(wb, "_paper_ledger", None) if wb is not None else None
@@ -358,8 +357,7 @@ class Worksheet(_WorkbookChild):
         row, column = coordinate_to_tuple(key)
         if (row, column) in self._cells:
             # deleting a locked cell is a value-level change: the same
-            # protection check as a write, BEFORE the deletion (Batch-1
-            # gate: del ws['A1'] evaded what ws['A1']=None refused)
+            # protection check as a write, BEFORE the deletion
             wb = getattr(self, "parent", None)
             if wb is not None \
                     and getattr(wb, "_paper_ledger", None) is not None:
@@ -565,7 +563,7 @@ class Worksheet(_WorkbookChild):
 
     @property
     def columns(self):
-        """Produces all cells in the worksheet, by column  (see :func:`iter_cols`)"""
+        """Produces all cells in the worksheet, by column (see :func:`iter_cols`)"""
         return self.iter_cols()
 
 
@@ -585,7 +583,7 @@ class Worksheet(_WorkbookChild):
 
 
     def add_data_validation(self, data_validation):
-        """ Add a data-validation object to the sheet.  The data-validation
+        """ Add a data-validation object to the sheet. The data-validation
             object defines the type of data-validation to be applied and the
             cell or range of cells it should apply to.
         """
@@ -593,8 +591,7 @@ class Worksheet(_WorkbookChild):
 
 
     def locate(self, label, *, prefer="right"):
-        """The value cell belonging to a text label (paper-xlsx,
-        PLAN-v0.1 Batch 6; battery 23): exact-then-normalized match over
+        """The value cell belonging to a text label (paper-xlsx): exact-then-normalized match over
         this sheet, value = nearest non-label neighbour to the ``right``
         (or ``below``). Zero matches raise
         :class:`~openpyxl.errors.TargetNotFoundError`; multiple labels
@@ -608,7 +605,7 @@ class Worksheet(_WorkbookChild):
     def allowed_values(self, cell):
         """The data-validation vocabulary for ``cell`` (address string or
         Cell), or None when no list-type validation covers it
-        (paper-xlsx, PLAN-v0.1 Batch 6)."""
+        (paper-xlsx)."""
         from openpyxl.preserve.locate import allowed_values as _allowed
 
         return _allowed(self, cell)
@@ -658,7 +655,7 @@ class Worksheet(_WorkbookChild):
 
 
     def merge_cells(self, range_string=None, start_row=None, start_column=None, end_row=None, end_column=None):
-        """ Set merge on a cell range.  Range is a cell range (e.g. A1:E1) """
+        """ Set merge on a cell range. Range is a cell range (e.g. A1:E1) """
         if range_string is None:
             cr = CellRange(range_string=range_string, min_col=start_column, min_row=start_row,
                       max_col=end_column, max_row=end_row)
@@ -689,7 +686,7 @@ class Worksheet(_WorkbookChild):
 
 
     def unmerge_cells(self, range_string=None, start_row=None, start_column=None, end_row=None, end_column=None):
-        """ Remove merge on a cell range.  Range is a cell range (e.g. A1:E1) """
+        """ Remove merge on a cell range. Range is a cell range (e.g. A1:E1) """
         cr = CellRange(range_string=range_string, min_col=start_column, min_row=start_row,
                       max_col=end_column, max_row=end_row)
 

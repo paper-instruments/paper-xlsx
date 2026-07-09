@@ -1,4 +1,4 @@
-# paper-xlsx: worksheet satellite regions (PR-0 D5 Tier 2 / D15)
+# paper-xlsx: worksheet satellite regions
 
 """Fully-modeled worksheet satellite elements: faithful serialization,
 change detection, and the write-policy gates.
@@ -9,8 +9,8 @@ would false-positive on every producer quirk openpyxl normalizes at load
 (xr:uid drops, attribute defaults, ...). Self-consistent serialization means
 a region is dirty exactly when the USER changed it. When a region is dirty,
 the splice replaces the whole element with the model serialization — legal
-because these elements are fully modeled (round-trip identity proven in
-Phase 0) — subject to the D15 gates.
+because these elements are fully modeled (round-trip identity proven),
+subject to the write-policy gates.
 
 Serializers mirror openpyxl/worksheet/_writer.py's per-element logic
 exactly; a serializer returning ``None`` means "stock would not emit this
@@ -38,7 +38,7 @@ def _sheet_format(ws):
     # mirror _writer.write_format's outline sync, but PURELY: upstream
     # reads DimensionHolder.max_outline, a value to_tree() only refreshes
     # DURING a cols render — order-dependent state that false-dirtied
-    # sheetFormatPr on every cols-bearing sheet (Batch-0 gate). Compute
+    # sheetFormatPr on every cols-bearing sheet. Compute
     # the same quantity the way holder.to_tree() does (reindex is the
     # idempotent min/max normalization upstream runs on every render;
     # membership = renders-to-something), without touching max_outline
@@ -168,8 +168,8 @@ CT_WORKSHEET_ORDER = [
 ]
 CT_ORDER_INDEX = {tag: i for i, tag in enumerate(CT_WORKSHEET_ORDER)}
 
-# regions the splice can rewrite in this build stage (PR-0 D15 Tier 1 set,
-# minus the ones needing cross-part coordination which land in 2d)
+# regions the splice can rewrite directly (minus the ones that need
+# cross-part coordination)
 SPLICEABLE_REGIONS = [
     Region("sheetPr", _sheet_pr),
     Region("sheetViews", _views),
@@ -192,7 +192,7 @@ REGION_BY_TAG = {r.tag: r for r in SPLICEABLE_REGIONS}
 # regions whose USER change is detected but written only via the saver's
 # own planners (the model render is a detection signature, not writable
 # bytes): the tableParts element is rebuilt by preserve.tables and rides
-# the region splice as crafted bytes (Batch 2)
+# the region splice as crafted bytes
 DETECT_ONLY_REGIONS = []
 
 # regions whose replacement bytes come from the SAVER's own planner (never
@@ -283,7 +283,7 @@ def diff_regions(ws, armed_snapshot):
     """Return {tag: new_serialization} for regions the user changed.
 
     Rendered twice, second pass kept: the arm snapshot is the settled
-    render (ledger double-render, PLAN-v0.1 0.3), so the comparison must
+    render (ledger double-render), so the comparison must
     be settled-vs-settled or an impure serializer's first-pass output
     false-dirties the region."""
     snapshot_regions(ws)

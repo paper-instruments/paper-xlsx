@@ -306,7 +306,7 @@ def save_workbook(workbook, filename, *, allow_formula_loss=False):
                               allow_formula_loss=allow_formula_loss)
 
     if workbook.data_only and not allow_formula_loss:
-        # the data_only self-destruct (PLAN Phase 3): the model holds cached
+        # the data_only self-destruct: the model holds cached
         # values, not formulas — this save flattens the whole formula graph
         warnings.warn(LossySaveWarning(
             "This workbook was loaded with data_only=True: it holds cached "

@@ -2,15 +2,15 @@
 """Fixture-corpus generator for tests/paper/fixtures.
 
 THE CORPUS IS FROZEN. This script exists to document provenance and to
-regenerate the corpus ONLY via an explicit human decision (CONVENTIONS §4:
-golden files update only via explicit command with human-reviewed diffs).
+regenerate the corpus ONLY via an explicit human decision (golden files
+update only via explicit command with human-reviewed diffs).
 Code under test never runs this. After any regeneration, MANIFEST.sha256
 must be rewritten (--write-manifest) and the diff human-reviewed.
 
-Provenance honesty (CONVENTIONS §4): everything here is authored by stock
+Provenance honesty: everything here is authored by stock
 openpyxl from this checkout, by zip surgery on such files, or by LibreOffice
 conversion — and each sidecar says which. Nothing here may ever be labeled
-Excel-authored. Real-Excel fixtures arrive via FIXTURE-REQUESTS.md only.
+Excel-authored. Real-Excel fixtures arrive via the fixture backlog only.
 
 Requires LibreOffice (soffice) for: schedule_calc, lo_authored, legacy.xls,
 and load-verification of every fixture.
@@ -264,7 +264,7 @@ def build_chart_image():
     verify_loads(path)
     sidecar("features/chart_image.xlsx", "openpyxl 3.1.5 (this checkout)",
             "bar chart + embedded PNG; both openpyxl-modeled (stock round-trips them "
-            "lossily-but-presently; real-Excel chart fixtures are in FIXTURE-REQUESTS.md)",
+            "lossily-but-presently; real-Excel chart fixtures are tracked separately)",
             ["chart", "image"],
             {"chart_count": 1, "image_count": 1, "formula_count": 0, "vba_present": False})
     return path
@@ -287,7 +287,7 @@ def build_defined_names():
     ws["B4"] = "=Data!B1*2"
     wb.defined_names["Growth"] = DefinedName("Growth", attr_text="Model!$B$1")
     wb.defined_names["Base"] = DefinedName("Base", attr_text="Model!$B$2")
-    # sheet-scoped defined name (localSheetId hazard, OPEN-QUESTIONS G7)
+    # sheet-scoped defined name (localSheetId hazard)
     ws2.defined_names["LocalTotal"] = DefinedName("LocalTotal", attr_text="Data!$B$1")
     path = out("features", "defined_names.xlsx")
     wb.save(path)
@@ -462,7 +462,7 @@ def build_macro_stub(schedule_path):
     verify_loads(path)
     sidecar("features/macro_stub.xlsm", "openpyxl 3.1.5 + zip surgery",
             "SYNTHETIC vbaProject.bin stub (OLE magic + padding; not a real VBA "
-            "project — real .xlsm is in FIXTURE-REQUESTS.md). Battery job 4.",
+            "project — a real .xlsm is tracked separately). Battery job 4.",
             ["vba_stub", "formulas"],
             {"formula_count": 3, "vba_present": True, "vba_is_stub": True})
     return path
@@ -482,7 +482,7 @@ def build_shared_formulas():
     wb.save(path)
 
     # surgery: convert B2:B6 into one shared-formula group (host + followers),
-    # the byte shape real Excel writes for filled ranges (G1 in OPEN-QUESTIONS)
+    # the byte shape real Excel writes for filled ranges
     part, payload = sheet_part_for(path, b"double")
     cells = [("B{0}".format(i), "A{0}*2".format(i)) for i in range(2, 7)]
     payload = make_shared_formulas(payload, "B2:B6", 0, cells)
@@ -510,7 +510,7 @@ def build_shared_formulas():
     sidecar("features/shared_formulas.xlsx", "openpyxl 3.1.5 + zip surgery",
             "shared-formula group B2:B6 (host + 4 si-followers, the real-Excel "
             "filled-range shape, via surgery) + a genuine openpyxl array formula "
-            "D2:D4. Gates splice shared-group handling (OPEN-QUESTIONS G1).",
+            "D2:D4. Gates splice shared-group handling.",
             ["shared_formulas", "array_formula", "formulas"],
             {"shared_groups": [{"si": 0, "ref": "B2:B6", "host": "B2"}],
              "array_formulas": [{"ref": "D2:D4"}],
@@ -713,7 +713,7 @@ def build_legacy(minimal_path):
     sidecar("legacy/binary.xlsb", "LibreOffice convert" if made_real else "dummy bytes",
             ("real LibreOffice-written xlsb" if made_real else
              "DUMMY bytes: openpyxl's refusal triggers on the extension before "
-             "reading content; real .xlsb is in FIXTURE-REQUESTS.md"),
+             "reading content; a real .xlsb is tracked separately"),
             ["legacy_xlsb"], {"real_xlsb": made_real})
     return xls, xlsb
 
@@ -739,7 +739,7 @@ def build_large(rows=10000, cols=15):
     verify_loads(path, expect_lo=False)  # LO verify skipped for speed; loads checked below
     sidecar("large/large150k.xlsx", "openpyxl 3.1.5 (this checkout)",
             "{0}x{1} = {2} cells incl. {3} SUM formulas and repeated strings — "
-            "performance smoke (>=100k cells per CONVENTIONS taxonomy)".format(
+            "performance smoke (>=100k cells)".format(
                 rows, cols, rows * cols, rows),
             ["large", "formulas"],
             {"rows": rows, "cols": cols, "cell_count": rows * cols,

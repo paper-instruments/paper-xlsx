@@ -1,4 +1,4 @@
-"""Phase 2c: the splice writer (CONVENTIONS §3.4; PR-0 D6/D7/D15).
+"""The splice writer.
 
 Every assertion follows the reopen rule (save → reopen → assert) and the
 part budget is checked literally. The ledger cross-check runs on every
@@ -31,7 +31,7 @@ def _model_sheet(path):
 
 class TestNoOpRoundTrip:
     """The no-op invariant: load(preserve=True) + save == byte-identical
-    part payloads, on every fixture class (CONVENTIONS §4)."""
+    part payloads, on every fixture class."""
 
     @pytest.mark.parametrize("fixture", [
         "gauntlet/gauntlet.xlsx",
@@ -62,7 +62,7 @@ class TestNoOpRoundTrip:
 
 
 class TestSpliceCompletenessTrap:
-    """THE signature test (CONVENTIONS §4): a one-cell edit on a sheet
+    """THE signature test: a one-cell edit on a sheet
     carrying sparklines, x14 CF, and a drawing reference — everything
     survives, and exactly one part changes."""
 
@@ -110,7 +110,7 @@ class TestCellEdits:
         wb2 = load_workbook(out)
         assert wb2["Model"]["B8"].value == "TBD"
         _, sheet = _model_sheet(out)
-        assert b't="inlineStr"' in sheet             # PR-0 D1
+        assert b't="inlineStr"' in sheet             # 
 
     def test_new_cell_new_row_and_delete(self, fixture_copy, tmp_path):
         src = fixture_copy(GAUNTLET)
@@ -262,7 +262,7 @@ class TestRegionEdits:
 
     def test_cf_twin_sync_sqref_patch_and_delete(self, fixture_copy,
                                                   tmp_path):
-        # FLIPPED by v0.1 Batch 3 (was the blanket twin refusal): sqref
+        # (was the blanket twin refusal): sqref
         # changes patch BOTH sides in lockstep; deleting a twin-bearing
         # rule removes its twin entry; untouched blocks stay verbatim
         src = fixture_copy(GAUNTLET)
@@ -302,7 +302,7 @@ class TestRegionEdits:
 
 class TestV0Refusals:
     """Operations outside the v0 write set refuse loudly and atomically —
-    never a silent drop (PR-0 D8/D9/D15)."""
+    never a silent drop."""
 
     def _assert_refuses(self, wb, src, tmp_path, match):
         with open(src, "rb") as f:
@@ -356,7 +356,7 @@ class TestProducerGuards:
         return out
 
     def test_ph_attribute_carried_over(self, fixture_copy, tmp_path):
-        # PR-0 D6 carry rule: legal extra cell attributes survive the edit
+        # carry rule: legal extra cell attributes survive the edit
         surgical = self._surgery(
             fixture_copy, tmp_path,
             lambda p: p.replace(b'<c r="B2"', b'<c r="B2" ph="1"', 1))
@@ -371,8 +371,8 @@ class TestProducerGuards:
         assert load_workbook(out)["Sheet1"]["B2"].value == 42
 
     def test_cm_metadata_drops_on_overwrite(self, fixture_copy, tmp_path):
-        # FLIPPED by v0.1 Batch 3 (was a refusal): a value overwrite ends
-        # the cell's rich-value role; cm/vm never carry (battery job 21)
+        # (was a refusal): a value overwrite ends
+        # the cell's rich-value role; cm/vm never carry
         surgical = self._surgery(
             fixture_copy, tmp_path,
             lambda p: p.replace(b'<c r="B2"', b'<c r="B2" cm="1"', 1))
@@ -478,7 +478,7 @@ _REGION_INSERT_POINT = {
 
 
 class TestRegionSelfClosingMatrix:
-    """PLAN-v0.1 §0.2: the region x self-closing matrix. The v0 scanner
+    """The region x self-closing matrix. The v0 scanner
     never set RegionSpan.end for self-closing top-level elements, so any
     splice touching one emitted malformed XML — silently."""
 
@@ -527,7 +527,7 @@ class TestRegionSelfClosingMatrix:
         assert part_payloads(src) == part_payloads(out)
 
     def test_removal_of_self_closing_original(self, fixture_copy, tmp_path):
-        # the third matrix arm (gate finding: untested): the model renders
+        # the third matrix arm (untested): the model renders
         # the region to None -> the splice excises exactly the element
         # bytes — a regressed end=None here resumes whole-document
         # corruption
@@ -579,7 +579,7 @@ class TestSelfClosingSheetData:
 
 
 class TestImpureSerializerPinning:
-    """PLAN-v0.1 §0.3: a region whose serializer disagrees with itself at
+    """A region whose serializer disagrees with itself at
     arm time is PINNED — no-op saves keep the original bytes (never false
     dirty), and USER edits to it refuse rather than splice an
     untrustworthy render. The one real instance (sheetFormatPr's outline
@@ -646,7 +646,7 @@ class TestImpureSerializerPinning:
 
     def test_col_width_edit_does_not_drift_sheetformatpr(
             self, fixture_copy, tmp_path):
-        # the gate's drift repro: a width-only edit must not rewrite
+        # the drift reproduction: a width-only edit must not rewrite
         # sheetFormatPr (no outlineLevelCol="0" appearing, no unmodeled
         # attribute loss)
         import re
@@ -682,7 +682,7 @@ class TestImpureSerializerPinning:
 
     def test_column_grouping_works_on_cols_sheet(
             self, fixture_copy, tmp_path):
-        # the gate's collateral repro: grouping refused under the interim
+        # the collateral reproduction: grouping refused under the interim
         # pin; now splices, with the outline sync landing in BOTH cols and
         # sheetFormatPr exactly as a stock save would write them
         src = fixture_copy("features/hidden.xlsx")
@@ -733,9 +733,8 @@ class TestSaveTargets:
 
 
 class TestPerformanceGuardrail:
-    """PR-0 D4 (as amended in Phase 2c): preserve save within 2x stock save
-    on the large fixture. Measured 1.82x-1.87x; see PR0-API-PROPOSAL.md D4
-    for the amendment evidence."""
+    """Preserve save within 2x stock save
+    on the large fixture. Measured 1.82x-1.87x."""
 
     def test_splice_save_within_budget(self, fixture_copy, tmp_path, monkeypatch):
         monkeypatch.delenv("PAPER_LEDGER_CROSSCHECK", raising=False)

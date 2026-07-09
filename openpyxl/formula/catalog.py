@@ -1,4 +1,4 @@
-# paper-xlsx: the pinned Excel function catalog (PLAN-v0.1 5.2)
+# paper-xlsx: the pinned Excel function catalog
 
 """Worksheet function names Excel recognizes, for the pre-flight linter.
 

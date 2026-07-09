@@ -1,5 +1,5 @@
-"""Phase 2a: preserve-mode load — byte retention, flag semantics, and the
-lossy-save warning (PLAN 2a; PR-0 §3, D14)."""
+"""Preserve-mode load — byte retention, flag semantics, and the
+lossy-save warning."""
 from __future__ import annotations
 
 import io
@@ -51,7 +51,7 @@ class TestPreserveLoad:
 
     def test_preserve_keeps_extension_refusals(self, fixture_copy):
         # the .xls/.xlsb check is not bypassed by retention; under preserve
-        # it is the typed refusal (Phase 3), on the stock path unchanged
+        # it is the typed refusal, on the stock path unchanged
         src = fixture_copy("legacy/legacy.xls")
         with pytest.raises(UnsupportedStructureError, match="xls"):
             load_workbook(src, preserve=True)

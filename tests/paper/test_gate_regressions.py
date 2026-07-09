@@ -1,6 +1,5 @@
-"""One regression test per confirmed finding of the standing per-batch
-adversarial gates (PLAN-v0.1 process amendment 2). Sections are tagged by
-batch; every test here pins a fix for a live repro the gate produced.
+"""One regression test per confirmed review finding; every test here
+pins a fix for a live reproduction.
 """
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ from .support.partdiff import part_payloads
 class TestBatch1ObjectGuardGaps:
 
     def test_chart_anchor_mutation_refuses(self, fixture_copy, tmp_path):
-        # the chart fingerprint was chart._write() only — the anchor lives
+        # the chart fingerprint was chart._write only — the anchor lives
         # in the preserved drawing part, so a chart MOVE vanished silently
         src = fixture_copy("features/chart_image.xlsx")
         wb = load_workbook(src, preserve=True)
@@ -34,7 +33,7 @@ class TestBatch1ObjectGuardGaps:
 
     def test_image_data_swap_refuses(self, fixture_copy, tmp_path):
         # same anchor + same path + different pixels: the fingerprint now
-        # covers the backing bytes (non-destructively — image._data()
+        # covers the backing bytes (non-destructively — image._data
         # CLOSES the ref stream and must never be used for snapshots)
         src = fixture_copy("features/chart_image.xlsx")
         wb = load_workbook(src, preserve=True)
@@ -285,7 +284,7 @@ class TestBatch2EngineGaps:
 
     def test_styles_creation_plus_added_sheet_share_the_rid_allocator(
             self, fixture_copy, tmp_path):
-        # duplicate rId4 on workbook rels (gate critical): added sheets now
+        # duplicate rId4 on workbook rels: added sheets now
         # reserve through the engine
         import re
 
@@ -308,8 +307,8 @@ class TestBatch2EngineGaps:
 
     def test_table_removal_plus_hyperlink_add_both_land(
             self, fixture_copy, tmp_path):
-        # the engine rels payload shadowed the hyperlink planner's (gate
-        # critical): compose on top instead
+        # the engine rels payload shadowed the hyperlink planner's:
+        # compose on top instead
         src = fixture_copy("features/tables.xlsx")
         wb = load_workbook(src, preserve=True)
         ws = wb.worksheets[0]
@@ -367,8 +366,8 @@ class TestBatch2TableGaps:
 
     def test_table_with_extlst_refuses_mutation(self, fixture_copy,
                                                 tmp_path):
-        # to_tree() drops extLst (alt text!) — mutation must refuse, never
-        # silently strip accessibility metadata (gate critical)
+        # to_tree drops extLst (alt text!) — mutation must refuse, never
+        # silently strip accessibility metadata
         from openpyxl.errors import UnsupportedStructureError
         from openpyxl.preserve.tables import append_row
 
@@ -382,7 +381,7 @@ class TestBatch2TableGaps:
     def test_sibling_basename_survives_removal(self, fixture_copy,
                                                tmp_path):
         # suffix-matching rel removal nuked mytable1.xml's rel when
-        # table1.xml was removed (gate critical): exact-target now
+        # table1.xml was removed: exact-target now
         src = fixture_copy("features/tables.xlsx")
         crafted = str(tmp_path / "two.xlsx")
         with zipfile.ZipFile(src) as zin, \
@@ -533,7 +532,7 @@ class TestBatch2CommentGaps:
 
     def test_comment_resize_on_machinery_sheet_refuses(
             self, fixture_copy, tmp_path):
-        # height/width were outside the snapshot: resizes vanished (gate)
+        # height/width were outside the snapshot: resizes vanished
         from openpyxl.errors import UnsupportedStructureError
 
         src = fixture_copy("gauntlet/gauntlet.xlsx")
@@ -549,7 +548,7 @@ class TestBatch3X14Gaps:
 
     def test_modified_twin_block_refuses(self, fixture_copy, tmp_path):
         # modification reclassified as delete+new and silently stripped
-        # the twin (gate critical): now refuses naming the range
+        # the twin: now refuses naming the range
         from openpyxl.formatting.rule import CellIsRule
         from openpyxl.styles import PatternFill
 
@@ -573,7 +572,7 @@ class TestBatch3LifecycleGaps:
     def test_shift_plus_rename_patches_charts_correctly(
             self, fixture_copy, tmp_path):
         # shift+rename left charts un-renumbered / rename-then-shift
-        # falsely refused (gate criticals): both orders now work
+        # falsely refused: both orders now work
         src = fixture_copy("features/chart_image.xlsx")
         wb = load_workbook(src, preserve=True)
         ws = next(w for w in wb.worksheets if w._charts)
@@ -597,7 +596,7 @@ class TestBatch3LifecycleGaps:
 
     def test_title_swap_does_not_merge_chart_references(self, tmp_path):
         # sequential pairwise rename patching merged the two reference
-        # classes on a title swap (gate critical): simultaneous mapping
+        # classes on a title swap: simultaneous mapping
         from openpyxl import Workbook
         from openpyxl.chart import BarChart, Reference
 
@@ -692,7 +691,7 @@ class TestBatch3CmVmGaps:
         return out
 
     def test_style_only_edit_carries_vm(self, fixture_copy, tmp_path):
-        # style-only re-emission stripped vm (gate critical): now carried
+        # style-only re-emission stripped vm: now carried
         from openpyxl.styles import Font
 
         src = self._vm_fixture(fixture_copy, tmp_path)
@@ -741,8 +740,8 @@ class TestBatch3CmVmGaps:
 
     def test_rename_plus_hide_same_session(self, fixture_copy, tmp_path):
         # rename + sheet_state on one entry produced two overlapping
-        # start-tag edits and died on the internal overlap guard (gate
-        # major): both changes now compose into one whole-entry edit
+        # start-tag edits and died on the internal overlap guard:
+        # both changes now compose into one whole-entry edit
         src = fixture_copy("features/schedule.xlsx")
         wb = load_workbook(src, preserve=True)
         ws = wb["Summary"]
@@ -759,7 +758,7 @@ class TestBatch4DrawingGaps:
 
     def test_second_save_replans_identically(self, fixture_copy, tmp_path):
         # the chart single-use seen-set lived on the WORKBOOK, so a second
-        # save of the same workbook false-refused (gate: found pre-gate);
+        # save of the same workbook false-refused;
         # it lives on the per-save part plan now
         from openpyxl.chart import BarChart, Reference
 
@@ -779,7 +778,7 @@ class TestBatch4DrawingGaps:
 
     def test_added_chart_follows_shift(self, fixture_copy, tmp_path):
         # an in-session chart's ranges silently pointed at pre-shift cells
-        # (gate: found pre-gate) — model fixups now cover added charts
+        # — model fixups now cover added charts
         from openpyxl.chart import BarChart, Reference
 
         src = fixture_copy("minimal/minimal_clean.xlsx")
@@ -848,7 +847,7 @@ class TestBatch4GateCriticals:
     def test_append_rid_remap_does_not_cross_wire(self, tmp_path):
         # sequential in-place rId replacement cross-wired anchors when a
         # reserved id equaled a still-unreplaced local id: the chart frame
-        # pointed at the PNG, output unreadable (gate critical). Two-pass
+        # pointed at the PNG, output unreadable. Two-pass
         # placeholder remap now.
         import io as _io
 
@@ -890,7 +889,7 @@ class TestBatch4GateCriticals:
     def test_hyperlink_and_drawing_share_rid_allocator(self, fixture_copy,
                                                        tmp_path):
         # both planners computed next_rid independently over the same
-        # original rels -> duplicate rId (OPC violation, gate critical)
+        # original rels -> duplicate rId (OPC violation)
         from openpyxl.chart import BarChart, Reference
 
         src = fixture_copy("minimal/minimal_clean.xlsx")
@@ -913,7 +912,7 @@ class TestBatch4GateCriticals:
     def test_file_object_image_reads_from_offset_zero(self, fixture_copy,
                                                       tmp_path):
         # PIL leaves the stream position mid-file: the media part was
-        # saved as garbage bytes (gate critical); stock mode was correct
+        # saved as garbage bytes; stock mode was correct
         from PIL import Image as PILImageMod
 
         from openpyxl.drawing.image import Image
@@ -934,7 +933,7 @@ class TestBatch4GateCriticals:
 
     def test_entity_text_single_unescape_roundtrip(self, tmp_path):
         # chained str.replace decoded '&amp;lt;' twice: a title with
-        # literal entity-like text was silently rewritten (gate critical)
+        # literal entity-like text was silently rewritten
         src = _two_sheet_chart_fixture(tmp_path)
         wb = load_workbook(src, preserve=True)
         wb["Data"]._charts[0].title = "Powered by <html> & &lt;stuff&gt;"
@@ -946,7 +945,7 @@ class TestBatch4GateCriticals:
 
     def test_axis_order_swap_patches_correct_title(self, tmp_path):
         # flat positional <a:t> mapping patched the WRONG axis title when
-        # the original serialized valAx before catAx (gate critical);
+        # the original serialized valAx before catAx;
         # leaves now map within ancestor-path groups
         src = _two_sheet_chart_fixture(tmp_path, with_axis_titles=True)
         swapped = str(tmp_path / "swapped.xlsx")
@@ -974,7 +973,7 @@ class TestBatch4GateCriticals:
 
     def test_rename_after_add_chart_follows(self, tmp_path):
         # the rename cascade skipped in-session charts: the new chart part
-        # referenced the old, now-nonexistent title (gate critical)
+        # referenced the old, now-nonexistent title
         from openpyxl.chart import BarChart, Reference
 
         src = _two_sheet_chart_fixture(tmp_path)
@@ -998,7 +997,7 @@ class TestBatch4GateMajors:
     def test_gt_in_attribute_and_single_quoted_ids(self, tmp_path):
         # the tag tokenizer stopped at '>' inside quoted attribute values
         # (false refusal) and the cNvPr id scan missed single-quoted ids
-        # (duplicate shape ids) — gate majors
+        # (duplicate shape ids)
         from openpyxl.chart import BarChart, Reference
 
         src = _two_sheet_chart_fixture(tmp_path)
@@ -1053,7 +1052,7 @@ class TestBatch4GateMajors:
 
     def test_orphan_drawing_rel_gets_element_spliced(self, tmp_path):
         # rel + part existed but the sheet never referenced them: the
-        # appended chart was invisible with no refusal (gate major)
+        # appended chart was invisible with no refusal
         from openpyxl.chart import BarChart, Reference
 
         src = _two_sheet_chart_fixture(tmp_path)
@@ -1079,7 +1078,7 @@ class TestBatch4GateMajors:
 
     def test_unrelated_shift_does_not_block_chart_edit(self, tmp_path):
         # any(led.shifts) refused every chart edit even when the shift
-        # touched a sheet the chart never references (gate major)
+        # touched a sheet the chart never references
         src = _two_sheet_chart_fixture(tmp_path)
         wb = load_workbook(src, preserve=True)
         wb["Data"]._charts[0].title = "Edited"
@@ -1120,7 +1119,7 @@ class TestBatch5LintGaps:
     def test_quoted_external_refs_never_judged(self, fixture_copy):
         # the quoted storage form of external-workbook references was
         # flagged unknown-sheet; refuse mode blocked legitimate binds
-        # (gate major)
+        #
         from openpyxl.formula.lint import lint_formula
 
         wb = load_workbook(fixture_copy("features/schedule.xlsx"))
@@ -1130,7 +1129,7 @@ class TestBatch5LintGaps:
 
     def test_in_session_table_columns_unknowable(self, fixture_copy):
         # in-session tables have no tableColumns until save: every
-        # structured ref against them was falsely refused (gate major)
+        # structured ref against them was falsely refused
         from openpyxl.formula.lint import lint_formula
         from openpyxl.worksheet.table import Table
 
@@ -1143,7 +1142,7 @@ class TestBatch5LintGaps:
 
     def test_escaped_column_names_unknowable(self, fixture_copy):
         # Excel's ' escape in column specs needs a full parser: such
-        # specs are unknowable, never unknown (gate major)
+        # specs are unknowable, never unknown
         from openpyxl.formula.lint import lint_formula
 
         wb = load_workbook(fixture_copy("features/tables.xlsx"))
@@ -1162,8 +1161,8 @@ class TestBatch5LintGaps:
         assert lint_formula("=REDUCE(0,A1:A3,SUM)", workbook=wb) == []
 
     def test_array_formula_binds_are_linted(self, fixture_copy):
-        # ArrayFormula objects carried their text past the chokepoint
-        # (gate minor): garbage landed in the file under refuse mode
+        # ArrayFormula objects carried their text past the chokepoint:
+        # garbage landed in the file under refuse mode
         from openpyxl.worksheet.formula import ArrayFormula
 
         wb = load_workbook(fixture_copy("features/schedule.xlsx"),
@@ -1178,8 +1177,8 @@ class TestBatch5LintGaps:
 class TestBatch5OracleGaps:
 
     def test_merged_input_refuses_typed(self, tmp_path):
-        # a merged-cell interior input crashed with raw AttributeError
-        # (gate minor): typed refusal naming the remedy now
+        # a merged-cell interior input crashed with raw AttributeError:
+        # typed refusal naming the remedy now
         from openpyxl import oracle
         from openpyxl.errors import TargetNotFoundError
 
@@ -1196,7 +1195,7 @@ class TestBatch5OracleGaps:
     def test_bare_name_tokens_resolve_as_names_in_sketch(self, tmp_path):
         # a defined name shaped like column letters ("IN") was parsed as
         # a whole-column reference, so input taint missed its readers and
-        # the certification falsely DIVERGED (gate major)
+        # the certification falsely DIVERGED
         from openpyxl.preserve.perception import dependency_sketch
         from openpyxl.workbook.defined_name import DefinedName
 
@@ -1214,7 +1213,7 @@ class TestBatch5OracleGaps:
 
     def test_unresolved_formulas_inherit_input_taint(self, tmp_path):
         # a cell fed by an input only through INDIRECT escaped the taint
-        # and the evaluation certification falsely DIVERGED (gate major).
+        # and the evaluation certification falsely DIVERGED.
         # Statically checkable: the taint walk, not the oracle.
         from openpyxl import oracle as oracle_mod
 
@@ -1236,7 +1235,7 @@ class TestBatch5OracleGaps:
 
     def test_baseline_unverifiable_carries_exclusions(self, tmp_path):
         # write_back(allow_uncertified=True) on a cache-less workbook
-        # wrote volatile cells (gate major): the early-return result now
+        # wrote volatile cells: the early-return result now
         # carries the exclusion classes
         from openpyxl import oracle as oracle_mod
 
@@ -1270,7 +1269,7 @@ class TestBatch6LocateGaps:
 
     def test_merged_label_interior_never_a_target(self):
         # locate returned the unwritable MergedCell interior of the
-        # label's OWN merge as "the value" (gate critical)
+        # label's OWN merge as "the value"
         wb = Workbook()
         ws = wb.active
         ws["A1"] = "Growth rate"
@@ -1280,8 +1279,8 @@ class TestBatch6LocateGaps:
 
     def test_adjacent_string_with_competitor_is_ambiguous(self):
         # the walk silently jumped over a string (a text value, a cached
-        # formula string, or a number-stored-as-text) to a farther cell
-        # (gate criticals x3): competition now refuses typed
+        # formula string, or a number-stored-as-text) to a farther cell:
+        # competition now refuses typed
         from openpyxl.errors import AmbiguousTargetError
 
         wb = Workbook()
@@ -1335,7 +1334,7 @@ class TestBatch6InstrumentGaps:
 
     def test_diff_reports_content_at_vacated_coordinates(self, tmp_path):
         # new content written where a shift vacated cells was invisible
-        # in the diff (gate critical)
+        # in the diff
         from openpyxl.preserve import diff_workbooks
 
         wb0 = Workbook()
@@ -1370,7 +1369,7 @@ class TestBatch6InstrumentGaps:
 
     def test_preserve_receipt_survives_reaccess(self):
         # the submodule import shadowed the lazily-exported FUNCTION: the
-        # second access returned the module (gate major)
+        # second access returned the module
         import openpyxl.preserve as preserve_pkg
 
         first = preserve_pkg.receipt
@@ -1380,7 +1379,7 @@ class TestBatch6InstrumentGaps:
 
     def test_search_reads_array_formula_text(self):
         # search fabricated matches from the Python repr and missed the
-        # real formula text (gate critical)
+        # real formula text
         from openpyxl.worksheet.formula import ArrayFormula
 
         wb = Workbook()
@@ -1427,7 +1426,7 @@ class TestBatch6InstrumentGaps:
     def test_merged_hazard_fires_from_preserved_bytes(self, fixture_copy,
                                                       tmp_path):
         # the model discards shadowed interior values at load, so the
-        # detector could never fire (gate minor): byte-level view now
+        # detector could never fire: byte-level view now
         from openpyxl.preserve import findings
 
         src = fixture_copy("features/merged.xlsx")
@@ -1462,7 +1461,7 @@ class TestBatch7DeliveryGaps:
     def test_scrub_preserved_comment_is_honest_and_saveable(
             self, fixture_copy, tmp_path):
         # scrub nulled a PRESERVED comment, reported it "removed", and
-        # bricked the save (gate critical): it must skip preserved
+        # bricked the save: it must skip preserved
         # machinery, report it truthfully, and stay saveable
         from openpyxl.comments import Comment
 
@@ -1493,7 +1492,7 @@ class TestBatch7DeliveryGaps:
     def test_protect_for_delivery_actively_locks_non_inputs(self,
                                                             tmp_path):
         # relying on the OOXML default left author-unlocked outputs
-        # editable under a "protected" sheet (gate critical)
+        # editable under a "protected" sheet
         from openpyxl.styles import Protection
 
         wb = Workbook()
@@ -1518,8 +1517,8 @@ class TestBatch7DeliveryGaps:
         assert r["A1"].protection.locked is False    # input stays open
 
     def test_protection_edits_preserve_hidden_flag(self, tmp_path):
-        # apply_profile/protect built a fresh Protection, dropping hidden
-        # (gate major): the hidden bit must survive a locked-only change
+        # apply_profile/protect built a fresh Protection, dropping hidden:
+        # the hidden bit must survive a locked-only change
         from openpyxl.preserve import apply_profile
         from openpyxl.styles import Protection
 

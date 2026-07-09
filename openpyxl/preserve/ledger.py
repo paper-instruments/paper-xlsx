@@ -1,4 +1,4 @@
-# paper-xlsx: the dirty ledger (CONVENTIONS §3.3; PLAN §B; PR-0 D5/D7/D8)
+# paper-xlsx: the dirty ledger
 
 """Records what the object model changed, so the splice save can apply
 exactly those edits to the retained package and nothing else.
@@ -62,7 +62,7 @@ class DirtyLedger:
         self._style_fingerprint = ()
         # arm-time model serializations: comparing them against save-time
         # re-serializations detects USER changes with no producer-quirk
-        # noise (PR-0 D5 Tier 2 realized as snapshot-vs-snapshot)
+        # noise
         self.region_snapshots = {}     # ws -> {tag: rendered}
         self.row_attr_snapshots = {}   # ws -> {row: attr tuple}
         self.comment_snapshots = {}    # ws -> {(row, col): (text, author)}
@@ -73,11 +73,11 @@ class DirtyLedger:
         self.pinned_regions = {}       # ws -> {tag}: impure serializers
         self.object_snapshots = {}     # ws -> preserved-part-backed objects
         self.external_links_snapshot = ()
-        self.protection_warned = set()   # sheets warned once (1.6)
-        self.replaced_parts = {}         # raw byte swaps (PR-1 1.4)
-        self.renames = {}                # ws -> ORIGINAL title (3.2)
-        self.sheet_order = []            # _sheets titles at arm (3.2)
-        self.removed_sheets = []         # ORIGINAL titles removed (3.2)
+        self.protection_warned = set()   # sheets warned once
+        self.replaced_parts = {}         # raw byte swaps
+        self.renames = {}                # ws -> ORIGINAL title
+        self.sheet_order = []            # _sheets titles at arm
+        self.removed_sheets = []         # ORIGINAL titles removed
         self.value_overwrites = {}       # ws -> coords whose VALUE changed
         self.orig_cell_styles_len = 0
         self.rich_text_mode = False
@@ -87,7 +87,7 @@ class DirtyLedger:
         self.shifts = {}               # ws -> [(operation, index, amount)]
         self.template_flag = False
         self.cache_writes = {}         # ws -> {(row, col): computed value}
-                                       # (oracle write-back, PLAN-v0.1 5.3)
+                                       # (oracle write-back)
 
     # -- arming --------------------------------------------------------
 
@@ -99,7 +99,7 @@ class DirtyLedger:
         led.loaded_sheet_titles = frozenset(wb.sheetnames)
         led._style_lengths, led._style_fingerprint = _style_fingerprint(wb)
         for ws in wb.worksheets:
-            # double-render (PLAN-v0.1 0.3): a serializer with render-time
+            # double-render: a serializer with render-time
             # side effects disagrees with itself across passes. Regions
             # where that happens are PINNED — the snapshot keeps the
             # settled second pass, and the saver refuses edits to them
@@ -118,7 +118,7 @@ class DirtyLedger:
         for cs in wb.chartsheets:
             led.chartsheet_snapshots[cs] = _render_chartsheet(cs)
             # chartsheet-anchored charts are the same preserved-part-backed
-            # boundary (Batch-1 gate: they were outside it entirely)
+            # boundary (they were outside it entirely)
             led.object_snapshots[cs] = _object_snapshot(cs)
         from .crosspart import render_workbook_elements
 
@@ -146,7 +146,7 @@ class DirtyLedger:
     def is_loaded_sheet(self, ws):
         return ws not in self.added_sheets and ws.title in self.loaded_sheet_titles
 
-    # -- style in-place mutation check (PR-0 D5 Tier 3a) ----------------
+    # -- style in-place mutation check ----------------
 
     def check_style_registry(self, wb):
         """Refuse if any interned style component that existed at arm time
@@ -192,7 +192,7 @@ def _comment_snapshot(ws):
         comment = getattr(cell, "_comment", None)
         if comment is not None:
             # height/width included: a resize on a machinery-carrying
-            # sheet must refuse, not vanish (Batch-2 gate)
+            # sheet must refuse, not vanish
             snap[(row, col)] = (comment.text, comment.author,
                                 comment.height, comment.width)
     return snap
@@ -214,7 +214,7 @@ def _object_snapshot(ws):
     charts, images, pivots are live and mutable, but the splice never
     re-serializes their parts, so an in-session edit would vanish
     silently. Snapshot at arm, compare at save, refuse on drift
-    (PLAN-v0.1 1.1: refusal is fully acceptable; silence is not)."""
+    (refusal is fully acceptable; silence is not)."""
     from openpyxl.xml.functions import tostring
 
     snap = {"unstable": set()}
@@ -233,7 +233,7 @@ def _object_snapshot(ws):
     for i, chart in enumerate(getattr(ws, "_charts", []) or []):
         # the anchor is NOT part of chart._write() (it lives in the
         # preserved drawing part) — snapshot it too, or a chart move
-        # vanishes silently (Batch-1 gate)
+        # vanishes silently
         rendered, ok = _settled(lambda c=chart: tostring(c._write()))
         charts[i] = (rendered, _anchor_fingerprint(chart))
         if not ok:
@@ -265,15 +265,14 @@ def _object_snapshot(ws):
 
 
 _OBJECT_UNLOCKS = {
-    "table": "table editing lands with the v0.1 lifecycle engine "
-             "(Batch 2)",
+    "table": "table editing is handled through the table API, not "
+             "object mutation",
     "chart": "only title/axis text and series ranges are editable on "
-             "loaded charts (chartpatch, v0.1 Batch 4); this edit is "
-             "outside that set",
+             "loaded charts; this edit is outside that set",
     "image": "loaded images are preserved verbatim and not editable; "
-             "ADDING images is supported (v0.1 Batch 4)",
+             "ADDING images is supported",
     "pivot": "pivot editing is out of scope (preservation and "
-             "refresh-on-load cover brownfield pivots)",
+             "refresh-on-load cover existing pivots)",
 }
 
 
@@ -293,7 +292,7 @@ def _anchor_fingerprint(obj):
 
 def _image_data_digest(image):
     # a data swap with identical anchor+path must not vanish silently
-    # (Batch-1 gate): fingerprint the backing bytes. NEVER via
+    # fingerprint the backing bytes. NEVER via
     # image._data() — it closes the ref stream (a destructive read that
     # would break the second snapshot and mutate the model at arm).
     import hashlib
@@ -390,7 +389,7 @@ def mark_cell_dirty(cell, formula_involved=False, value_change=False):
     """Called from Cell mutation chokepoints (value bind, style set,
     hyperlink/comment/data_type assignment). ``value_change`` marks the
     coordinate as a VALUE overwrite — the only case where a cell's cm/vm
-    rich-value metadata may drop (Batch-3 gate: style-only re-emissions
+    rich-value metadata may drop (style-only re-emissions
     and dissolution re-emits must carry it)."""
     ws = cell.parent
     if ws is None or cell.row is None or cell.column is None:
@@ -409,12 +408,12 @@ def mark_cell_dirty(cell, formula_involved=False, value_change=False):
 
 
 def check_protection(cell):
-    """Protection awareness (PLAN-v0.1 1.6): we report protection, we
+    """Protection awareness: we report protection, we
     never enforce or bypass it. Called BEFORE the value binds (a strict
     refusal must be atomic): a write to a locked cell of a protected
     sheet warns once per sheet — or refuses under wb.strict_protection.
     Scope: value writes (the chokepoint agents hit); style/comment edits
-    to locked cells are not protection-checked in v0.1."""
+    to locked cells are not protection-checked."""
     ws = cell.parent
     if ws is None:
         return
@@ -499,7 +498,7 @@ def allow_sheet_removal(wb, ws):
 
 
 def begin_structural_edit(ws, operation, index, amount):
-    """Gate for insert/delete rows/cols under preserve (Phase 6b): shifts
+    """Gate for insert/delete rows/cols under preserve: shifts
     on fully-modeled sheets PROCEED (reference rewriting + byte renumber);
     anything with unmodeled range-bearing content refuses with the precise
     blocker and victim list. Returns True when the caller must run the
@@ -518,9 +517,7 @@ def begin_structural_edit(ws, operation, index, amount):
 
     if operation == "insert_rows":
         # occupancy includes row dimensions and merged/CF anchors, not just
-        # cells; and only content AT/AFTER the insert index moves (Batch-1
-        # gate: dimension-only floor rows evaded; inserts beyond content
-        # false-refused)
+        # cells; and only content AT/AFTER the insert index moves
         occupied = _max_occupied_row(ws)
         if index <= occupied and occupied + amount > EXCEL_MAX_ROW:
             from openpyxl.errors import BoundaryViolationError
@@ -583,7 +580,7 @@ def _max_occupied_col(ws):
 def _check_sheet_protection_for_shift(ws, led, operation):
     """Excel blocks row/column structural edits on protected sheets by
     default: warn (strict: refuse) — same 1.6 discipline as cell writes
-    (Batch-1 gate: shifts evaded the protection check entirely)."""
+    (shifts evaded the protection check entirely)."""
     try:
         protected = bool(ws.protection.sheet)
     except AttributeError:
@@ -612,7 +609,7 @@ def _check_sheet_protection_for_shift(ws, led, operation):
 def finish_structural_edit(ws, operation, index, amount):
     """Model-side reference fixups + snapshot rebasing, after the cells
     moved (see structural.apply_model_shift). Returns the pinned
-    AddressRemap (CONVENTIONS §2): pre-edit addresses must be remapped
+    AddressRemap: pre-edit addresses must be remapped
     through it, never reused."""
     from .structural import AddressRemap, apply_model_shift
 
@@ -622,10 +619,11 @@ def finish_structural_edit(ws, operation, index, amount):
 
 def refuse_structural_edit(ws, operation, index=None):
     """Row/column shifts under preserve are refused in v0, with the precise
-    list of what the shift would strand (PLAN Phase 6a): formulas (cross-
+    list of what the shift would strand: formulas (cross-
     sheet included), defined names, CF/DV ranges, merges, tables, and
-    series ranges inside preserved chart bytes. Raised BEFORE any mutation;
-    Phase 6b upgrades refusal to a correct rewrite."""
+    series ranges inside preserved chart bytes. Raised BEFORE any mutation,
+    and only when reference rewriting cannot turn the shift into a correct
+    edit."""
     led = _armed_ledger_for_ws(ws)
     if led is None:
         return
@@ -662,8 +660,7 @@ def refuse_sheet_lifecycle(wb, operation, detail):
 
 
 def refuse_chart_or_image_add(ws, what):
-    """Call-time gate for add_chart/add_image under preserve (PLAN-v0.1
-    4.2, battery 22): additions are supported on added sheets, on loaded
+    """Call-time gate for add_chart/add_image under preserve: additions are supported on added sheets, on loaded
     sheets without drawing machinery (fresh drawing part + one spliced
     element), and on loaded sheets whose existing drawing is anchor-only
     (anchors appended into the original part). A drawing carrying anything
@@ -704,7 +701,7 @@ def refuse_chart_or_image_add(ws, what):
 
 
 def record_rename(sheet_child, new_title):
-    """Renaming a LOADED sheet (PLAN-v0.1 3.2, battery 8): the cascade
+    """Renaming a LOADED sheet: the cascade
     rewrite. Model formulas and defined names are rewritten NOW (upstream
     rewrites nothing — the model must stay coherent in-session); chart
     parts referencing the old name are byte-patched at save; the sheets
@@ -749,7 +746,7 @@ def record_rename(sheet_child, new_title):
     # model-side cascade: formulas everywhere + defined names. The
     # rewrites are DERIVED from already-accepted formulas and reference
     # the new title before it lands on the sheet object — the lint
-    # chokepoint must not judge them (Batch-6 gate: the cascade tripped
+    # chokepoint must not judge them (the cascade tripped
     # unknown-sheet, and refuse mode would have refused the rename)
     _saved_lint = getattr(wb, "formula_lint", "warn")
     wb.formula_lint = "off"
@@ -762,7 +759,7 @@ def record_rename(sheet_child, new_title):
                 new_formula, changed = rename_sheet_in_formula(
                     cell._value, old_title, new_title)
                 if changed:
-                    cell.value = new_formula    # public setter: ledgered
+                    cell.value = new_formula    # public setter records it
     finally:
         wb.formula_lint = _saved_lint
     _rename_defined_names(wb, old_title, new_title)
@@ -770,8 +767,8 @@ def record_rename(sheet_child, new_title):
         _rename_defined_names(scoped, old_title, new_title)
     # in-session charts are model-rendered at save: their data-source
     # references follow the rename like every other model reference
-    # (loaded charts' parts are byte-patched at save instead) — Batch-4
-    # gate: an added chart's part kept the old, now-nonexistent title
+    # (loaded charts' parts are byte-patched at save instead)
+    # an added chart otherwise keeps the old, now-nonexistent title
     from .structural import _chart_source_ref_objects
 
     for sheet in wb.worksheets:
@@ -815,7 +812,7 @@ def _rename_defined_names(holder, old_title, new_title):
 # Workbook.mark_dirty
 
 def mark_dirty_target(wb, target):
-    """Implementation of ``Workbook.mark_dirty(target)`` (PR-0 §4)."""
+    """Implementation of ``Workbook.mark_dirty(target)``."""
     led = _armed_ledger_for_wb(wb)
     if led is None:
         raise ValueError(
@@ -836,7 +833,7 @@ def mark_dirty_target(wb, target):
                     min_row, max_row = ws.min_row or 1, ws.max_row or 1
                 if min_col is None:
                     min_col, max_col = ws.min_column or 1, ws.max_column or 1
-                # bounded ranges clamp too (PLAN-v0.1 7 hardening): a
+                # bounded ranges clamp too: a
                 # coordinate with no model cell is a DELETION marker to
                 # the splice, so an oversized range (A1:XFD1048576) would
                 # both explode the loop and delete beyond the intent
@@ -878,7 +875,7 @@ def _parse_sheet_range(target):
 
 
 class RemovalReport:
-    """What a sheet deletion removed and remapped (PR-1 §2.2, pinned)."""
+    """What a sheet deletion removed and remapped."""
 
     def __init__(self, removed_parts, remapped_names):
         self.removed_parts = list(removed_parts)
@@ -916,8 +913,7 @@ def _victim_exclusive_parts(wb, original_title):
 
 
 def audit_sheet_removal(wb, ws):
-    """The reference audit before a LOADED sheet may be removed
-    (PLAN-v0.1 3.2): anything on ANOTHER sheet pointing at the victim
+    """The reference audit before a LOADED sheet may be removed: anything on ANOTHER sheet pointing at the victim
     refuses with the full enumeration — formulas (3-D endpoints and
     textual/INDIRECT included), defined names, chart parts, pivot parts."""
     from .rewrite import (
@@ -949,7 +945,7 @@ def audit_sheet_removal(wb, ws):
                                                 cell.coordinate))
         # sheet-scoped names, CF rule formulas and DV formulas on a
         # SURVIVING sheet all strand exactly like cell formulas do
-        # (Batch-3 gate: the audit only walked workbook-level names)
+        # (the audit only walked workbook-level names)
         for name in list(other.defined_names):
             dn = other.defined_names[name]
             if dn.value and _refs_victim(dn.value):
@@ -980,7 +976,7 @@ def audit_sheet_removal(wb, ws):
     own_parts = _victim_exclusive_parts(wb, original_title)
     for part in _charts_referencing(wb, original_title):
         # a chart anchored ON the victim dies with it in the exclusive
-        # closure — its self-references strand nothing (Batch-3 gate:
+        # closure — its self-references strand nothing (
         # own-exclusive-chart false refusal)
         if part not in own_parts:
             victims.append("chart part {0}".format(part))
@@ -1013,7 +1009,7 @@ def record_sheet_removal(wb, ws):
 
 
 def begin_move_range(ws, move_spec):
-    """move_range under preserve (PLAN-v0.1 3.3): expressed as tracked
+    """move_range under preserve: expressed as tracked
     cell edits (source cleared + destination written — no rows shift, so
     no byte renumber). Guards refuse what the move cannot keep coherent:
     merges/CF/DV/tables intersecting either rectangle, and formulas
@@ -1087,7 +1083,7 @@ def begin_move_range(ws, move_spec):
                     "array/data-table formula at {0} inside the moved "
                     "block".format(cell.coordinate))
     # defined names pointing INTO either rectangle (Excel cut-paste
-    # follows them; we do not rewrite names on moves — Batch-3 gate)
+    # follows them; we do not rewrite names on moves)
     from openpyxl.utils.cell import range_boundaries as _rb
 
     holders = [ws.parent.defined_names] + [

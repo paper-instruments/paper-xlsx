@@ -177,7 +177,7 @@ class GradientFill(Fill):
           a set of specified Stops, across the length of an area.
           The gradient is left-to-right by default, but this
           orientation can be modified with the degree
-          attribute.  A list of Colors can be provided instead
+          attribute. A list of Colors can be provided instead
           and they will be positioned with equal distance between them.
 
         - A type='path' gradient applies a linear gradient from each

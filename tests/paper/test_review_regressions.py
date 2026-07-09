@@ -1,7 +1,6 @@
-"""Regression tests for the confirmed findings of the pre-PR adversarial
-review (scratch/results/final_review/confirmed.json). Every test here
-reproduces a defect that once produced silent corruption, a crash, or a
-missing refusal."""
+"""Regression tests for the confirmed findings of a pre-release review.
+Every test here reproduces a defect that once produced silent
+corruption, a crash, or a missing refusal."""
 from __future__ import annotations
 
 import re

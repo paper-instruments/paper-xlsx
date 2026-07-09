@@ -1,4 +1,4 @@
-# paper-xlsx: LibreOffice-free hygiene checks (PLAN-v0.1 Batch 6)
+# paper-xlsx: LibreOffice-free hygiene checks
 
 """Cheap first-pass checks for blind environments — measurements, never
 judgments (the advisory fence stands: findings flag, they never decide).
@@ -11,7 +11,7 @@ ERROR_TOKENS = frozenset([
     "#SPILL!", "#CALC!", "#GETTING_DATA",
 ])
 
-# both quote styles, ALWAYS (the recurring gate lesson)
+# both quote styles, ALWAYS
 _ERROR_CELL_RE = re.compile(
     br"<c\b([^>]*)\bt=(?:\"e\"|'e')([^>]*)>(.*?)</c>", re.S)
 _R_ATTR_RE = re.compile(br"\br=(?:\"([A-Za-z]+\d+)\"|'([A-Za-z]+\d+)')")
@@ -21,7 +21,7 @@ def current_titles_by_part(wb, zin):
     """{part_name: CURRENT sheet title} for a preserve workbook — the
     package still uses ORIGINAL titles after an in-session rename, and
     sheets removed this session map to nothing (shared by scan_errors
-    and the manifest — Batch-6 gate: stale/None attributions)."""
+    and the manifest — stale/None attributions)."""
     from .saver import _package_info
 
     led = getattr(wb, "_paper_ledger", None)
@@ -46,7 +46,7 @@ def _require_materialized_cells(wb, api):
 
 
 def scan_errors(wb):
-    """Error evidence without LibreOffice (PR-1 §5): cached error tokens
+    """Error evidence without LibreOffice: cached error tokens
     (from live cell values AND, under preserve, the original bytes — both
     load views from one workbook) plus #REF! markers inside formulas.
 
@@ -108,7 +108,7 @@ def scan_errors(wb):
 
 
 # ---------------------------------------------------------------------
-# hygiene findings (PLAN-v0.1 Batch 6.8) — ADVISORY lint only: findings
+# hygiene findings — ADVISORY lint only: findings
 # flag, they never decide; every finding carries evidence addresses
 
 class Finding:
@@ -145,8 +145,8 @@ _ROWNUM_RE = re.compile(r"(?<=[A-Za-z$])\d+")
 
 
 def findings(wb):
-    """Advisory hygiene findings for any workbook (PR-1 §5, taxonomy
-    pinned). Measurements only — nothing here refuses or rewrites."""
+    """Advisory hygiene findings for any workbook. Measurements only —
+    nothing here refuses or rewrites."""
     from openpyxl.formula import Tokenizer
 
     _require_materialized_cells(wb, "findings()")
@@ -336,7 +336,7 @@ def _magnitude_outliers(ws, out):
 def _byte_level_merged_hazards(wb, out):
     """merged-hazard from the PRESERVED bytes: the model DISCARDS
     shadowed interior values at load (MergedCell._value is always None),
-    so the real evidence lives only in the package (Batch-6 gate: the
+    so the real evidence lives only in the package (the
     model-side detector could never fire on a loaded file)."""
     source = getattr(wb, "_paper_source", None)
     if not source:

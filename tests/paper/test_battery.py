@@ -1,9 +1,9 @@
-"""The five-job acceptance battery (PLAN Phase 1).
+"""The five-job acceptance battery.
 
 Two halves:
 
 - ``TestStockCarnageBaseline`` runs each job against STOCK behavior and
-  asserts the exact damage measured in Phase 0 (OPEN-QUESTIONS.md Q11). These
+  asserts the exact damage measured. These
   tests PASS today. They are the fork's justification artifact and its
   permanent regression guard: if upstream behavior ever changes, these fail
   and the damage model gets re-derived, not assumed.
@@ -18,7 +18,7 @@ Fixture note: the corpus is openpyxl-authored (+ zip surgery), so stock
 carnage here UNDERSTATES real-file damage — openpyxl round-trips content it
 modeled itself (chart survival is asserted below as fixture-specific
 fairness, not as a general claim). Real-Excel fixtures land via
-FIXTURE-REQUESTS.md and extend this baseline.
+the fixture backlog and extend this baseline.
 """
 from __future__ import annotations
 
@@ -41,8 +41,9 @@ def _sheet_payload(path_or_bytes, marker):
 
 
 class TestStockCarnageBaseline:
-    """Damage-model rows reproduced against stock (PLAN's table, corrected by
-    Phase-0 evidence). Every assertion here is a measured stock behavior."""
+    """Damage-model rows reproduced against stock (the reference table,
+    corrected against real behavior). Every assertion here is a measured
+    stock behavior."""
 
     def test_job1_assumption_flip_kills_extensions_and_shared_groups(
             self, fixture_copy, tmp_path):
@@ -175,7 +176,7 @@ class TestBatterySafety:
     """The forever criterion: correct or loudly refused — never silently
     wrong. Strict xfails; each names the phase that must flip it."""
 
-    # GREEN since Phase 2c: the splice preserves sheet-internal extensions
+    # the splice preserves sheet-internal extensions
     def test_job1_assumption_flip_preserves_everything(self, fixture_copy, tmp_path):
         src = fixture_copy("gauntlet/gauntlet.xlsx")
         wb = load_workbook(src, preserve=True)
@@ -189,7 +190,7 @@ class TestBatterySafety:
         wb2 = load_workbook(out)
         assert wb2["Model"]["B8"].value == 0.15
 
-    # GREEN since Phase 2d: sheet addition composes with the preserved package
+    # sheet addition composes with the preserved package
     def test_job2_pandas_append_preserves_everything(self, fixture_copy):
         pd = pytest.importorskip("pandas")
         src = fixture_copy("gauntlet/gauntlet.xlsx")
@@ -202,10 +203,10 @@ class TestBatterySafety:
         wb = load_workbook(src)
         assert "Appended" in wb.sheetnames
 
-    # GREEN since Phase 2a via the blanket preserve-save refusal (any refusal
-    # satisfies "correct or loudly refused"); Phase 6a narrows the refusal to
-    # the specific stranded references and 6b upgrades it to a correct rewrite
-    # — this test must STAY green through both.
+    # correct via the blanket preserve-save refusal (any refusal satisfies
+    # "correct or loudly refused"); a later change narrows the refusal to
+    # the specific stranded references and then upgrades it to a correct
+    # rewrite — this test must STAY green through both.
     def test_job3_insert_rows_refuses_or_rewrites(self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule.xlsx")
         with open(src, "rb") as f:
@@ -222,13 +223,13 @@ class TestBatterySafety:
             with open(src, "rb") as f:
                 assert f.read() == before
         else:
-            # rewrite path (Phase 6b): references must have followed the shift
+            # rewrite path: references must have followed the shift
             wb2 = load_workbook(src)
             assert wb2["Schedule"]["B13"].value == "=SUM(B2:B12)"
             assert wb2.defined_names["Growth"].value == "Schedule!$B$16"
             assert wb2["Summary"]["B1"].value == "=Schedule!B13"
 
-    # GREEN since Phase 2c: untouched parts raw-copy byte-identically
+    # untouched parts raw-copy byte-identically
     def test_job4_xlsm_roundtrip_preserves_vba(self, fixture_copy, tmp_path):
         src = fixture_copy("features/macro_stub.xlsm")
         vba_before = part_payloads(src)["xl/vbaProject.bin"]
@@ -239,7 +240,7 @@ class TestBatterySafety:
         assert parts["xl/vbaProject.bin"] == vba_before
         assert b"macroEnabled" in parts["[Content_Types].xml"]
 
-    # GREEN since Phase 2a via the blanket preserve-save refusal; Phase 3
+    # correct via the blanket preserve-save refusal; a later change
     # narrows it to the data_only-specific trap (with allow_formula_loss
     # override) — this test must STAY green through that change.
     def test_job5_data_only_save_refuses(self, fixture_copy, tmp_path):
@@ -257,8 +258,8 @@ class TestBatterySafety:
         with open(src, "rb") as f:
             assert f.read() == before
 
-    # Battery job 6 (PLAN-v0.1): edit inside a shared-formula group.
-    # Settled CORRECT by the Batch-0 item-zero probe: dissolve-on-touch via
+    # Battery job 6: edit inside a shared-formula group.
+    # dissolve-on-touch via
     # observed si= members (splice.resolve_dirty_cells), refuse orphans.
     def test_job6_shared_group_edit_correct_or_refused(
             self, fixture_copy, tmp_path):
@@ -325,9 +326,9 @@ class TestBatterySafety:
         with open(orphan, "rb") as f:
             assert f.read() == before
 
-    # Battery job 14 (PLAN-v0.1): a zero-edit save must be byte-identical on
+    # Battery job 14: a zero-edit save must be byte-identical on
     # EVERY part — including sheets whose <cols> render trips upstream's
-    # impure DimensionHolder.to_tree() (the Batch-0 false-dirty bug).
+    # impure DimensionHolder.to_tree (the false-dirty bug).
     def test_job14_noop_save_is_byte_identical_on_cols_sheet(
             self, fixture_copy, tmp_path):
         src = fixture_copy("features/hidden.xlsx")
@@ -336,9 +337,9 @@ class TestBatterySafety:
         wb.save(out)
         assert part_payloads(src) == part_payloads(out)
 
-    # Battery job 15 (PLAN-v0.1): editing a region whose ORIGINAL element is
+    # Battery job 15: editing a region whose ORIGINAL element is
     # self-closing (pageMargins/pageSetup/autoFilter/sheetPr...) must splice
-    # correctly — the Batch-0 scanner bug emitted malformed XML here.
+    # correctly — the scanner bug emitted malformed XML here.
     def test_job15_self_closing_region_edit_is_correct(
             self, fixture_copy, tmp_path):
         import xml.etree.ElementTree as ET
@@ -358,7 +359,7 @@ class TestBatterySafety:
         assert wb2["Sheet1"].page_margins.left == 1.25
         assert wb2["Sheet1"]["B2"].value is not None   # data intact
 
-    # Battery job 2 at Batch-0 exit (PLAN-v0.1 0.5): with the internal
+    # Battery job 2: with the internal
     # default flipped (PAPER_PRESERVE_DEFAULT=1, set in paper harness
     # images), plain pandas mode="a" — no engine_kwargs — preserves.
     def test_job2_pandas_append_under_internal_default_flip(
@@ -376,7 +377,7 @@ class TestBatterySafety:
 
 
 class TestBatteryToday:
-    """PLAN-v0.1 battery rows 7-13, 16-24 implemented AT THEIR TODAY
+    """24 Implemented AT THEIR TODAY
     STATES. Several assert dishonest behavior on purpose — they exist to
     be FLIPPED by the batch named in each comment, and only by it
     (weakening an expected state to make a batch pass is prohibited).
@@ -393,7 +394,7 @@ class TestBatteryToday:
                 zout.writestr(part, payload)
         return out
 
-    # job 7 — Batch-3 state: writing INTO a spill/array range refuses
+    # job 7: writing INTO a spill/array range refuses
     # with the in_spill context naming the anchor.
     def test_job7_spill_write_refuses_with_context(self, fixture_copy,
                                                    tmp_path):
@@ -406,7 +407,7 @@ class TestBatteryToday:
                            match="in_spill.*anchored at D2"):
             wb.save(str(tmp_path / "o.xlsx"))
 
-    # job 8 — Batch-3 state: CORRECT cascade rewrite (was a set-time
+    # job 8: CORRECT cascade rewrite (was a set-time
     # refusal): formulas, defined names, and the workbook.xml entry all
     # follow the rename.
     def test_job8_sheet_rename_cascades(self, fixture_copy, tmp_path):
@@ -433,7 +434,7 @@ class TestBatteryToday:
             wb3["Schedule"].title = "X"
         assert wb3["Schedule"].title == "Schedule"     # unchanged
 
-    # job 9 — Batch-1 state (flipped by 1.6): warn by default, refuse
+    # job 9: warn by default, refuse
     # under wb.strict_protection. Protection is reported, never bypassed
     # silently — and never enforced beyond what the caller asked for.
     def test_job9_locked_cell_write_warns_or_refuses(self, tmp_path):
@@ -473,8 +474,8 @@ class TestBatteryToday:
         assert doc["sheets"][0]["protection"] is True
         assert doc["workbook_protection"] is False
 
-    # job 10 — Batch-2 state: CORRECT table append discipline (flipped
-    # from the Batch-1 refusal by the lifecycle engine + table verbs).
+    # job 10: CORRECT table append discipline (flipped
+    # from the refusal by the lifecycle engine + table verbs).
     def test_job10_table_append_is_correct(self, fixture_copy, tmp_path):
         from openpyxl.preserve.tables import append_row
 
@@ -507,7 +508,7 @@ class TestBatteryToday:
         with open(src2, "rb") as f:
             assert f.read() == before                 # atomic
 
-    # job 11 — Batch-3 state: CORRECT (the copy registers as an added
+    # job 11: CORRECT (the copy registers as an added
     # sheet; comments ride the added-sheet generator; charts do not copy,
     # matching upstream's copier).
     def test_job11_copy_sheet_within_charted_workbook(
@@ -528,8 +529,8 @@ class TestBatteryToday:
         # the copied comment landed via the added-sheet generator
         assert copied["B8"].comment is not None
 
-    # job 12 — today: no scenario API. Batch 5 ships wb.evaluate().
-    # job 12 — Batch-5 state (flipped by 5.1): one evaluate() call,
+    # job 12 — today: no scenario API. wb.evaluate.
+    # job 12: one evaluate call,
     # certified (the full LibreOffice path runs in test_compute.py; this
     # job pins the API surface and the preserve requirement)
     def test_job12_evaluate_api_exists(self, fixture_copy):
@@ -540,7 +541,7 @@ class TestBatteryToday:
         with pytest.raises(ValueError, match="preserve"):
             wb.evaluate(set={"Schedule!B2": 1}, read=["Summary!B1"])
 
-    # job 13 — Batch-1 state (flipped by 1.5): typed refusal naming the
+    # job 13: typed refusal naming the
     # encryption and the decrypt route, on both load arms.
     def test_job13_encrypted_cfb_gets_typed_refusal(
             self, fixture_copy, tmp_path):
@@ -576,11 +577,11 @@ class TestBatteryToday:
             load_workbook(dup, preserve=True)
         load_workbook(dup)                       # stock keeps upstream arm
 
-    # job 16 — Batch-1 state: REFUSE (flipped from silent staleness by
-    # the 1.1 object guards). Batch 4 flips chart editing to correct.
+    # job 16: REFUSE (flipped from silent staleness by
+    # the object guards). chart editing is correct.
     def test_job16_chart_title_edit_is_correct(self, fixture_copy,
                                                tmp_path):
-        # Batch-4 state (PLAN battery: "refuse or correct", flipped by
+        # (the battery: "refuse or correct", flipped by
         # 4.3): title text is chartpatch-expressible, so the edit LANDS;
         # inexpressible mutations (anchor moves) keep refusing
         from openpyxl.errors import UnsupportedStructureError
@@ -608,7 +609,7 @@ class TestBatteryToday:
         with open(src, "rb") as f:
             assert f.read() == before                 # atomic
 
-    # job 17 — Batch-1 state (flipped by 1.2): a value edit feeding
+    # job 17: a value edit feeding
     # formulas forces fullCalcOnLoad so stale caches can never masquerade
     # as current to a human opener.
     def test_job17_value_edit_feeding_formulas_sets_recalc_flag(
@@ -631,7 +632,7 @@ class TestBatteryToday:
         assert part_payloads(out2)["xl/workbook.xml"] == \
             part_payloads(src2)["xl/workbook.xml"]
 
-    # job 18 — Batch-2 state: CORRECT ("make this range a table" via the
+    # job 18: CORRECT ("make this range a table" via the
     # part-lifecycle engine; was a save-time refusal).
     def test_job18_make_range_a_table_is_correct(self, fixture_copy,
                                                  tmp_path):
@@ -656,7 +657,7 @@ class TestBatteryToday:
         assert wb2["Sheet1"].tables["New"].ref == "A1:B3"
         assert wb2["Sheet1"]["B2"].value is not None   # data intact
 
-    # job 19 — Batch-2 state: CORRECT (comment creation on comment-free
+    # job 19: CORRECT (comment creation on comment-free
     # sheets via the lifecycle engine; was a save-time refusal).
     def test_job19_comment_on_comment_free_sheet_is_correct(
             self, fixture_copy, tmp_path):
@@ -683,7 +684,7 @@ class TestBatteryToday:
         assert "reviewed: ok" in comment.text
         assert wb2["Sheet1"]["B2"].value is not None   # cell data intact
 
-    # job 20 — Batch-3 state: CORRECT twin-sync (was the highest-traffic
+    # job 20: CORRECT twin-sync (was the highest-traffic
     # refusal): classic CF composes from ORIGINAL bytes so x14 twin
     # pointers survive verbatim; new rules append.
     def test_job20_x14_cf_edit_is_correct(self, fixture_copy, tmp_path):
@@ -708,7 +709,7 @@ class TestBatteryToday:
         wb2 = load_workbook(out)
         assert len(wb2["Model"].conditional_formatting) == 4  # 3 + new
 
-    # job 21 — Batch-3 state: CORRECT — an ordinary value write on an
+    # job 21: CORRECT — an ordinary value write on an
     # Excel-365 cell (cm/vm metadata) proceeds; the stale metadata
     # pointers are dropped with the overwrite (the cell stops being a
     # rich value), never carried.
@@ -727,7 +728,7 @@ class TestBatteryToday:
         wb2 = load_workbook(out)
         assert wb2["Sheet1"]["B2"].value == 5
 
-    # job 22 — Batch-4 state (flipped by 4.2): the chart lands as new
+    # job 22: the chart lands as new
     # parts through the lifecycle engine, everything else preserved
     def test_job22_add_chart_is_correct(self, fixture_copy, tmp_path):
         from openpyxl.chart import BarChart, Reference
@@ -744,7 +745,7 @@ class TestBatteryToday:
         wb2 = load_workbook(out)
         assert len(wb2["Model"]._charts) == before + 1
 
-    # job 23 — Batch-6 state (flipped by 6.1): ws.locate answers by
+    # job 23: ws.locate answers by
     # label, correct or AmbiguousTargetError (the pinned class earns
     # its keep — the debt is paid)
     def test_job23_locate_by_label(self, fixture_copy):
@@ -760,9 +761,9 @@ class TestBatteryToday:
         assert exc.value.kind == "ambiguous-label"
         assert len(exc.value.options) == 2    # every candidate listed
 
-    # job 24 — Batch-5 state (flipped by 5.3): write-back exists and is
+    # job 24: write-back exists and is
     # CERTIFICATION-GATED; the full LibreOffice path is exercised in
-    # test_compute.py (this job pins the gate without needing soffice)
+    # test_compute.py (this job pins the behavior without needing soffice)
     def test_job24_oracle_writeback_certification_gated(
             self, fixture_copy, tmp_path, monkeypatch):
         from openpyxl import oracle

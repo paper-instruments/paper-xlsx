@@ -1,4 +1,4 @@
-"""Shared conftest for the paper-xlsx contract harness (CONVENTIONS §4)."""
+"""Shared conftest for the paper-xlsx contract harness."""
 from __future__ import annotations
 
 import os

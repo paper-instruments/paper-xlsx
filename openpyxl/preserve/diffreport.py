@@ -1,4 +1,4 @@
-# paper-xlsx: workbook diff report (PLAN-v0.1 Batch 6.9, PR-1 §5)
+# paper-xlsx: workbook diff report
 
 """Compare two workbook packages cell-wise, classifying differences as
 content-changed vs shifted-by-structural-edit (via AddressRemap chains).
@@ -113,8 +113,7 @@ def diff_workbooks(a, b, remaps=()):
     for key in sorted(cells_b, key=lambda k: (k[0], k[1], k[2])):
         # skip only coordinates already CONSUMED as some A-cell's image:
         # under remaps an A-side coordinate may have been vacated and
-        # REWRITTEN with new content, which must be reported (Batch-6
-        # gate: the `key in cells_a` skip made such cells invisible)
+        # REWRITTEN with new content, which must be reported
         if key in consumed_b:
             continue
         if not remaps and key in cells_a:
@@ -134,7 +133,7 @@ def diff_workbooks(a, b, remaps=()):
 
 def _same(a, b):
     # True == 1 in Python but not in a spreadsheet (t="b" vs numeric):
-    # bool-aware comparison (Batch-6 gate: 1 -> TRUE reported unchanged)
+    # bool-aware comparison (1 -> TRUE reported unchanged)
     if isinstance(a, bool) != isinstance(b, bool):
         return False
     return a == b

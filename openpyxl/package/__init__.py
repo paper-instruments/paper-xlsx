@@ -1,4 +1,4 @@
-# paper-xlsx: the package kernel (CONVENTIONS §7, PR-0 §5)
+# paper-xlsx: the package kernel
 
 """Package-level perception: semantic XML comparison and part-by-part
 package diffing.

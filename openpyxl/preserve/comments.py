@@ -1,4 +1,4 @@
-# paper-xlsx: comment creation under preserve (PLAN-v0.1 Batch 2; PR-1 §1.3)
+# paper-xlsx: comment creation under preserve
 
 """Comments on sheets whose original package carries NO comment machinery —
 the 80% case. The comments part and its legacy-VML anchor part are created
@@ -6,7 +6,7 @@ whole via the lifecycle engine (nothing to splice: both parts are new), and
 one <legacyDrawing r:id> element rides the region splice.
 
 Sheets that ALREADY carry comment parts keep refusing: editing preserved
-VML is Batch-4-class work that earns its own probe.
+VML is out of scope.
 """
 
 from openpyxl.errors import UnsupportedStructureError
@@ -63,7 +63,7 @@ def plan_comment_creation(wb, ws, sheet_part, zin, part_plan, names):
                 if ILLEGAL_CHARACTERS_RE.search(text):
                     # cell values get this guard in check_string; comments
                     # must too, or the save writes an unparseable part
-                    # under the stdlib serializer (Batch-2 gate)
+                    # under the stdlib serializer
                     _refuse("comment on {0}!{1} contains characters that "
                             "cannot be written to XML (control "
                             "bytes).".format(ws.title, cell.coordinate))

@@ -1,4 +1,4 @@
-# paper-xlsx: semantic XML comparison and package diff (CONVENTIONS §7)
+# paper-xlsx: semantic XML comparison and package diff
 
 import hashlib
 import io
@@ -73,7 +73,7 @@ def xml_semantic_diff(a, b, max_diffs=25):
 def xml_equivalent(a, b):
     """True when two XML payloads are semantically equivalent.
 
-    Never normalizes cell text content (CONVENTIONS §7)."""
+    Never normalizes cell text content."""
     return not xml_semantic_diff(a, b, max_diffs=1)
 
 

@@ -1,6 +1,6 @@
-"""Phase 6b: Excel-insert-semantics reference rewriting (PLAN Phase 6b).
+"""Excel-insert-semantics reference rewriting.
 
-Property tests per PLAN: insert-then-delete round-trips to the original;
+Property tests: insert-then-delete round-trips to the original;
 sums recomputed by the oracle match the pre-edit values.
 """
 from __future__ import annotations
@@ -198,7 +198,7 @@ class TestShiftRefusals:
 
     def test_second_shift_same_session_composes(self, fixture_copy,
                                                  tmp_path):
-        # FLIPPED by v0.1 Batch 3 (was a refusal): shifts compose; full
+        # (was a refusal): shifts compose; full
         # coverage in test_structural.TestMultipleShifts
         wb = load_workbook(fixture_copy("features/schedule.xlsx"),
                            preserve=True)

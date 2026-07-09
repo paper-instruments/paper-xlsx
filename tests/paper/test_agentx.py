@@ -1,4 +1,4 @@
-"""Batch 6 (PLAN-v0.1 §6, PR-1 §5): perception and the agent experience —
+"""Perception and the agent experience —
 locate, search, scan_errors, allowed_values, validate, model map,
 manifest enrichment, receipts, structured refusals, findings, diffs."""
 from __future__ import annotations

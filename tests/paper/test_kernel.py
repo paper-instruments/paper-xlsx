@@ -1,4 +1,4 @@
-"""The package kernel: openpyxl.package (CONVENTIONS §7, PR-0 §5).
+"""The package kernel: openpyxl.package.
 
 The kernel is verified against the harness's own independent diff helpers —
 the safety tooling and the shipped kernel implement the same contract twice,

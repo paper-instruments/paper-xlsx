@@ -1,5 +1,5 @@
-"""Phase 2b: the dirty ledger — chokepoint marking, refusals, arming
-semantics (CONVENTIONS §3.3; PR-0 D5/D7/D8)."""
+"""The dirty ledger — chokepoint marking, refusals, arming
+semantics."""
 from __future__ import annotations
 
 import pytest
@@ -184,7 +184,7 @@ class TestSheetLifecycle:
         assert ws not in led.cells
 
     def test_move_sheet_records_reorder(self, preserved):
-        # FLIPPED by v0.1 Batch 3 (was a refusal): reorder is expressed at
+        # (was a refusal): reorder is expressed at
         # save by rebuilding the sheets element from original entry bytes
         wb, led = preserved
         before = list(wb.sheetnames)
@@ -193,14 +193,14 @@ class TestSheetLifecycle:
         assert set(before) == set(after) and before != after
 
     def test_copy_worksheet_registers_as_added(self, preserved):
-        # FLIPPED by v0.1 Batch 3 (was a refusal): the copy is an ADDED
+        # (was a refusal): the copy is an ADDED
         # sheet, generated whole at save (battery job 11 covers the file)
         wb, led = preserved
         cp = wb.copy_worksheet(wb["Data"])
         assert cp in led.added_sheets
 
     def test_rename_cascades_and_added_sheet_still_free(self, preserved):
-        # FLIPPED by v0.1 Batch 3 (was a refusal): loaded-sheet renames
+        # (was a refusal): loaded-sheet renames
         # cascade (full coverage in battery job 8); in-session sheets
         # rename with no ledger involvement at all
         wb, led = preserved
@@ -275,7 +275,7 @@ class TestStyleRegistryGuard:
 
 
 class TestSheetLifecycleCascade:
-    """PLAN-v0.1 3.2: delete and reorder on LOADED sheets."""
+    """Delete and reorder on LOADED sheets."""
 
     def test_remove_clean_sheet_cascades(self, fixture_copy, tmp_path):
         from openpyxl import load_workbook as _load

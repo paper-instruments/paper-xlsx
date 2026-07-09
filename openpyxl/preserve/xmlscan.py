@@ -1,13 +1,13 @@
-# paper-xlsx: the worksheet byte scanner (CONVENTIONS §3.4; PR-0 D6/D7)
+# paper-xlsx: the worksheet byte scanner
 
 """Namespace-tracking streaming scanner over ORIGINAL worksheet XML bytes.
 
 Produces the byte spans the splice writer needs — top-level region elements,
 rows, cells — plus the shared-formula/array/metadata inventory that gates
-edits (PR-0 D7). Everything it does not understand is left as bytes for the
+edits. Everything it does not understand is left as bytes for the
 splice to copy verbatim.
 
-Guard set (PR-0 D6, adversarially verified in Phase 0): DOCTYPE refused;
+Guard set: DOCTYPE refused;
 non-UTF-8 refused; the target grammar is matched only via the EXACT parent
 chain worksheet→sheetData→row→c (ancestor containment admits legal decoys in
 cell-level extLst and mc:AlternateContent — measured silent wrong-edits);
@@ -335,7 +335,7 @@ def scan_sheet(data):
         depth = len(stack)
 
         if depth == 0:
-            # root guards (PR-0 D6): must be an unprefixed main-namespace
+            # root guards: must be an unprefixed main-namespace
             # worksheet, else fragments we emit would land in no namespace —
             # the measured silent-value-deletion failure mode
             if local != b"worksheet" or ns != main:
@@ -357,7 +357,7 @@ def scan_sheet(data):
             if self_closing:
                 # never reaches _close_element (no stack entry): the span
                 # must close here or region edits splice with end=None —
-                # the whole-document-duplication corruption (PLAN-v0.1 0.2)
+                # the whole-document-duplication corruption
                 span.end = tag_end
             scan.regions.setdefault(span.tag, []).append(span)
             scan.region_order.append((span.tag, span))

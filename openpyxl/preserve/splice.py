@@ -1,4 +1,4 @@
-# paper-xlsx: the splice writer (CONVENTIONS §3.4; PR-0 D6/D7/D15)
+# paper-xlsx: the splice writer
 
 """Apply ledger-recorded edits to one original worksheet part, byte-wise.
 
@@ -40,7 +40,7 @@ def _cells_in_ref(ref):
 
 
 def resolve_dirty_cells(ws, ledger_dirty, scan):
-    """The effective dirty-coordinate set for one sheet (PR-0 D7).
+    """The effective dirty-coordinate set for one sheet.
 
     - rich-text cells are always dirty (in-place edits bypass every hook);
     - a dirty cell intersecting a shared-formula group dissolves the WHOLE
@@ -60,7 +60,7 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
         return dirty
 
     # array/spill formulas: refuse on intersection, naming the anchor
-    # (PLAN-v0.1 3.4: the in_spill context — members of a dynamic-array
+    # (the in_spill context — members of a dynamic-array
     # spill are blank cells in the file; the range lives on the anchor)
     for ref in scan.array_refs:
         hit = dirty & _cells_in_ref(ref)
@@ -105,7 +105,7 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
         # value overwrite is CORRECT with the attributes dropped — the
         # cell simply stops being a rich value/spill anchor; the metadata
         # part keeps unreferenced records (legal dead weight). The emit
-        # carry excludes cm/vm (PLAN-v0.1 3.4; was a v0 refusal).
+        # carry excludes cm/vm.
         if cell_span.has_extlst:
             raise SpliceRefusal(
                 "cannot edit cell {0}{1} on sheet {2!r}: it carries a "
@@ -137,10 +137,10 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     ``cf_replacement``: bytes replacing ALL conditionalFormatting elements
     (gated by the caller; may be b"" to remove them).
     ``hyperlinks_replacement``: bytes replacing the hyperlinks element.
-    ``style_resolver``: cell -> FILE xf index (StyleTranslator; PR-0 D2) —
+    ``style_resolver``: cell -> FILE xf index (StyleTranslator) —
     model style indices must never reach the spliced bytes.
     ``cache_writes``: {(row, col): computed_value} — cached-value updates
-    for UNTOUCHED formula cells (oracle write-back, PLAN-v0.1 5.3): the
+    for UNTOUCHED formula cells (oracle write-back): the
     <f> bytes stay verbatim, only the cached <v> (and its t attribute)
     change.
     """
@@ -175,8 +175,8 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                 "cannot rewrite {0} on sheet {1!r}: multiple original "
                 "elements. Nothing was written.".format(tag, ws.title))
 
-    # x14 twin coexistence is checked by the saver (preserve.x14, Batch 3);
-    # the v0 blanket gates moved there with the composed-CF machinery
+    # x14 twin coexistence is checked by the saver (preserve.x14);
+    # the blanket gates moved there with the composed-CF machinery
 
     if dirty_cells:
         new_rows = {r for (r, c) in dirty_cells} - set(scan.rows)
@@ -207,7 +207,7 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     # run with the freshly rendered blocks (dxf handling done by the caller)
     if cf_replacement is not None:
         # twin-bearing sheets reach here only with COMPOSED bytes (the
-        # saver's x14 planner, Batch 3) — the v0 orphaning gates moved
+        # saver's x14 planner) — the orphaning gates moved
         # into that planner
         spans = scan.regions.get("conditionalFormatting", [])
         cf_rank = CT_ORDER_INDEX["conditionalFormatting"]
@@ -372,7 +372,7 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve,
     if new_attrs is not None:
         # rewrite the start tag, preserving the row's content; original
         # attributes the model does not know (x14ac:dyDescent, xr:uid, ...)
-        # are carried verbatim — the D6 rule applies to rows too
+        # are carried verbatim — the attribute-carry rule applies to rows too
         attrs = dict(new_attrs)
         for key, value in row_span.attrs.items():
             if key not in _MODEL_ROW_ATTRS and key != "r":
@@ -444,7 +444,7 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve,
 
 
 # ---------------------------------------------------------------------
-# oracle write-back (PLAN-v0.1 5.3): cached-value updates on untouched
+# oracle write-back: cached-value updates on untouched
 # formula cells — the <f> bytes verbatim, the <v> replaced
 
 _F_BLOCK_RE = re.compile(br"<f\b[^>]*?(?:/>|>.*?</f>)", re.S)

@@ -1,5 +1,5 @@
-"""Phase 6a: the structural-edit guard — reference-aware refusals under
-preserve, loud warning on the stock path (PLAN Phase 6a; PR-0 §8)."""
+"""The structural-edit guard — reference-aware refusals under
+preserve, loud warning on the stock path."""
 from __future__ import annotations
 
 import warnings
@@ -11,7 +11,7 @@ from openpyxl.errors import StructuralShiftWarning, UnsupportedStructureError
 
 
 class TestPreserveRefusals:
-    """Since Phase 6b, fully-modeled sheets REWRITE instead of refusing
+    """Fully-modeled sheets REWRITE instead of refusing
     (test_rewrite.py); these tests cover the sheets that must still refuse —
     anything carrying unmodeled range-bearing content."""
 
@@ -76,9 +76,8 @@ class TestStockWarning:
 
 
 class TestAddressRemap:
-    """CONVENTIONS §2 (pinned, debt paid in v0.1 Batch 1): structural
-    edits return an AddressRemap; pre-edit addresses must be remapped,
-    never reused."""
+    """Structural edits return an AddressRemap; pre-edit addresses must
+    be remapped, never reused."""
 
     def test_insert_rows_returns_remap(self, fixture_copy, tmp_path):
         from openpyxl.preserve import AddressRemap
@@ -141,7 +140,7 @@ class TestBoundaryViolation:
 
 
 class TestMultipleShifts:
-    """PLAN-v0.1 3.3: shifts compose within one session."""
+    """Shifts compose within one session."""
 
     def test_two_shifts_one_session(self, fixture_copy, tmp_path):
         wb = load_workbook(fixture_copy("features/schedule.xlsx"),
@@ -172,7 +171,7 @@ class TestMultipleShifts:
 
 
 class TestSpanningMerges:
-    """PLAN-v0.1 3.3: Excel merge semantics under shifts (expansion on
+    """Excel merge semantics under shifts (expansion on
     insert-inside, shrink on delete-inside, move otherwise)."""
 
     def test_merge_expands_shrinks_and_moves(self, fixture_copy, tmp_path):
@@ -199,7 +198,7 @@ class TestSpanningMerges:
 
 
 class TestMoveRange:
-    """PLAN-v0.1 3.3: move_range as tracked cell edits."""
+    """Move_range as tracked cell edits."""
 
     def test_clean_move_lands(self, fixture_copy, tmp_path):
         wb = load_workbook(fixture_copy("features/schedule.xlsx"),
@@ -227,7 +226,7 @@ class TestMoveRange:
 
 
 class TestStructuredRefs:
-    """PLAN-v0.1 3.5: Table1[@Col] is never mis-shifted — tables on the
+    """Table1[@Col] is never mis-shifted — tables on the
     shifted sheet block the shift (refusal), and bracketed operands are
     never rewritten."""
 

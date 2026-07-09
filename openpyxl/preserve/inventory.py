@@ -1,10 +1,10 @@
-# paper-xlsx: content-level loss inventory (PLAN Phase 2a; PR-0 D14)
+# paper-xlsx: content-level loss inventory
 
 """Scan a source archive for content the stock save path cannot preserve.
 
 The inventory must be CONTENT-level, not part-list-level: a stock round trip
 of a sparkline-bearing file removes zero parts while gutting the sparklines
-(measured, OPEN-QUESTIONS Q11). Scans are cheap byte searches over payloads,
+. Scans are cheap byte searches over payloads,
 never XML parses — the inventory may not crash on files the reader accepts.
 
 Built at load time (the archive is gone by save time on the stock path) and
@@ -138,9 +138,9 @@ def scan_archive(archive, valid_files, keep_vba=False, rich_text=False):
                         "verbatim)")
             if b"<protectedRanges" in payload \
                     or b"<protectedRange " in payload:
-                # a WORKSHEET-level element (ECMA-376 18.3.1.99) — the v0.1
-                # first cut scanned workbook.xml for it: dead code the gate
-                # caught; allow-edit ranges carry password hashes
+                # a WORKSHEET-level element (ECMA-376 18.3.1.99), so it is
+                # scanned in the sheet payload, not workbook.xml; allow-edit
+                # ranges carry password hashes
                 inv.add("worksheet-content", name,
                         "protected ranges (allow-edit ranges, incl. their "
                         "password hashes) will be dropped")
@@ -159,7 +159,7 @@ def scan_archive(archive, valid_files, keep_vba=False, rich_text=False):
                             "chart-internal extensions will be removed when "
                             "the chart is rebuilt")
             # real producers number these parts (colors1.xml/style1.xml):
-            # a bare endswith never matched them (v0.1 Batch-1 fix)
+            # a bare endswith never matched them
             if _CHART_AUX_RE.search(name):
                 inv.add("chart-auxiliary", name,
                         "chart colors/style part will be dropped")

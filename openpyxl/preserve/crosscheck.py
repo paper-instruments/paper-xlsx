@@ -1,4 +1,4 @@
-# paper-xlsx: the ledger cross-check (CONVENTIONS §3.3; debug mode)
+# paper-xlsx: the ledger cross-check (debug mode)
 
 """Cross-check the splice output against the ledger's claims.
 
@@ -91,11 +91,11 @@ def _sheet_rows(payload):
 def verify_splice(source_bytes, output_bytes, dirty_by_part, baselines=None,
                   region_claims=None, row_claims=None):
     """Assert that in every spliced part, the set of semantically changed
-    cells is a subset of the ledger's dirty claims — and (PLAN-v0.1 0.4)
+    cells is a subset of the ledger's dirty claims — and
     that no region the saver didn't claim differs, and no row's display
     attributes/multiplicity change outside the claimed rows.
 
-    ``baselines`` maps parts to their post-shift bytes (Phase 6b): those
+    ``baselines`` maps parts to their post-shift bytes: those
     parts are checked against the renumbered baseline (the renumber pass is
     covered by its own tests and the oracle property tests).
     ``region_claims`` maps parts to the region tags the saver knowingly

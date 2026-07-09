@@ -87,7 +87,7 @@ def _check_extension(filename):
             raise InvalidFileException(msg)
 
 
-# decompression caps (PLAN-v0.1 7 hardening, pinned): a part is refused
+# decompression caps: a part is refused
 # when it inflates past BOTH triggers — absolute size AND, for large
 # parts, a compression ratio no real spreadsheet content reaches
 _DECOMPRESSION_MAX_PART = 2 * 1024 * 1024 * 1024      # 2 GiB per part
@@ -139,7 +139,7 @@ def _validate_archive(filename):
 
 # OLE2/CFB magic: what an ENCRYPTED xlsx actually is on disk (the zip is
 # wrapped in a Compound File). zipfile's "File is not a zip file" told the
-# user nothing actionable (PLAN-v0.1 1.5; battery job 13).
+# user nothing actionable.
 _CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
@@ -149,7 +149,7 @@ def _refuse_cfb(filename):
             # sniff at ABSOLUTE offset 0 (zipfile anchors there too), then
             # restore the caller's position exactly — a mid-position handle
             # must neither false-refuse on embedded CFB payloads nor evade
-            # the typed refusal (Batch-1 gate)
+            # the typed refusal
             pos = filename.tell()
             filename.seek(0)
             head = filename.read(8)
@@ -223,14 +223,14 @@ class ExcelReader:
         if preserve:
             # retain bytes, not a path or handle: the source may be replaced,
             # truncated in place, or overwritten through the same handle
-            # before save (CONVENTIONS §3.2; PR-0 §3)
+            # before save
             if not hasattr(fn, "read"):
                 try:
                     _check_extension(fn)
                 except InvalidFileException as exc:
                     file_format = os.path.splitext(fn)[-1].lower()
                     if file_format in (".xls", ".xlsb"):
-                        # preserve mode gets the typed refusal (PLAN Phase 3)
+                        # preserve mode gets the typed refusal
                         from openpyxl.errors import UnsupportedStructureError
                         raise UnsupportedStructureError(
                             "preserve mode does not support the {0} format. "
@@ -245,7 +245,7 @@ class ExcelReader:
         self.archive = _validate_archive(fn)
         self.valid_files = self.archive.namelist()
         if preserve and len(self.valid_files) != len(set(self.valid_files)):
-            # a parser differential (PLAN-v0.1 1.5): the reader takes the
+            # a parser differential: the reader takes the
             # LAST duplicate entry while the raw copy would keep BOTH, so
             # custody of such a package cannot be honest
             from collections import Counter
@@ -447,7 +447,7 @@ class ExcelReader:
             if not self.read_only:
                 # content-level loss inventory for the lossy-save warning:
                 # built now because the archive is gone by save time on the
-                # stock path (PR-0 D14)
+                # stock path
                 action = "scan for unpreservable content"
                 self.wb._paper_loss_inventory = scan_archive(
                     self.archive, self.valid_files, keep_vba=self.keep_vba,
@@ -456,7 +456,7 @@ class ExcelReader:
                 if self.preserve:
                     # the ledger arms only now: everything the loader itself
                     # fired (create_sheet, cell binds, style writes) is the
-                    # file's own state, not user dirt (PR-0 D5)
+                    # file's own state, not user dirt
                     action = "arm the dirty ledger"
                     self.wb._paper_ledger = DirtyLedger.arm(self.wb, rich_text=self.rich_text)
         except ValueError as e:
@@ -500,8 +500,7 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
         to the ``PAPER_PRESERVE_DEFAULT`` environment switch (``"1"`` turns
         preserve on for every load that supports it, ``read_only`` loads
         excepted — a default, not a mandate); unset, it resolves to
-        ``False``. The public package ships with the switch unset
-        (PLAN-v0.1 Appendix A item 1 gates the public flip); paper-internal
+        ``False``. The public package ships with the switch unset; paper-internal
         harness images set it.
     :type preserve: bool or None
 

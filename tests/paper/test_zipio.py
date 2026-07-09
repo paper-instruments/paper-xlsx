@@ -1,5 +1,5 @@
 """The preserve-mode zip machinery: raw copy, determinism, atomic delivery
-(CONVENTIONS §7; PR-0 D4/D10)."""
+."""
 from __future__ import annotations
 
 import io

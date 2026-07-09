@@ -1,4 +1,4 @@
-"""Batch 5 (PLAN-v0.1 §5, PR-1 §4): the computation layer — scenario
+"""The computation layer — scenario
 runner, formula pre-flight linter, certification-gated write-back."""
 from __future__ import annotations
 
@@ -127,7 +127,7 @@ class TestEvaluate:
 
     @needs_soffice
     def test_scenario_run_certified_and_untouched(self, fixture_copy):
-        # battery job 12: one evaluate() call, certified
+        # battery job 12: one evaluate call, certified
         src = fixture_copy("features/schedule_calc.xlsx")
         with open(src, "rb") as f:
             before = f.read()

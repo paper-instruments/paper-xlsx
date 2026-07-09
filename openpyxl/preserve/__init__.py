@@ -1,11 +1,11 @@
-# paper-xlsx: the spine (CONVENTIONS §3, PR-0 §§3-6)
+# paper-xlsx: the spine
 
 """Preserve mode: the original package is the source of truth; the object
 model is a source of edits to it.
 
 Loaded via ``load_workbook(path, preserve=True)``. Untouched parts survive
 byte-identical by construction (raw compressed-stream copy where possible);
-touched worksheet parts are spliced, never re-serialized (Phase 2c).
+touched worksheet parts are spliced, never re-serialized.
 """
 
 from .inventory import LossInventory, scan_archive
@@ -34,7 +34,7 @@ def __getattr__(name):
         return findings
     if name == "receipt":
         # the module is named receiptS so this attribute can only ever
-        # resolve to the FUNCTION (Batch-6 gate: a same-named submodule
+        # resolve to the FUNCTION (a same-named submodule
         # import shadowed the function with the module object)
         from .receipts import receipt
         return receipt
