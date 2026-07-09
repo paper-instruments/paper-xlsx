@@ -102,6 +102,14 @@ There are several ways to contribute, even if you can't code (or can't code well
 
 
 .. toctree::
+    :maxdepth: 1
+    :caption: Preserve mode (paper-xlsx)
+    :hidden:
+
+    paper
+
+
+.. toctree::
     :caption: Styling
     :maxdepth: 1
     :hidden:

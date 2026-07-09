@@ -15,8 +15,59 @@ import io
 import re
 import zipfile
 
+from openpyxl.errors import UnsupportedStructureError
+
 MAX_COL = 1 << 20
 MAX_ROW = 1 << 22
+
+# hard sheet limits (ECMA-376): shifting occupied cells past these is a
+# BoundaryViolationError, not a silent wrap or drop
+EXCEL_MAX_ROW = 1048576
+EXCEL_MAX_COL = 16384
+
+
+class AddressRemap:
+    """How one structural edit moved addresses (CONVENTIONS §2, pinned):
+    every pre-edit address must be remapped through this, never reused.
+
+    ``map('Model!B12') -> 'Model!B13'``; addresses whose cells the edit
+    deleted map to ``None``; addresses on other sheets (or untouched by
+    the shift) come back unchanged. Accepts bare cells, ranges, and
+    sheet-qualified forms; ``$`` markers are kept positionally, matching
+    the rewriter's Excel semantics."""
+
+    def __init__(self, sheet_title, operation, index, amount):
+        self.sheet_title = sheet_title
+        self.operation = operation
+        self.index = index
+        self.amount = amount
+
+    def map(self, address):
+        from .rewrite import REF_ERROR, shift_ref
+
+        sheet, ref = None, address
+        m = _SHEET_PREFIX_RE.match(address)
+        if m:
+            sheet = (m.group(1) or m.group(2)).replace("''", "'")
+            ref = m.group(3)
+        if sheet is not None \
+                and sheet.casefold() != self.sheet_title.casefold():
+            return address
+        axis = "rows" if self.operation.endswith("_rows") else "cols"
+        is_delete = self.operation.startswith("delete")
+        shifted = shift_ref(ref, axis, self.index, self.amount, is_delete)
+        if shifted == REF_ERROR:
+            return None
+        if sheet is None:
+            return shifted
+        return address[:m.end(0) - len(m.group(3))] + shifted
+
+    def __repr__(self):
+        return "AddressRemap({0!r}, {1}, index={2}, amount={3})".format(
+            self.sheet_title, self.operation, self.index, self.amount)
+
+
+_SHEET_PREFIX_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([^'!]+))!(.+)$")
 
 
 def shift_bounds(kind, index):
@@ -115,7 +166,9 @@ def analyze_shift(ws, kind, index):
     # preserved charts: their XML is raw retained bytes — a shift makes them
     # point at wrong rows with no error anywhere (PR-0 §8: refusal is the
     # only honest v0 answer on chart-referenced sheets)
-    charts = _charts_referencing(wb, ws.title)
+    led_ref = getattr(wb, "_paper_ledger", None)
+    chart_title = led_ref.renames.get(ws, ws.title) if led_ref else ws.title
+    charts = _charts_referencing(wb, chart_title)
     if charts:
         impacts.append(
             "preserved chart(s) ({0}) reference this sheet; their series "
@@ -192,11 +245,33 @@ def shift_blockers(ws, operation, index, amount=1):
     blockers = []
     source = getattr(wb, "_paper_source", None)
     led = getattr(wb, "_paper_ledger", None)
-    if led is not None and led.shifts.get(ws):
-        blockers.append(
-            "the sheet already has a pending structural edit this session; "
-            "save the workbook between structural edits")
-    part_payload = _sheet_payload(wb, ws.title)
+    # multiple shifts per session compose: model fixups and snapshot
+    # rebases run at edit time in order, the byte renumber replays the
+    # recorded ops in order at save (PLAN-v0.1 3.3 retired the
+    # one-shift-per-session refusal)
+    led_ref = getattr(wb, "_paper_ledger", None)
+    lookup_title = led_ref.renames.get(ws, ws.title) if led_ref else ws.title
+    # in-session charts are model-rendered at save: a delete that removes
+    # their charted cells has no honest rewrite — block BEFORE any cell
+    # moves (Batch-4 gate)
+    if led_ref is not None and operation.startswith("delete"):
+        from .rewrite import shift_name_value
+
+        axis_ = "rows" if "rows" in operation else "cols"
+        for sheet in wb.worksheets:
+            armed_charts = (led_ref.object_snapshots.get(sheet) or {}).get(
+                "chart", {})
+            for i, chart in enumerate(getattr(sheet, "_charts", []) or []):
+                if i in armed_charts:
+                    continue
+                for f in _chart_source_refs(chart):
+                    new_f, chg = shift_name_value(f, ws.title, axis_,
+                                                  index, amount, True)
+                    if chg and "#REF" in new_f and "#REF" not in f:
+                        blockers.append(
+                            "an in-session chart charts {0!r}, which this "
+                            "delete removes".format(f))
+    part_payload = _sheet_payload(wb, lookup_title)
     if part_payload is None:
         blockers.append("the sheet's package part could not be located")
         return blockers
@@ -207,6 +282,11 @@ def shift_blockers(ws, operation, index, amount=1):
     if b"t=\"array\"" in part_payload or b"t='array'" in part_payload:
         blockers.append("the sheet carries array formulas (ref rewriting "
                         "for spill ranges is not supported in v0)")
+    if b"t=\"dataTable\"" in part_payload \
+            or b"t='dataTable'" in part_payload:
+        blockers.append("the sheet carries what-if data tables; their "
+                        "ref/r1/r2 inputs live in unmodeled bytes and "
+                        "would silently mis-shift (Batch-3 gate)")
     if any(cell._comment is not None for cell in ws._cells.values()):
         blockers.append("the sheet carries comments; their anchors live in "
                         "comment/VML parts the shift cannot rewrite")
@@ -278,6 +358,44 @@ def _sheet_payload(wb, title):
         return z.read(part)
 
 
+def _chart_source_ref_objects(chart):
+    """The live reference OBJECTS of a model chart's data sources (each
+    carries a string ``.f``)."""
+    for ser in getattr(chart, "series", []) or []:
+        for src_name in ("val", "yVal", "xVal", "bubbleSize", "cat", "tx"):
+            src = getattr(ser, src_name, None)
+            if src is None:
+                continue
+            for ref_name in ("numRef", "strRef", "multiLvlStrRef"):
+                ref = getattr(src, ref_name, None)
+                if ref is not None and isinstance(getattr(ref, "f", None),
+                                                  str):
+                    yield ref
+
+
+def _chart_source_refs(chart):
+    for ref in _chart_source_ref_objects(chart):
+        yield ref.f
+
+
+def _shift_added_chart_refs(chart, target_title, axis, index, amount,
+                            is_delete, shift_name_value):
+    """Rewrite one model chart's data-source references for a shift on
+    ``target_title`` (deletes that would strand a chart were already
+    blocked pre-move by shift_blockers)."""
+    for ref in _chart_source_ref_objects(chart):
+        new_f, changed = shift_name_value(
+            ref.f, target_title, axis, index, amount, is_delete)
+        if not changed:
+            continue
+        if "#REF" in new_f and "#REF" not in ref.f:
+            raise UnsupportedStructureError(
+                "internal: a delete stranding an in-session chart "
+                "({0!r}) escaped the pre-move blocker; the model may be "
+                "partially shifted — do not save.".format(ref.f))
+        ref.f = new_f
+
+
 def apply_model_shift(ws, operation, index, amount):
     """All the reference updates stock openpyxl skips, applied to the MODEL
     after the cells moved (Excel insert/delete semantics via rewrite.py).
@@ -304,15 +422,24 @@ def apply_model_shift(ws, operation, index, amount):
         _rebase_snapshots(led, ws, mapper, axis)
 
     # 1. formulas everywhere in the workbook that reference this sheet
-    for other in wb.worksheets:
-        for (row, col), cell in list(other._cells.items()):
-            if cell.data_type != "f" or not isinstance(cell._value, str):
-                continue
-            new_formula, changed = shift_formula(
-                cell._value, other.title, ws.title, axis, index, amount,
-                is_delete)
-            if changed:
-                cell.value = new_formula     # through the chokepoint: dirty
+    # (machinery-derived rewrites of accepted formulas: the lint
+    # chokepoint must not judge them — Batch-6 gate, same class as the
+    # rename cascade)
+    _saved_lint = getattr(wb, "formula_lint", "warn")
+    wb.formula_lint = "off"
+    try:
+        for other in wb.worksheets:
+            for (row, col), cell in list(other._cells.items()):
+                if cell.data_type != "f" \
+                        or not isinstance(cell._value, str):
+                    continue
+                new_formula, changed = shift_formula(
+                    cell._value, other.title, ws.title, axis, index,
+                    amount, is_delete)
+                if changed:
+                    cell.value = new_formula  # via the chokepoint: dirty
+    finally:
+        wb.formula_lint = _saved_lint
 
     # 2. defined names (workbook- and sheet-scoped) and print settings
     for names in [wb.defined_names] + [s.defined_names
@@ -325,6 +452,22 @@ def apply_model_shift(ws, operation, index, amount):
                 dn.value, ws.title, axis, index, amount, is_delete)
             if changed:
                 dn.attr_text = new_value
+
+    # 2b. charts ADDED this session are model-rendered at save, so their
+    # data-source references must follow the shift like every other model
+    # reference (loaded charts' parts are byte-patched by
+    # plan_chart_updates instead) — Batch-4 gate: an added chart's range
+    # silently pointed at the pre-shift cells
+    if led is not None:
+        for sheet in wb.worksheets:
+            armed_charts = (led.object_snapshots.get(sheet) or {}).get(
+                "chart", {})
+            for i, chart in enumerate(getattr(sheet, "_charts", []) or []):
+                if i in armed_charts:
+                    continue
+                _shift_added_chart_refs(chart, ws.title, axis, index,
+                                        amount, is_delete,
+                                        shift_name_value)
 
     # 3. sheet-internal regions (fully modeled; the splice re-renders them)
     for rng in list(ws.merged_cells.ranges):

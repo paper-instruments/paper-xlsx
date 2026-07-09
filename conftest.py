@@ -1,7 +1,14 @@
 # Copyright (c) 2010-2024 openpyxl
 
+import os
+
 import pytest
 import platform
+
+# paper-xlsx: the suite asserts BOTH arms (stock and preserve) explicitly,
+# so the harness-image default flip must not leak in — tests that cover the
+# flipped default set the env themselves (battery job 2, PLAN-v0.1 0.5)
+os.environ.pop("PAPER_PRESERVE_DEFAULT", None)
 
 ### Markers ###
 

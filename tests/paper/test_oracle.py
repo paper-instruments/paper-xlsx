@@ -171,3 +171,53 @@ class TestCertify:
         assert any("A2" in a for a in excluded)    # downstream taint
         assert result.status == "CERTIFIED"        # B2 checked and matching
         assert result.checked >= 1
+
+
+class TestCertificationNoiseClasses:
+    """PLAN-v0.1 1.7: external links and oracle-unsupported functions are
+    excluded-with-reason, like volatiles — DIVERGED keeps meaning
+    'genuine disagreement'."""
+
+    def test_exclusion_seeds_classify_precisely(self):
+        from openpyxl import oracle
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "=LET(x,1,x*2)"           # unsupported function
+        ws["B1"] = "='[1]Other'!A1"          # external workbook ref
+        ws["C1"] = "=NOW()"                  # volatile
+        ws["D1"] = "=SUM(1,2)"               # plain: never excluded
+        ws["E1"] = '=CONCAT("use LET(", A1)'  # literal mention: no taint
+        ws["F1"] = "=SUM(Table1[Col])"       # structured ref: not external
+        seeds = oracle._exclusion_seeds(wb)
+        assert seeds[("Sheet", 1, 1)] == "unsupported:LET"
+        assert seeds[("Sheet", 1, 2)] == "external-link"
+        assert seeds[("Sheet", 1, 3)] == "volatile"
+        assert ("Sheet", 1, 4) not in seeds
+        assert ("Sheet", 1, 5) not in seeds
+        assert ("Sheet", 1, 6) not in seeds
+
+    @pytest.mark.lo_smoke
+    def test_excluded_classes_do_not_poison_certification(self, lo, tmp_path):
+        from openpyxl import oracle
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "=LET(x,21,x*2)"          # LO may compute this differently
+        ws["A2"] = "=A1+1"                   # downstream of the exclusion
+        ws["B1"] = 21
+        ws["B2"] = "=B1*2"                   # independent, verifiable
+        raw = str(tmp_path / "noise.xlsx")
+        wb.save(raw)
+        recalced = str(tmp_path / "noise_calc.xlsx")
+        oracle.recalc(raw, output_path=recalced)
+        result = oracle.certify(recalced)
+        assert result.status == "CERTIFIED"          # B2 checked, matching
+        assert result.checked >= 1
+        assert any("A1" in a for a in result.unsupported_excluded)
+        excluded_everywhere = (result.unsupported_excluded
+                               + result.volatile_excluded)
+        assert any("A2" in a for a in excluded_everywhere)
+        doc = result.to_dict()
+        assert "external_excluded" in doc
+        assert "unsupported_excluded" in doc

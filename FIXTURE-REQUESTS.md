@@ -74,3 +74,25 @@ tests scheduled for Phases 2–6.
   "verified_by": "<human name>", "date": "YYYY-MM-DD"
 }
 ```
+
+## v0.1 Batch 1 — real-Excel OPEN checks (1.8; humans + desktop Excel required)
+
+These are not fixture files but verification acts: LibreOffice smoke tests
+are provably blind to this class (field incident: Excel rendered charts
+differently based on the app.xml producer string alone).
+
+1. **Fresh-generation producer check.** Open a paper-xlsx fresh-generated
+   workbook (`Workbook()` → save; producer string pinned in
+   tests/paper/test_honesty.py::TestProducerFingerprint) in desktop Excel
+   (Windows + Mac): confirm no repair dialog, no rendering quirks vs the
+   same content authored by Excel itself.
+2. **Chart-output open checks (queue for every Batch-4 deliverable).**
+   Every chart/image the Batch-4 work emits (charts on added sheets, the
+   drawing splice, chartpatch edits) must be opened in desktop Excel and
+   visually compared against the same edit performed in Excel. Record
+   Excel version + screenshots alongside the fixture sidecar.
+3. **Preserve-mode spot check on a real client-shaped model.** One
+   Excel-authored workbook with charts + pivots + x14 CF, edited via
+   preserve mode, opened in Excel: no repair prompt, charts/pivots/CF
+   intact. This is the release-gate soak artifact (PLAN-v0.1 Appendix A
+   item 1).

@@ -49,6 +49,17 @@ from openpyxl.xml.constants import (
 
 INTEGER_TYPES = (int,)
 
+
+def _require_materialized_cells(wb, api):
+    """The perception verbs read ws._cells; read-only and write-only
+    workbooks never materialize it (Batch-6 gate: raw AttributeError /
+    silently empty results)."""
+    if getattr(wb, "_read_only", False) or wb.write_only:
+        raise ValueError(
+            "{0} needs materialized cells; read-only and write-only "
+            "workbooks do not hold them. Load normally (or with "
+            "preserve=True) instead.".format(api))
+
 class Workbook:
     """Workbook is the container for all other parts of the document."""
 
@@ -59,6 +70,15 @@ class Workbook:
     _paper_source = None            # retained source-package bytes
     _paper_loss_inventory = None    # content the stock save cannot preserve
     _paper_ledger = None            # the dirty ledger; armed after load
+    # protection awareness (PLAN-v0.1 1.6): True turns writes to locked
+    # cells on protected sheets into typed refusals (default: warn once
+    # per sheet). Protection is reported, never enforced or bypassed.
+    # PRESERVE-MODE workbooks only in v0.1 (the check rides the armed
+    # ledger); on stock loads the flag is inert.
+    strict_protection = False
+    # formula pre-flight lint mode at the value-bind chokepoint
+    # (PLAN-v0.1 5.2; preserve-mode workbooks only): "off"|"warn"|"refuse"
+    formula_lint = "warn"
     template = False
     path = "/xl/workbook.xml"
 
@@ -162,6 +182,383 @@ class Workbook:
         """
         _ledger.mark_dirty_target(self, target)
 
+    def replace_part(self, name, payload):
+        """Raw byte swap of one unmanaged package part under preserve
+        mode (PR-1 1.4) — media swaps are the intended use
+        (``wb.replace_part("xl/media/image1.png", new_png_bytes)``).
+
+        The part must exist (:class:`~openpyxl.errors.TargetNotFoundError`
+        otherwise); parts the model actively manages (sheets, workbook,
+        styles, sharedStrings, content types) refuse with
+        :class:`~openpyxl.errors.RelationshipPolicyError` — replacing them
+        raw would desync the model. Guards run NOW; bytes land at save.
+        """
+        if self._paper_ledger is None or not self._paper_ledger.armed:
+            raise ValueError(
+                "replace_part is only meaningful in preserve mode "
+                "(load_workbook(..., preserve=True)).")
+        from openpyxl.preserve.lifecycle import check_replace_part
+
+        check_replace_part(self, name)
+        if not isinstance(payload, bytes):
+            raise TypeError("payload must be bytes")
+        self._paper_ledger.replaced_parts[name] = payload
+
+    def set_input(self, name_or_label, value):
+        """Set a model INPUT by defined name or text label (paper-xlsx,
+        PLAN-v0.1 Batch 7): resolution order is defined names, then
+        ``locate`` over every sheet (a label found on several sheets is
+        ambiguous). Refuses to overwrite a formula cell — set_input never
+        destroys a calculation. Returns the Cell written."""
+        from openpyxl.errors import (
+            AmbiguousTargetError,
+            TargetNotFoundError,
+            UnsupportedStructureError,
+        )
+
+        target = None
+        dn = self.defined_names.get(name_or_label)
+        if dn is not None:
+            destinations = list(dn.destinations)
+            if len(destinations) != 1:
+                raise AmbiguousTargetError(
+                    "defined name {0!r} resolves to {1} areas; single "
+                    "cells only.".format(name_or_label, len(destinations)),
+                    kind="ambiguous-name", options=[
+                        "{0}!{1}".format(t, r) for t, r in destinations])
+            title, coord = destinations[0]
+            if ":" in coord:
+                raise AmbiguousTargetError(
+                    "defined name {0!r} resolves to a RANGE ({1}); "
+                    "set_input takes single cells only.".format(
+                        name_or_label, coord),
+                    kind="ambiguous-name",
+                    options=["{0}!{1}".format(title, coord)])
+            target = self[title][coord.replace("$", "")]
+        else:
+            hits = []
+            for ws in self.worksheets:
+                try:
+                    hits.append(ws.locate(name_or_label))
+                except TargetNotFoundError:
+                    continue
+            if not hits:
+                raise TargetNotFoundError(
+                    "{0!r} is neither a defined name nor a label on any "
+                    "sheet.".format(name_or_label),
+                    kind="input-not-found")
+            if len(hits) > 1:
+                options = ["{0}!{1}".format(c.parent.title, c.coordinate)
+                           for c in hits]
+                raise AmbiguousTargetError(
+                    "label {0!r} resolves on {1} sheets: {2}. Qualify the "
+                    "request.".format(name_or_label, len(hits),
+                                      ", ".join(options)),
+                    kind="ambiguous-input", options=options)
+            target = hits[0]
+        from openpyxl.cell.cell import MergedCell
+
+        if isinstance(target, MergedCell):
+            raise UnsupportedStructureError(
+                "{0}!{1} is inside a merged range; write the input to the "
+                "merge's anchor cell instead. Nothing was changed.".format(
+                    target.parent.title, target.coordinate),
+                kind="input-is-merged-interior",
+                anchor="{0}!{1}".format(target.parent.title,
+                                        target.coordinate))
+        if target.data_type == "f":
+            raise UnsupportedStructureError(
+                "{0}!{1} holds a formula; set_input never overwrites "
+                "calculations. Nothing was changed.".format(
+                    target.parent.title, target.coordinate),
+                kind="input-is-calculation",
+                anchor="{0}!{1}".format(target.parent.title,
+                                        target.coordinate))
+        target.value = value
+        return target
+
+    def protect_for_delivery(self, password=None):
+        """Lock every populated cell EXCEPT the model map's classified
+        inputs, and enable sheet protection (paper-xlsx, PLAN-v0.1 Batch
+        7). Every non-input cell is ACTIVELY locked (a workbook authored
+        with locked=False cells — templates, LibreOffice output — would
+        otherwise ship editable under a "protected" sheet: the gate found
+        this). Each cell's other protection flags (hidden) are preserved.
+        Protection is advisory in the file format and REPORTED here —
+        returns {"locked_sheets", "unlocked_inputs", "locked_cells"}."""
+        from copy import copy as _copy
+
+        from openpyxl.styles import Protection
+
+        mm = self.model_map()
+        unlocked = []
+        locked_count = 0
+        locked_sheets = []
+
+        def _set_locked(cell, locked):
+            prot = _copy(cell.protection) if cell.protection is not None \
+                else Protection()
+            prot.locked = locked
+            cell.protection = prot
+
+        for ws in self.worksheets:
+            inputs = set(mm.sheets.get(ws.title, {}).get("inputs", []))
+            for (row, col), cell in sorted(ws._cells.items()):
+                if cell._value is None:
+                    continue
+                address = cell.coordinate
+                if address in inputs:
+                    _set_locked(cell, False)
+                    unlocked.append("{0}!{1}".format(ws.title, address))
+                else:
+                    _set_locked(cell, True)
+                    locked_count += 1
+            ws.protection.sheet = True
+            if password:
+                ws.protection.password = password
+            locked_sheets.append(ws.title)
+        return {"locked_sheets": locked_sheets,
+                "unlocked_inputs": unlocked,
+                "locked_cells": locked_count}
+
+    def scrub(self, remove=("comments", "metadata", "personal",
+                            "hidden-sheets")):
+        """Strip delivery-inappropriate content (paper-xlsx, PLAN-v0.1
+        Batch 7). Returns a scrub REPORT — everything removed is listed,
+        everything that could NOT be removed is reported with its reason
+        (hidden sheets whose removal would strand references refuse the
+        removal and land in "skipped"; never silent).
+
+        remove: any of "comments" (in-session comment objects; sheets
+        with PRESERVED comment machinery are reported, not silently
+        stripped), "metadata" (core document properties reset),
+        "personal" (creator/lastModifiedBy cleared), "hidden-sheets"
+        (removed via the audited removal path)."""
+        from openpyxl.errors import PaperRefusal
+
+        report = {"removed": [], "skipped": []}
+        options = set(remove)
+        unknown = options - {"comments", "metadata", "personal",
+                             "hidden-sheets"}
+        if unknown:
+            raise ValueError("unknown scrub targets: {0}".format(
+                sorted(unknown)))
+        if "comments" in options:
+            # a sheet whose comments come from PRESERVED machinery cannot
+            # have them removed (the saver refuses editing preserved
+            # comment parts) — nulling them would both LIE in the report
+            # and brick the save (the gate found exactly this). Detect
+            # per sheet FIRST, then only null in-session comments on
+            # comment-free sheets (compute-then-mutate keeps scrub atomic
+            # and its report honest).
+            preserved_sheets = set()
+            if self._paper_source is not None:
+                import io as _io
+                import zipfile as _zipfile
+
+                from openpyxl.preserve.comments import (
+                    sheet_has_comment_machinery,
+                )
+                from openpyxl.preserve.saver import _package_info
+
+                with _zipfile.ZipFile(
+                        _io.BytesIO(self._paper_source)) as zin:
+                    names = set(zin.namelist())
+                    _wb, mapping = _package_info(zin)
+                    led = self._paper_ledger
+                    for ws in self.worksheets:
+                        original = (led.renames.get(ws, ws.title)
+                                    if led is not None else ws.title)
+                        part = mapping.get(original)
+                        if part is not None and sheet_has_comment_machinery(
+                                zin, part, names):
+                            preserved_sheets.add(ws.title)
+            for ws in self.worksheets:
+                if ws.title in preserved_sheets:
+                    commented = sorted(
+                        cell.coordinate for cell in ws._cells.values()
+                        if cell._comment is not None)
+                    if commented:
+                        report["skipped"].append(
+                            "sheet {0!r} carries preserved comment "
+                            "machinery; its comments ({1}) cannot be "
+                            "removed without rewriting preserved parts "
+                            "(unsupported). Nothing on this sheet was "
+                            "changed.".format(ws.title,
+                                              ", ".join(commented)))
+                    continue
+                for (row, col), cell in sorted(ws._cells.items()):
+                    if cell._comment is not None:
+                        cell.comment = None
+                        report["removed"].append(
+                            "comment at {0}!{1}".format(ws.title,
+                                                        cell.coordinate))
+        if "metadata" in options:
+            props = self.properties
+            for attr in ("title", "subject", "description", "keywords",
+                         "category", "contentStatus", "identifier"):
+                if getattr(props, attr, None):
+                    setattr(props, attr, None)
+                    report["removed"].append(
+                        "core property {0}".format(attr))
+        if "personal" in options:
+            props = self.properties
+            for attr in ("creator", "lastModifiedBy"):
+                if getattr(props, attr, None):
+                    setattr(props, attr, None)
+                    report["removed"].append(
+                        "core property {0}".format(attr))
+        if "hidden-sheets" in options:
+            for ws in list(self.worksheets):
+                if ws.sheet_state == "visible":
+                    continue
+                try:
+                    self.remove(ws)
+                    report["removed"].append(
+                        "hidden sheet {0!r}".format(ws.title))
+                except PaperRefusal as exc:
+                    report["skipped"].append(
+                        "hidden sheet {0!r}: {1}".format(ws.title,
+                                                         exc))
+        return report
+
+    def set_pivot_refresh_on_load(self):
+        """Byte-patch ``refreshOnLoad="1"`` onto every pivotCacheDefinition
+        in the preserved package (paper-xlsx, PLAN-v0.1 Batch 7): pivots
+        are preserved verbatim, so refresh-on-load is how their data stays
+        honest after cell edits. Preserve mode only. Returns the list of
+        parts patched."""
+        if self._paper_ledger is None or not self._paper_ledger.armed:
+            raise ValueError(
+                "set_pivot_refresh_on_load() patches preserved pivot "
+                "parts and is only available under preserve mode.")
+        import io as _io
+        import zipfile as _zipfile
+
+        from openpyxl.preserve import crosspart
+
+        patched = []
+        with _zipfile.ZipFile(_io.BytesIO(self._paper_source)) as zin:
+            for name in sorted(zin.namelist()):
+                if not (name.startswith("xl/pivotCache/pivotCacheDefinition")
+                        and name.endswith(".xml")):
+                    continue
+                payload = zin.read(name)
+                root = crosspart.scan_small(payload,
+                                            "pivotCacheDefinition",
+                                            max_depth=1)
+                if root.attrs.get("refreshOnLoad") == "1":
+                    continue
+                start, end, head = crosspart._patch_attr(
+                    payload, root, "refreshOnLoad", "1")
+                self._paper_ledger.replaced_parts[name] = (
+                    payload[:start] + head + payload[end:])
+                patched.append(name)
+        return patched
+
+    def model_map(self):
+        """Role classification of every populated cell on formula-bearing
+        sheets — inputs / calculations / outputs / constants (paper-xlsx,
+        PLAN-v0.1 6.2; pinned schema "model_map" v1). Returns
+        :class:`openpyxl.preserve.modelmap.ModelMap`."""
+        from openpyxl.preserve.modelmap import build_model_map
+
+        _require_materialized_cells(self, "model_map()")
+        return build_model_map(self)
+
+    def search(self, text_or_regex, *, regex=False, values=True,
+               formulas=True):
+        """Find text across the workbook (paper-xlsx, PLAN-v0.1 Batch 6).
+        Returns ``[{"address", "match", "kind"}, ...]`` where kind is
+        "value" or "formula"."""
+        import re as _re
+
+        _require_materialized_cells(self, "search()")
+        if regex:
+            try:
+                pattern = _re.compile(text_or_regex)
+            except _re.error as exc:
+                raise ValueError(
+                    "search(regex=True) got an invalid pattern "
+                    "{0!r}: {1}".format(text_or_regex, exc))
+        else:
+            pattern = None
+        results = []
+        for ws in self.worksheets:
+            for (row, col), cell in sorted(ws._cells.items()):
+                value = cell._value
+                if value is None:
+                    continue
+                is_formula = cell.data_type == "f"
+                if is_formula and not formulas:
+                    continue
+                if not is_formula and not values:
+                    continue
+                if is_formula and not isinstance(value, str):
+                    # ArrayFormula/DataTableFormula objects: search their
+                    # TEXT, never the Python repr (Batch-6 gate: repr
+                    # fabricated matches and hid real ones)
+                    text = getattr(value, "text", None)
+                    if not isinstance(text, str):
+                        continue
+                else:
+                    text = value if isinstance(value, str) else str(value)
+                if pattern is not None:
+                    m = pattern.search(text)
+                    if m is None:
+                        continue
+                    match = m.group(0)
+                else:
+                    if str(text_or_regex) not in text:
+                        continue
+                    match = str(text_or_regex)
+                results.append({
+                    "address": "{0}!{1}".format(ws.title,
+                                                cell.coordinate),
+                    "match": match,
+                    "kind": "formula" if is_formula else "value",
+                })
+        return results
+
+    def validate(self):
+        """Run the preserve saver's FULL validation pass without
+        delivering a file (paper-xlsx, PLAN-v0.1 Batch 6): every refusal
+        a save would raise is raised now; on success returns None and
+        nothing is written anywhere."""
+        if not self._preserve or self._paper_ledger is None:
+            raise ValueError(
+                "validate() replays the preserve save machinery and is "
+                "only available on workbooks loaded with preserve=True.")
+        import io as _io
+
+        self.save(_io.BytesIO())
+        return None
+
+    def evaluate(self, set, read, *, timeout=120.0):
+        """What-if scenario against THIS workbook's preserved source
+        bytes (PLAN-v0.1 5.1): inputs applied to a temp copy through the
+        spine, LibreOffice recalculates, outputs harvested. Neither the
+        original file nor this live workbook is touched.
+
+        NOTE: the run starts from the preserved AS-LOADED bytes — unsaved
+        in-session edits are not part of the scenario (save first if they
+        should be).
+
+        ``set``: {address: value} single-cell inputs; ``read``: list of
+        addresses to harvest. Addresses are sheet-qualified A1
+        ("Model!B2") or defined names. Returns
+        :class:`openpyxl.oracle.Evaluation`.
+        """
+        if not self._preserve or self._paper_source is None:
+            raise ValueError(
+                "evaluate() runs against the preserved source bytes and "
+                "is only available on workbooks loaded with "
+                "preserve=True.")
+        from openpyxl import oracle
+
+        return oracle.evaluate(self._paper_source, set, read,
+                               timeout=timeout)
+
     def manifest(self):
         """A structured description of this workbook: sheets, formulas,
         defined names, volatile functions, a confession block enumerating
@@ -264,11 +661,9 @@ class Workbook:
         """
         if not isinstance(sheet, Worksheet):
             sheet = self[sheet]
-        _ledger.refuse_sheet_lifecycle(
-            self, "move_sheet",
-            "reordering sheets renumbers the positional localSheetId of "
-            "every sheet-scoped defined name inside the preserved "
-            "workbook.xml.")
+        # v0.1 Batch 3: reorder is expressed at save by reordering the
+        # ORIGINAL <sheet> entry bytes; definedNames/bookViews re-render
+        # (localSheetId and activeTab are position-derived by the writer)
         idx = self._sheets.index(sheet)
         del self._sheets[idx]
         new_pos = idx + offset
@@ -276,16 +671,28 @@ class Workbook:
 
 
     def remove(self, worksheet):
-        """Remove `worksheet` from this workbook."""
+        """Remove `worksheet` from this workbook.
+
+        Under preserve mode a LOADED sheet's removal runs the reference
+        audit first (anything on another sheet pointing at the victim
+        refuses with the enumeration) and returns a
+        :class:`~openpyxl.preserve.ledger.RemovalReport`; the part
+        cascade happens at save (PLAN-v0.1 3.2)."""
+        report = None
         if not _ledger.allow_sheet_removal(self, worksheet):
-            _ledger.refuse_sheet_lifecycle(
-                self, "removing sheet {0!r}".format(worksheet.title),
-                "deleting a loaded sheet requires remapping sheet-scoped "
-                "defined names (positional localSheetId) and cascading the "
-                "deletion of its comments, drawings, tables and "
-                "relationships inside the preserved package.")
+            _ledger.audit_sheet_removal(self, worksheet)
+            _ledger.record_sheet_removal(self, worksheet)
+            report = True
         idx = self._sheets.index(worksheet)
         self._sheets.remove(worksheet)
+        if report:
+            from openpyxl.preserve.ledger import RemovalReport
+
+            # parts enumerate at save; the report carries what is known now
+            return RemovalReport([], remapped_names=len([
+                n for ws in self._sheets
+                for n in getattr(ws, "defined_names", {})]))
+        return None
 
 
     @deprecated("Use wb.remove(worksheet) or del wb[sheetname]")
@@ -428,7 +835,7 @@ class Workbook:
         return ct
 
 
-    def save(self, filename, *, allow_formula_loss=False):
+    def save(self, filename, *, allow_formula_loss=False, receipt=False):
         """Save the current workbook under the given `filename`.
         Use this function instead of using an `ExcelWriter`.
 
@@ -438,6 +845,11 @@ class Workbook:
             flag is set (and even then only cells you actually edited lose
             their formulas — untouched cells keep them in the original
             bytes). On the stock path the flag silences the loud warning.
+        :param receipt: preserve mode only — return an
+            :class:`openpyxl.preserve.receipts.EditReceipt` comparing the
+            saved file against the AS-LOADED source bytes (PLAN-v0.1
+            6.6). NOTE: after several saves from one session the receipt
+            is cumulative — it describes the session, not the last call.
 
         .. warning::
             When creating your workbook using `write_only` set to True,
@@ -446,9 +858,18 @@ class Workbook:
         """
         if self.read_only:
             raise TypeError("""Workbook is read-only""")
+        if receipt and (not self._preserve or self._paper_source is None):
+            raise ValueError(
+                "save(receipt=True) compares against the preserved source "
+                "bytes and is only available under preserve mode.")
         if self.write_only and not self.worksheets:
             self.create_sheet()
         save_workbook(self, filename, allow_formula_loss=allow_formula_loss)
+        if receipt:
+            from openpyxl.preserve.receipts import receipt as _receipt
+
+            return _receipt(self._paper_source, filename)
+        return None
 
 
     @property
@@ -471,12 +892,10 @@ class Workbook:
         """
         if self.__write_only or self._read_only:
             raise ValueError("Cannot copy worksheets in read-only or write-only mode")
-        _ledger.refuse_sheet_lifecycle(
-            self, "copy_worksheet",
-            "the copy machinery rebuilds cell and style state in ways the "
-            "dirty ledger cannot attribute; copy the data into a sheet "
-            "created with create_sheet() instead.")
-
+        # v0.1 Batch 3: the copy registers as an ADDED sheet (create_sheet
+        # below is ledger-hooked) and is generated whole at save; charts/
+        # images do not copy (upstream's copier skips them), comments and
+        # hyperlinks ride the added-sheet generators
         new_title = u"{0} Copy".format(from_worksheet.title)
         to_worksheet = self.create_sheet(title=new_title)
         cp = WorksheetCopy(source_worksheet=from_worksheet, target_worksheet=to_worksheet)

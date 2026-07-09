@@ -354,6 +354,11 @@ def scan_sheet(data):
         obj = None
         if depth == 1 and ns == main:
             span = RegionSpan(local.decode("ascii"), lt)
+            if self_closing:
+                # never reaches _close_element (no stack entry): the span
+                # must close here or region edits splice with end=None —
+                # the whole-document-duplication corruption (PLAN-v0.1 0.2)
+                span.end = tag_end
             scan.regions.setdefault(span.tag, []).append(span)
             scan.region_order.append((span.tag, span))
             if span.tag == "sheetData":

@@ -137,32 +137,23 @@ class TestAddedSheets:
         wb2 = load_workbook(out)
         assert wb2["Links"]["A1"].hyperlink.target == "https://example.org/doc"
 
-    def test_chart_add_refuses_at_add_time(self, fixture_copy, tmp_path):
-        # since the final review: add_chart/add_image refuse IMMEDIATELY
-        # under preserve (v0, PR-0 D9 as amended) — the alternative was a
-        # chart accepted at add time and silently absent from the save
+    def test_added_sheet_with_chart_saves(self, fixture_copy, tmp_path):
+        # Batch 4 (PLAN-v0.1 4.1) lifted the v0 add-time refusal: charts
+        # on ADDED sheets are stock-writer output routed through the
+        # lifecycle engine — zero splice risk
         from openpyxl.chart import BarChart, Reference
 
         src = fixture_copy(GAUNTLET)
-        with open(src, "rb") as f:
-            before = f.read()
         wb = load_workbook(src, preserve=True)
         ws = wb.create_sheet("Charted")
         ws.append([1, 2, 3])
         chart = BarChart()
         chart.add_data(Reference(ws, min_col=1, min_row=1, max_col=3, max_row=1))
-        with pytest.raises(UnsupportedStructureError, match="add_chart"):
-            ws.add_chart(chart, "E1")
-        # ...and on LOADED sheets too (was: silently dropped at save)
-        with pytest.raises(UnsupportedStructureError, match="add_chart"):
-            wb["Data"].add_chart(chart, "E1")
-        from openpyxl.drawing.image import Image
-        with pytest.raises(UnsupportedStructureError, match="add_image"):
-            wb["Data"].add_image(object(), "E1")
-        wb["Model"]["B8"] = 0.2
-        wb.save(str(tmp_path / "o.xlsx"))     # the rest still saves fine
-        with open(src, "rb") as f:
-            assert f.read() == before
+        ws.add_chart(chart, "A3")
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert len(wb2["Charted"]._charts) == 1
 
     def test_pandas_append_full_flow(self, fixture_copy):
         pd = pytest.importorskip("pandas")
@@ -322,12 +313,16 @@ class TestHyperlinks:
         assert wb2["Model"]["A13"].hyperlink.target == "https://example.org/new"
 
     def test_hyperlink_removal_refuses(self, fixture_copy, tmp_path):
+        # retyped in v0.1 Batch 1 (1.3): relationship-rewrite policy is
+        # exactly RelationshipPolicyError's pinned domain
+        from openpyxl.errors import RelationshipPolicyError
+
         src = fixture_copy(GAUNTLET)
         with open(src, "rb") as f:
             before = f.read()
         wb = load_workbook(src, preserve=True)
         wb["Model"]["A11"].hyperlink = None
-        with pytest.raises(UnsupportedStructureError, match="ADDITION"):
+        with pytest.raises(RelationshipPolicyError, match="ADDITION"):
             wb.save(str(tmp_path / "o.xlsx"))
         with open(src, "rb") as f:
             assert f.read() == before
@@ -371,19 +366,23 @@ class TestConditionalFormattingLift:
 
 class TestV0CrosspartRefusals:
 
-    def test_table_add_refuses(self, fixture_copy, tmp_path):
+    def test_table_add_now_correct(self, fixture_copy, tmp_path):
+        # FLIPPED by v0.1 Batch 2 (was a v0 refusal): table add rides the
+        # part-lifecycle engine; full coverage in test_lifecycle.py
         from openpyxl.worksheet.table import Table
 
         src = fixture_copy("features/tables.xlsx")
-        with open(src, "rb") as f:
-            before = f.read()
         wb = load_workbook(src, preserve=True)
         ws = wb["Data"]
+        ws["D1"] = "K"
+        ws["D2"] = 1
+        ws["E1"] = "V"
+        ws["E2"] = 2
         ws.add_table(Table(displayName="T2", ref="D1:E3"))
-        with pytest.raises(PaperRefusal, match="table"):
-            wb.save(str(tmp_path / "o.xlsx"))
-        with open(src, "rb") as f:
-            assert f.read() == before
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert "T2" in wb2["Data"].tables
 
     def test_mark_dirty_part_refuses(self, fixture_copy, tmp_path):
         src = fixture_copy(GAUNTLET)

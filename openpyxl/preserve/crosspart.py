@@ -196,6 +196,17 @@ def ct_append_overrides(data, overrides):
     return apply_edits(data, [_insert_into(root, data, payload)])
 
 
+def ct_append_defaults(data, defaults):
+    """Append Default entries; ``defaults`` = [(extension, content_type)].
+    Callers check for existing extensions first (duplicates are illegal)."""
+    root = scan_small(data, "Types", max_depth=1)
+    payload = b"".join(
+        b'<Default Extension="%s" ContentType="%s"/>' % (
+            _escape(ext), _escape(ctype))
+        for ext, ctype in defaults)
+    return apply_edits(data, [_insert_into(root, data, payload)])
+
+
 def ct_remove_override(data, part_name):
     """Remove the Override for ``part_name``; no-op when absent."""
     root = scan_small(data, "Types", max_depth=1)
@@ -400,15 +411,80 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
         raise UnsupportedStructureError(
             "the workbook part has no sheets element. Nothing was written.")
     sheets_node = sheets_nodes[0]
-    if state_changes:
+    renamed = {}
+    for ws_obj, original_title in getattr(led, "renames", {}).items():
+        if ws_obj.title != original_title:
+            renamed[original_title] = ws_obj.title
+
+    # removals/reorder rebuild the sheets children from ORIGINAL entry
+    # bytes (PLAN-v0.1 3.2); the per-entry patch path handles the rest
+    removed = set(getattr(led, "removed_sheets", ()))
+    current_originals = []
+    added = getattr(led, "added_sheets", set())
+    for sheet in wb._sheets:
+        if sheet in added:
+            continue          # membership by OBJECT: a freed title reused
+                              # by create_sheet is NOT a loaded sheet
+                              # (Batch-3 gate: duplicate/dangling entries)
+        orig = getattr(led, "renames", {}).get(sheet, sheet.title)
+        current_originals.append(orig)
+    armed_order = [t for t in getattr(led, "sheet_order", ())
+                   if t not in removed]
+    rebuild = bool(removed) or current_originals != armed_order
+    if rebuild:
+        by_name = {}
+        for entry in sheets_node.children:
+            if entry.local() == "sheet":
+                by_name[entry.attrs.get("name")] =                     original[entry.start:entry.end]
+        pieces = []
+        for orig_title in current_originals:
+            blob = by_name.get(orig_title)
+            if blob is None:
+                raise UnsupportedStructureError(
+                    "cannot rebuild the sheets element: no original entry "
+                    "for {0!r}. Nothing was written.".format(orig_title))
+            if orig_title in renamed:
+                blob = _rename_entry_name(blob, renamed[orig_title])
+            new_state = state_changes.get(
+                renamed.get(orig_title, orig_title))
+            if new_state is not None:
+                blob = _repatch_entry_state(blob, new_state)
+            pieces.append(blob)
+        if new_sheet_entries:
+            pieces.extend(
+                _render_sheet_entry(title, sheet_id, rid, state)
+                for title, sheet_id, rid, state in new_sheet_entries)
+        inner_start = min(c.start for c in sheets_node.children)             if sheets_node.children else None
+        inner_end = max(c.end for c in sheets_node.children)             if sheets_node.children else None
+        if inner_start is None:
+            raise UnsupportedStructureError(
+                "cannot rebuild an empty sheets element. Nothing was "
+                "written.")
+        edits.append((inner_start, inner_end, b"".join(pieces)))
+        new_sheet_entries = ()          # consumed by the rebuild
+        state_changes = {}
+        renamed = {}
+
+    if state_changes or renamed:
         for entry in sheets_node.children:
             if entry.local() != "sheet":
                 continue
+            # the entry still carries the ORIGINAL name bytes; the state
+            # key (led re-keyed at rename time) is the NEW one. Both
+            # changes compose into ONE whole-entry edit — two _patch_attr
+            # edits span the same start tag and trip the overlap guard
+            # (Batch-3 gate: rename+state in one session)
             name = entry.attrs.get("name")
-            if name in state_changes:
-                edits.append(_patch_attr(original, entry, "state",
-                                         state_changes[name],
-                                         drop_value="visible"))
+            effective = renamed.get(name, name)
+            new_state = state_changes.get(effective)
+            if name not in renamed and new_state is None:
+                continue
+            blob = original[entry.start:entry.end]
+            if name in renamed:
+                blob = _rename_entry_name(blob, renamed[name])
+            if new_state is not None:
+                blob = _repatch_entry_state(blob, new_state)
+            edits.append((entry.start, entry.end, blob))
     if new_sheet_entries:
         payload = b"".join(
             _render_sheet_entry(title, sheet_id, rid, state)
@@ -418,6 +494,30 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
     if not edits:
         return None
     return apply_edits(original, edits)
+
+
+def _rename_entry_name(entry_bytes, new_title):
+    import re as _re
+
+    return _re.sub(
+        br'(\sname=")[^"]*(")',
+        lambda m: m.group(1) + _escape(new_title) + m.group(2),
+        entry_bytes, count=1)
+
+
+def _repatch_entry_state(entry_bytes, new_state):
+    import re as _re
+
+    if b' state="' in entry_bytes:
+        if new_state == "visible":
+            return _re.sub(br'\sstate="[^"]*"', b"", entry_bytes, count=1)
+        return _re.sub(br'(\sstate=")[^"]*(")',
+                       lambda m: m.group(1) + _escape(new_state) + m.group(2),
+                       entry_bytes, count=1)
+    if new_state == "visible":
+        return entry_bytes
+    return entry_bytes.replace(
+        b"<sheet ", b'<sheet state="%s" ' % _escape(new_state), 1)
 
 
 def _render_sheet_entry(title, sheet_id, rid, state):

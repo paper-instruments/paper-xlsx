@@ -19,7 +19,21 @@ class PaperRefusal(Exception):
     Refusals are atomic: when one is raised, the workbook model, the dirty
     ledger, and every file on disk are exactly as they were before the
     refused operation began.
+
+    Structured fields (PLAN-v0.1 6.7, populated progressively — message
+    text is always the source of truth):
+
+    - ``kind``: stable machine-readable string ("ambiguous-label", ...)
+    - ``anchor``: sheet-qualified address or part name the refusal is
+      about, or None
+    - ``options``: suggested remedies / candidate addresses (list)
     """
+
+    def __init__(self, *args, kind=None, anchor=None, options=None):
+        super().__init__(*args)
+        self.kind = kind
+        self.anchor = anchor
+        self.options = list(options) if options else []
 
 
 class AmbiguousTargetError(PaperRefusal):
@@ -59,6 +73,13 @@ class StructuralShiftWarning(UserWarning):
     ranges keep pointing at the old cells."""
 
 
+class LintWarning(UserWarning):
+    """Formula pre-flight lint findings at the value-bind chokepoint
+    (PLAN-v0.1 5.2): the formula was accepted, but Excel will likely show
+    #NAME? or compute wrongly. Set ``wb.formula_lint = "refuse"`` to turn
+    these into typed refusals, or ``"off"`` to silence them."""
+
+
 class LossySaveWarning(UserWarning):
     """Loud warning on a save path that is about to rebuild or drop content
     it cannot preserve.
@@ -70,3 +91,12 @@ class LossySaveWarning(UserWarning):
     def __init__(self, message, losses=None):
         super().__init__(message)
         self.losses = list(losses) if losses else []
+
+
+class ProtectedWriteWarning(UserWarning):
+    """A write landed on a locked cell of a protected sheet (PLAN-v0.1
+    1.6). The write proceeds — openpyxl-level protection is advisory, and
+    this library reports it rather than enforcing or bypassing it — but
+    the human who protected the sheet expected the cell to be read-only.
+    Set ``wb.strict_protection = True`` to turn these writes into typed
+    refusals."""

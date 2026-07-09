@@ -18,11 +18,13 @@ from openpyxl.utils.cell import range_boundaries
 
 # CONVENTIONS §3.7 (pinned): nondeterministic volatiles are excluded from
 # certification; INDIRECT/OFFSET are volatile but deterministic given inputs
-VOLATILE_NONDETERMINISTIC = ("NOW", "TODAY", "RAND", "RANDBETWEEN")
+VOLATILE_NONDETERMINISTIC = ("NOW", "TODAY", "RAND", "RANDBETWEEN",
+                             "RANDARRAY")
 VOLATILE_DETERMINISTIC = ("INDIRECT", "OFFSET")
 
 _VOLATILE_RE = re.compile(
-    r"\b(NOW|TODAY|RAND|RANDBETWEEN|INDIRECT|OFFSET)\s*\(", re.IGNORECASE)
+    r"\b(NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY|INDIRECT|OFFSET)\s*\(",
+    re.IGNORECASE)
 
 
 class WorkbookManifest:
@@ -49,11 +51,23 @@ def build_manifest(wb):
     or preserve-mode)."""
     sheets = []
     volatile = {}
+    part_names = {}
+    source = getattr(wb, "_paper_source", None)
+    if source:
+        from .hygiene import current_titles_by_part
+
+        with zipfile.ZipFile(io.BytesIO(source)) as _zin:
+            # CURRENT-title keyed (renamed sheets keep their part —
+            # Batch-6 gate: part_name went stale/None after a rename)
+            part_names = {title: part for part, title
+                          in current_titles_by_part(wb, _zin).items()}
     for ws in wb.worksheets:
         formulas = 0
-        for (row, col), cell in ws._cells.items():
+        formula_addresses = []
+        for (row, col), cell in sorted(ws._cells.items()):
             if cell.data_type == "f" and isinstance(cell._value, str):
                 formulas += 1
+                formula_addresses.append(cell.coordinate)
                 for match in _VOLATILE_RE.finditer(cell._value):
                     name = match.group(1).upper()
                     volatile.setdefault(name, []).append(
@@ -73,8 +87,12 @@ def build_manifest(wb):
             "conditional_formatting_blocks":
                 len(list(ws.conditional_formatting)),
             "freeze_panes": ws.freeze_panes,
+            "protection": bool(ws.protection.sheet),
             "defined_names": {name: dn.value for name, dn
                               in sorted(ws.defined_names.items())},
+            # Batch-6 enrichment (PLAN-v0.1 6.5)
+            "formula_addresses": formula_addresses,
+            "part_name": part_names.get(ws.title),
         }
         sheets.append(entry)
     for addresses in volatile.values():
@@ -94,10 +112,49 @@ def build_manifest(wb):
             "deterministic": {k: v for k, v in sorted(volatile.items())
                               if k in VOLATILE_DETERMINISTIC},
         },
+        "workbook_protection": bool(
+            wb.security is not None
+            and (wb.security.lockStructure or wb.security.lockWindows
+                 or wb.security.workbookPassword
+                 or wb.security.workbookPasswordCharacterSet
+                 or wb.security.revisionsPassword)),
         "confession": _confession(wb),
         "preservation": _preservation(wb),
+        # Batch-6 enrichment (PLAN-v0.1 6.5)
+        "computation": _computation_summary(wb),
+        "protection_summary": {
+            "protected_sheets": [ws.title for ws in wb.worksheets
+                                 if bool(ws.protection.sheet)],
+            "strict_protection": bool(getattr(wb, "strict_protection",
+                                              False)),
+        },
     }
     return WorkbookManifest(doc)
+
+
+def _computation_summary(wb):
+    """Inputs/outputs counts from the model map plus the certifiable
+    flag (are there cached values to certify against?)."""
+    from .modelmap import build_model_map
+
+    mm = build_model_map(wb)
+    counts = {role: sum(len(roles.get(role, []))
+                        for roles in mm.sheets.values())
+              for role in ("inputs", "calculations", "outputs",
+                           "constants")}
+    certifiable = False
+    source = getattr(wb, "_paper_source", None)
+    if source:
+        with zipfile.ZipFile(io.BytesIO(source)) as z:
+            for name in z.namelist():
+                if name.startswith("xl/worksheets/")                         and name.endswith(".xml"):
+                    payload = z.read(name)
+                    if re.search(br"</f><v>[^<]", payload) or re.search(
+                            br"/><v>[^<]", payload):
+                        certifiable = True
+                        break
+    counts["certifiable"] = certifiable
+    return counts
 
 
 def _quoted(title):
@@ -209,10 +266,11 @@ class DependencySketch:
         sheet — plus every cell with an unresolved (structured/table)
         reference, reported conservatively."""
         min_col, min_row, max_col, max_row = bounds
+        title = sheet_title.casefold()   # Excel: sheet names case-insensitive
         hits = []
         for address, refs in self.references.items():
             for ref_sheet, ref_bounds, _raw in refs:
-                if ref_sheet != sheet_title:
+                if ref_sheet.casefold() != title:
                     continue
                 if _intersects(ref_bounds, min_col, min_row, max_col, max_row):
                     hits.append(address)
@@ -259,8 +317,8 @@ def dependency_sketch(wb):
                 continue
             formula = cell._value
             address = "{0}!{1}".format(_quoted(ws.title), cell.coordinate)
-            operands = token_cache.get(formula)
-            if operands is None:
+            cached = token_cache.get(formula)
+            if cached is None:
                 try:
                     tokens = Tokenizer(formula).items
                 except Exception:
@@ -268,7 +326,20 @@ def dependency_sketch(wb):
                     continue
                 operands = [t.value for t in tokens
                             if t.type == "OPERAND" and t.subtype == "RANGE"]
-                token_cache[formula] = operands
+                # INDIRECT/OFFSET with computed-string targets leave no
+                # RANGE operand at all (Batch-1 gate): the formula must
+                # count as unresolved (always-intersecting), never as
+                # invisible
+                indirect = any(
+                    t.type == "FUNC" and t.subtype == "OPEN"
+                    and t.value.upper().lstrip("_XLFN.")
+                    in ("INDIRECT(", "OFFSET(")
+                    for t in tokens)
+                cached = (operands, indirect)
+                token_cache[formula] = cached
+            operands, indirect = cached
+            if indirect:
+                sketch.unresolved.setdefault(address, []).append(formula)
             for raw in operands:
                 _classify(sketch, wb, ws, address, raw)
     return sketch
@@ -288,14 +359,48 @@ def _classify(sketch, wb, ws, address, raw):
         # structured/table or external-workbook reference: not resolvable
         sketch.unresolved.setdefault(address, []).append(raw)
         return
+    if ":" in sheet_title:
+        # a 3-D span (Sheet1:Sheet3!A1) is not one sheet: classify it
+        # conservatively as unresolved (always-intersecting) rather than
+        # recording a phantom sheet name nothing can ever match
+        # (Batch-1 gate: the phantom key silently defeated the recalc
+        # guard and certification taint)
+        sketch.unresolved.setdefault(address, []).append(raw)
+        return
 
     plain = ref.replace("$", "")
+    # a pure-alphabetic token without ':' is NEVER a cell/column reference
+    # in a formula (column refs need "IN:IN"; cells need a row number) —
+    # range_boundaries would happily parse "IN" as a column and hand the
+    # taint walk phantom bounds (Batch-5 gate: a defined name shaped like
+    # a column letter escaped the input taint)
+    if ":" not in plain and not any(ch.isdigit() for ch in plain):
+        name = wb.defined_names.get(raw) or ws.defined_names.get(raw)
+        if name is None:
+            sketch.unresolved.setdefault(address, []).append(raw)
+            return
+        if name.value and "[" in name.value:
+            sketch.unresolved.setdefault(address, []).append(raw)
+            return
+        try:
+            for dest_sheet, dest_ref in name.destinations:
+                dest_bounds = range_boundaries(dest_ref.replace("$", ""))
+                sketch.references.setdefault(address, []).append(
+                    (dest_sheet, dest_bounds, raw))
+        except Exception:
+            sketch.unresolved.setdefault(address, []).append(raw)
+        return
     try:
         bounds = range_boundaries(plain)
     except Exception:
         # not A1-shaped: a defined name — expand via its destinations
         name = wb.defined_names.get(raw) or ws.defined_names.get(raw)
         if name is None:
+            sketch.unresolved.setdefault(address, []).append(raw)
+            return
+        if name.value and "[" in name.value:
+            # external-workbook reference hiding behind the name: the
+            # expansion would drop the external marker (Batch-1 gate)
             sketch.unresolved.setdefault(address, []).append(raw)
             return
         try:

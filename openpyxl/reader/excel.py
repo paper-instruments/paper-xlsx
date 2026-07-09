@@ -87,6 +87,37 @@ def _check_extension(filename):
             raise InvalidFileException(msg)
 
 
+# decompression caps (PLAN-v0.1 7 hardening, pinned): a part is refused
+# when it inflates past BOTH triggers — absolute size AND, for large
+# parts, a compression ratio no real spreadsheet content reaches
+_DECOMPRESSION_MAX_PART = 2 * 1024 * 1024 * 1024      # 2 GiB per part
+_DECOMPRESSION_RATIO_CAP = 500                        # zip bombs: >>1000x
+_DECOMPRESSION_RATIO_FLOOR = 64 * 1024 * 1024         # ratio checked >64MB
+
+
+def _check_decompression_caps(archive):
+    from openpyxl.errors import UnsupportedStructureError
+
+    for info in archive.infolist():
+        if info.file_size > _DECOMPRESSION_MAX_PART:
+            raise UnsupportedStructureError(
+                "part {0!r} declares {1} bytes uncompressed, past the "
+                "{2}-byte cap; refusing to inflate it. Nothing was "
+                "loaded.".format(info.filename, info.file_size,
+                                 _DECOMPRESSION_MAX_PART))
+        if (info.file_size > _DECOMPRESSION_RATIO_FLOOR
+                and info.compress_size > 0
+                and info.file_size / info.compress_size
+                > _DECOMPRESSION_RATIO_CAP):
+            raise UnsupportedStructureError(
+                "part {0!r} inflates {1}x (from {2} to {3} bytes) — "
+                "no real spreadsheet compresses like that; refusing to "
+                "inflate it. Nothing was loaded.".format(
+                    info.filename,
+                    info.file_size // max(info.compress_size, 1),
+                    info.compress_size, info.file_size))
+
+
 def _validate_archive(filename):
     """
     Does a first check whether filename is a string or a file-like
@@ -100,8 +131,43 @@ def _validate_archive(filename):
     if not is_file_like:
         _check_extension(filename)
 
+    _refuse_cfb(filename)
     archive = ZipFile(filename, 'r')
+    _check_decompression_caps(archive)
     return archive
+
+
+# OLE2/CFB magic: what an ENCRYPTED xlsx actually is on disk (the zip is
+# wrapped in a Compound File). zipfile's "File is not a zip file" told the
+# user nothing actionable (PLAN-v0.1 1.5; battery job 13).
+_CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _refuse_cfb(filename):
+    try:
+        if hasattr(filename, "read"):
+            # sniff at ABSOLUTE offset 0 (zipfile anchors there too), then
+            # restore the caller's position exactly — a mid-position handle
+            # must neither false-refuse on embedded CFB payloads nor evade
+            # the typed refusal (Batch-1 gate)
+            pos = filename.tell()
+            filename.seek(0)
+            head = filename.read(8)
+            filename.seek(pos)
+        else:
+            with open(filename, "rb") as f:
+                head = f.read(8)
+    except Exception:
+        return                       # unreadable sources fail downstream
+    if head == _CFB_MAGIC:
+        from openpyxl.errors import UnsupportedStructureError
+
+        raise UnsupportedStructureError(
+            "this file is an OLE2/Compound File container — almost always "
+            "a password-ENCRYPTED workbook (or a legacy .xls saved with an "
+            ".xlsx name). openpyxl cannot decrypt; remove the password in "
+            "Excel or LibreOffice (File > Save As, clear the password) and "
+            "reopen, or decrypt with a dedicated tool first.")
 
 
 def _read_source_bytes(fn):
@@ -178,6 +244,20 @@ class ExcelReader:
             fn = BytesIO(self._source_blob)
         self.archive = _validate_archive(fn)
         self.valid_files = self.archive.namelist()
+        if preserve and len(self.valid_files) != len(set(self.valid_files)):
+            # a parser differential (PLAN-v0.1 1.5): the reader takes the
+            # LAST duplicate entry while the raw copy would keep BOTH, so
+            # custody of such a package cannot be honest
+            from collections import Counter
+
+            from openpyxl.errors import UnsupportedStructureError
+            dupes = sorted(name for name, n
+                           in Counter(self.valid_files).items() if n > 1)
+            raise UnsupportedStructureError(
+                "the archive contains duplicate entry names ({0}): readers "
+                "disagree about which copy wins, so preserve mode refuses "
+                "it. Rewrite the file through Excel or LibreOffice (which "
+                "de-duplicates) and reopen.".format(", ".join(dupes)))
         self.read_only = read_only
         self.keep_vba = keep_vba
         self.data_only = data_only
@@ -370,7 +450,8 @@ class ExcelReader:
                 # stock path (PR-0 D14)
                 action = "scan for unpreservable content"
                 self.wb._paper_loss_inventory = scan_archive(
-                    self.archive, self.valid_files, keep_vba=self.keep_vba)
+                    self.archive, self.valid_files, keep_vba=self.keep_vba,
+                    rich_text=self.rich_text)
                 self.archive.close()
                 if self.preserve:
                     # the ledger arms only now: everything the loader itself
@@ -388,7 +469,7 @@ class ExcelReader:
 
 def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
                   data_only=False, keep_links=True, rich_text=False, *,
-                  preserve=False):
+                  preserve=None):
     """Open the given filename and return the workbook
 
     :param filename: the path to open or a file-like object
@@ -415,8 +496,14 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
         (charts, drawings, VBA, pivot caches, extensions) survives
         byte-identical. Unsafe operations raise a typed
         :class:`openpyxl.errors.PaperRefusal` instead of proceeding lossily.
-        Cannot be combined with ``read_only``.
-    :type preserve: bool
+        Cannot be combined with ``read_only``. The default ``None`` resolves
+        to the ``PAPER_PRESERVE_DEFAULT`` environment switch (``"1"`` turns
+        preserve on for every load that supports it, ``read_only`` loads
+        excepted — a default, not a mandate); unset, it resolves to
+        ``False``. The public package ships with the switch unset
+        (PLAN-v0.1 Appendix A item 1 gates the public flip); paper-internal
+        harness images set it.
+    :type preserve: bool or None
 
     :rtype: :class:`openpyxl.workbook.Workbook`
 
@@ -426,6 +513,15 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
         and the returned workbook will be read-only.
 
     """
+    if preserve is None:
+        # env switch is a DEFAULT, never a mandate: loads that explicit
+        # preserve=True would refuse (read_only; the .xls/.xlsb legacy
+        # formats) fall back to stock so its exceptions stay stock too
+        name = getattr(filename, "name", filename)
+        legacy = isinstance(name, str) and \
+            name.lower().endswith((".xls", ".xlsb"))
+        preserve = (os.environ.get("PAPER_PRESERVE_DEFAULT") == "1"
+                    and not read_only and not legacy)
     reader = ExcelReader(filename, read_only, keep_vba,
                          data_only, keep_links, rich_text,
                          preserve=preserve)

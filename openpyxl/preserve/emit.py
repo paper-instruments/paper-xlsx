@@ -107,13 +107,17 @@ def _unescape_value(value):
     return value
 
 
-def carry_attributes(new_cell_bytes, original_attrs):
+def carry_attributes(new_cell_bytes, original_attrs, drop_metadata=False):
     """PR-0 D6 attribute-carry rule: re-attach every original cell attribute
     the replacement does not intentionally rewrite (everything except r, s,
-    t). ``cm``/``vm`` never reach here — the splice refuses them earlier."""
+    t). cm/vm rich-value metadata drops ONLY when the cell's VALUE was
+    overwritten (the cell stops being a rich value) — style-only edits,
+    move re-emissions and dissolution re-emits must carry it
+    (PLAN-v0.1 3.4, corrected by the Batch-3 gate)."""
+    skip = ("r", "s", "t", "cm", "vm") if drop_metadata else ("r", "s", "t")
     carried = {}
     for k, v in original_attrs.items():
-        if k in ("r", "s", "t"):
+        if k in skip:
             continue
         if "&#" in v:
             from openpyxl.errors import UnsupportedStructureError

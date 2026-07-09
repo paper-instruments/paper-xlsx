@@ -28,7 +28,10 @@ from openpyxl.styles.styleable import StyleableObject
 from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.formula import DataTableFormula, ArrayFormula
 from openpyxl.cell.rich_text import CellRichText
-from openpyxl.preserve.ledger import mark_cell_dirty as _mark_cell_dirty
+from openpyxl.preserve.ledger import (
+    check_protection as _check_protection,
+    mark_cell_dirty as _mark_cell_dirty,
+)
 
 # constants
 
@@ -191,6 +194,20 @@ class Cell(StyleableObject):
     def _bind_value(self, value):
         """Given a value, infer the correct data type"""
 
+        # single inline fast bail for BOTH paper hooks (the helper call
+        # costs ~28% on the fresh-generation hot path, and doubling the
+        # lookup chain measured +13% — Batch-1 gate): resolved once here,
+        # reused for the pre-bind protection check and the post-bind mark
+        ws = self.parent
+        paper_armed = (
+            ws is not None
+            and getattr(ws, "parent", None) is not None
+            and getattr(ws.parent, "_paper_ledger", None) is not None)
+        if paper_armed:
+            # protection awareness (PLAN-v0.1 1.6) runs BEFORE any
+            # mutation so a strict-mode refusal is atomic
+            _check_protection(self)
+
         old_data_type = self._data_type
         self._data_type = "n"
         t = type(value)
@@ -205,6 +222,19 @@ class Cell(StyleableObject):
         if dt:
             self._data_type = dt
 
+        if dt == "f" and paper_armed:
+            # ArrayFormula/DataTableFormula objects carry their text out
+            # of band: they must not bypass the lint chokepoint
+            # (Batch-5 gate)
+            text = getattr(value, "text", None)
+            if isinstance(text, str) and text.startswith("="):
+                from openpyxl.formula.lint import lint_on_bind
+                try:
+                    lint_on_bind(self, text)
+                except Exception:
+                    self._data_type = old_data_type
+                    raise
+
         if dt == 'd':
             if not is_date_format(self.number_format):
                 self.number_format = get_time_format(t)
@@ -212,22 +242,29 @@ class Cell(StyleableObject):
         elif dt == "s" and not isinstance(value, CellRichText):
             value = self.check_string(value)
             if len(value) > 1 and value.startswith("="):
+                if paper_armed:
+                    # pre-flight lint (PLAN-v0.1 5.2): warns or refuses
+                    # BEFORE the value lands (a refusal restores the
+                    # pre-bind type; nothing was assigned yet)
+                    from openpyxl.formula.lint import lint_on_bind
+                    try:
+                        lint_on_bind(self, value)
+                    except Exception:
+                        self._data_type = old_data_type
+                        raise
                 self._data_type = 'f'
             elif value in ERROR_CODES:
                 self._data_type = 'e'
 
         self._value = value
         # ledger chokepoint: the mark happens only after validation and
-        # assignment succeeded, so a refused/invalid bind dirties nothing.
-        # Inline fast bail: the helper call costs ~28% on the fresh-
-        # generation hot path, so non-preserve workbooks skip it entirely
-        ws = self.parent
-        if ws is not None:
-            wb = getattr(ws, "parent", None)
-            if wb is not None and getattr(wb, "_paper_ledger", None) is not None:
-                _mark_cell_dirty(
-                    self,
-                    formula_involved='f' in (old_data_type, self._data_type))
+        # assignment succeeded, so a refused/invalid bind dirties nothing
+        # (armed state resolved once at the top of this method)
+        if paper_armed:
+            _mark_cell_dirty(
+                self,
+                formula_involved='f' in (old_data_type, self._data_type),
+                value_change=True)
 
 
     @property

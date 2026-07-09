@@ -187,7 +187,7 @@ class TestSharedAndArrayFormulas:
             before = f.read()
         wb = load_workbook(src, preserve=True)
         wb["Calc"]["D3"] = 5                          # inside D2:D4 array
-        with pytest.raises(UnsupportedStructureError, match="array formula"):
+        with pytest.raises(UnsupportedStructureError, match="in_spill"):
             wb.save(str(tmp_path / "o.xlsx"))
         with open(src, "rb") as f:
             assert f.read() == before
@@ -260,23 +260,44 @@ class TestRegionEdits:
         wb2 = load_workbook(out)
         assert [str(r) for r in wb2["Sheet1"].merged_cells.ranges] == ["F1:G2"]
 
-    def test_cf_change_refuses_when_x14_twins_present(self, fixture_copy, tmp_path):
-        # the gauntlet's dataBar rule carries an x14 twin pointer: editing
-        # the classic element alone would orphan it (PR-0 D15 gate)
-        from openpyxl.formatting.rule import CellIsRule
-        from openpyxl.styles import PatternFill
-
+    def test_cf_twin_sync_sqref_patch_and_delete(self, fixture_copy,
+                                                  tmp_path):
+        # FLIPPED by v0.1 Batch 3 (was the blanket twin refusal): sqref
+        # changes patch BOTH sides in lockstep; deleting a twin-bearing
+        # rule removes its twin entry; untouched blocks stay verbatim
         src = fixture_copy(GAUNTLET)
-        with open(src, "rb") as f:
-            before = f.read()
         wb = load_workbook(src, preserve=True)
-        wb["Model"].conditional_formatting.add(
-            "B9:B9", CellIsRule(operator="lessThan", formula=["0"],
-                                fill=PatternFill("solid", fgColor="FF0000AA")))
-        with pytest.raises(UnsupportedStructureError, match="twin"):
-            wb.save(str(tmp_path / "o.xlsx"))
-        with open(src, "rb") as f:
-            assert f.read() == before
+        cfs = list(wb["Model"].conditional_formatting)
+        databar = next(cf for cf in cfs
+                       if any(r.type == "dataBar" for r in cf.rules))
+        # sqref is the block's dict key upstream: re-key, never mutate
+        cf_list = wb["Model"].conditional_formatting
+        rules = cf_list._cf_rules.pop(databar)
+        databar.sqref = "B6:F6"                    # sqref-only change
+        cf_list._cf_rules[databar] = rules
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        _, sheet = _model_sheet(out)
+        assert b'sqref="B6:F6"' in sheet           # classic side patched
+        assert b"<xm:sqref>B6:F6</xm:sqref>" in sheet   # twin side synced
+        assert b"<x14:id>" in sheet
+        wb2 = load_workbook(out)
+        assert any(str(cf.sqref) == "B6:F6"
+                   for cf in wb2["Model"].conditional_formatting)
+
+        # deletion: the twin entry goes with the rule
+        wb3 = load_workbook(src, preserve=True)
+        cf_list = wb3["Model"].conditional_formatting
+        target = next(cf for cf in cf_list
+                      if any(r.type == "dataBar" for r in cf.rules))
+        twins_before = _model_sheet(src)[1].count(b"<x14:id>")
+        cf_list._cf_rules.pop(target)
+        out2 = str(tmp_path / "o2.xlsx")
+        wb3.save(out2)
+        _, sheet2 = _model_sheet(out2)
+        assert sheet2.count(b"<x14:id>") == twins_before - 1
+        wb4 = load_workbook(out2)
+        assert len(wb4["Model"].conditional_formatting) == 2
 
 
 class TestV0Refusals:
@@ -349,14 +370,22 @@ class TestProducerGuards:
         assert b'ph="1"' in sheet
         assert load_workbook(out)["Sheet1"]["B2"].value == 42
 
-    def test_cm_metadata_cell_refuses(self, fixture_copy, tmp_path):
+    def test_cm_metadata_drops_on_overwrite(self, fixture_copy, tmp_path):
+        # FLIPPED by v0.1 Batch 3 (was a refusal): a value overwrite ends
+        # the cell's rich-value role; cm/vm never carry (battery job 21)
         surgical = self._surgery(
             fixture_copy, tmp_path,
             lambda p: p.replace(b'<c r="B2"', b'<c r="B2" cm="1"', 1))
         wb = load_workbook(surgical, preserve=True)
         wb["Sheet1"]["B2"] = 42
-        with pytest.raises(UnsupportedStructureError, match="cell metadata"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        parts = part_payloads(out)
+        sheet = next(p for n, p in parts.items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'cm="1"' not in sheet
+        assert load_workbook(out)["Sheet1"]["B2"].value == 42
+
 
     def test_rless_rows_refuse(self, fixture_copy, tmp_path):
         import re
@@ -407,6 +436,287 @@ class TestProducerGuards:
         wb["Sheet1"]["B2"] = 42
         with pytest.raises(UnsupportedStructureError, match="DOCTYPE"):
             wb.save(str(tmp_path / "o.xlsx"))
+
+
+
+# (region tag, self-closing original element, model edit, expected byte)
+# every satellite region whose original can legally carry the self-closing
+# form, both matrix arms exercised: no-op passthrough and model edit
+_SELF_CLOSING_CASES = [
+    ("sheetFormatPr", b'<sheetFormatPr defaultRowHeight="15"/>',
+     lambda ws: setattr(ws.sheet_format, "defaultRowHeight", 22.5),
+     b'defaultRowHeight="22.5"'),
+    ("autoFilter", b'<autoFilter ref="A1:D5"/>',
+     lambda ws: setattr(ws.auto_filter, "ref", "A1:D4"),
+     b'ref="A1:D4"'),
+    ("printOptions", b'<printOptions gridLines="1"/>',
+     lambda ws: setattr(ws.print_options, "headings", True),
+     b'headings="1"'),
+    ("pageMargins", b'<pageMargins left="0.75" right="0.75" top="1" '
+                    b'bottom="1" header="0.5" footer="0.5"/>',
+     lambda ws: setattr(ws.page_margins, "left", 1.25),
+     b'left="1.25"'),
+    ("pageSetup", b'<pageSetup orientation="portrait"/>',
+     lambda ws: setattr(ws.page_setup, "orientation", "landscape"),
+     b'orientation="landscape"'),
+    ("sheetProtection", b'<sheetProtection sheet="1" objects="1"/>',
+     lambda ws: setattr(ws.protection, "formatCells", False),
+     b'formatCells="0"'),
+]
+
+_REGION_INSERT_POINT = {
+    # schema position: before which existing minimal_clean marker each
+    # region element must be injected (CT_Worksheet sequence); None means
+    # the fixture already carries the element in self-closing form
+    "sheetFormatPr": None,
+    "autoFilter": b"<pageMargins",
+    "printOptions": b"<pageMargins",
+    "pageMargins": None,
+    "pageSetup": b"</worksheet>",
+    "sheetProtection": b"<pageMargins",
+}
+
+
+class TestRegionSelfClosingMatrix:
+    """PLAN-v0.1 §0.2: the region x self-closing matrix. The v0 scanner
+    never set RegionSpan.end for self-closing top-level elements, so any
+    splice touching one emitted malformed XML — silently."""
+
+    def _build(self, fixture_copy, tmp_path, tag, element):
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        out = str(tmp_path / "{0}_sc.xlsx".format(tag))
+        marker = _REGION_INSERT_POINT[tag]
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/sheet") \
+                        and marker is not None:
+                    assert marker in payload
+                    payload = payload.replace(marker, element + marker, 1)
+                zout.writestr(name, payload)
+        return out
+
+    @pytest.mark.parametrize(
+        "tag,element,edit,expect",
+        _SELF_CLOSING_CASES, ids=[c[0] for c in _SELF_CLOSING_CASES])
+    def test_edit_of_self_closing_original(
+            self, fixture_copy, tmp_path, tag, element, edit, expect):
+        import xml.etree.ElementTree as ET
+
+        src = self._build(fixture_copy, tmp_path, tag, element)
+        wb = load_workbook(src, preserve=True)
+        edit(wb["Sheet1"])
+        out = str(tmp_path / "{0}_out.xlsx".format(tag))
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        ET.fromstring(sheet)                                  # well-formed
+        assert sheet.count(b"<" + tag.encode()) == 1
+        assert expect in sheet
+        load_workbook(out)                                    # reloadable
+
+    @pytest.mark.parametrize(
+        "tag,element,edit,expect",
+        _SELF_CLOSING_CASES, ids=[c[0] for c in _SELF_CLOSING_CASES])
+    def test_noop_save_of_self_closing_original_is_byte_identical(
+            self, fixture_copy, tmp_path, tag, element, edit, expect):
+        src = self._build(fixture_copy, tmp_path, tag, element)
+        wb = load_workbook(src, preserve=True)
+        out = str(tmp_path / "{0}_noop.xlsx".format(tag))
+        wb.save(out)
+        assert part_payloads(src) == part_payloads(out)
+
+    def test_removal_of_self_closing_original(self, fixture_copy, tmp_path):
+        # the third matrix arm (gate finding: untested): the model renders
+        # the region to None -> the splice excises exactly the element
+        # bytes — a regressed end=None here resumes whole-document
+        # corruption
+        import xml.etree.ElementTree as ET
+
+        src = self._build(fixture_copy, tmp_path, "autoFilter",
+                          b'<autoFilter ref="A1:D5"/>')
+        wb = load_workbook(src, preserve=True)
+        wb["Sheet1"].auto_filter.ref = None
+        out = str(tmp_path / "af_removed.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        ET.fromstring(sheet)
+        assert b"<autoFilter" not in sheet
+        assert sheet.count(b"<pageMargins") == 1      # neighbour intact
+        assert load_workbook(out)["Sheet1"]["B2"].value is not None
+
+
+class TestSelfClosingSheetData:
+    """The 0.2 fix also repairs the self-closing <sheetData/> expansion
+    path (splice.py builds its edit from span.end, which was None before
+    the fix — the same document-duplication corruption)."""
+
+    def test_cell_add_into_self_closing_sheetdata(
+            self, fixture_copy, tmp_path):
+        import xml.etree.ElementTree as ET
+
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        surgical = str(tmp_path / "sc_sheetdata.xlsx")
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(surgical, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name.startswith("xl/worksheets/sheet"):
+                    i = payload.find(b"<sheetData>")
+                    j = payload.find(b"</sheetData>") + len(b"</sheetData>")
+                    payload = payload[:i] + b"<sheetData/>" + payload[j:]
+                zout.writestr(name, payload)
+        wb = load_workbook(surgical, preserve=True)
+        wb["Sheet1"]["A1"] = 42
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if n.startswith("xl/worksheets/"))
+        ET.fromstring(sheet)
+        assert sheet.count(b"<sheetData") == 1
+        assert load_workbook(out)["Sheet1"]["A1"].value == 42
+
+
+class TestImpureSerializerPinning:
+    """PLAN-v0.1 §0.3: a region whose serializer disagrees with itself at
+    arm time is PINNED — no-op saves keep the original bytes (never false
+    dirty), and USER edits to it refuse rather than splice an
+    untrustworthy render. The one real instance (sheetFormatPr's outline
+    sync reading DimensionHolder's render-time side effect) was fixed by
+    making the render pure, so on the shipped corpus NOTHING pins; the
+    guard stays armed for the next impure upstream serializer and is
+    proven here with a synthetic one."""
+
+    def test_no_region_pins_anywhere_on_the_corpus(self, fixture_copy):
+        from .test_properties import ALL_LOADABLE
+
+        for fixture in ALL_LOADABLE:
+            wb = load_workbook(fixture_copy(fixture), preserve=True)
+            for ws, pinned in wb._paper_ledger.pinned_regions.items():
+                assert not pinned, (fixture, ws.title, pinned)
+
+    def _make_impure(self, monkeypatch):
+        from openpyxl.preserve import regions as regions_mod
+
+        state = {"calls": 0}
+
+        def impure(ws):
+            # settles after the first render, like the DimensionHolder
+            # instance did: render 1 disagrees with every later render
+            from openpyxl.xml.functions import Element
+
+            state["calls"] += 1
+            el = Element("printOptions")
+            if state["calls"] > 1:
+                el.set("gridLines", "1")
+            return el
+
+        replacement = regions_mod.Region("printOptions", impure)
+        patched = [replacement if r.tag == "printOptions" else r
+                   for r in regions_mod.SPLICEABLE_REGIONS]
+        monkeypatch.setattr(regions_mod, "SPLICEABLE_REGIONS", patched)
+        monkeypatch.setitem(regions_mod.REGION_BY_TAG, "printOptions",
+                            replacement)
+        return state
+
+    def test_synthetic_impure_serializer_pins_and_noop_stays_identical(
+            self, fixture_copy, tmp_path, monkeypatch):
+        self._make_impure(monkeypatch)
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src, preserve=True)
+        assert "printOptions" in \
+            wb._paper_ledger.pinned_regions[wb["Sheet1"]]
+        out = str(tmp_path / "noop.xlsx")
+        wb.save(out)
+        assert part_payloads(src) == part_payloads(out)
+
+    def test_synthetic_impure_serializer_refuses_edits(
+            self, fixture_copy, tmp_path, monkeypatch):
+        state = self._make_impure(monkeypatch)
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        with open(src, "rb") as f:
+            before = f.read()
+        wb = load_workbook(src, preserve=True)
+        state["calls"] = -2          # next renders disagree with settled arm
+        with pytest.raises(UnsupportedStructureError, match="impure"):
+            wb.save(str(tmp_path / "pinned.xlsx"))
+        with open(src, "rb") as f:
+            assert f.read() == before
+
+    def test_col_width_edit_does_not_drift_sheetformatpr(
+            self, fixture_copy, tmp_path):
+        # the gate's drift repro: a width-only edit must not rewrite
+        # sheetFormatPr (no outlineLevelCol="0" appearing, no unmodeled
+        # attribute loss)
+        import re
+
+        src = fixture_copy("features/hidden.xlsx")
+        sheet_before = next(p for n, p in part_payloads(src).items()
+                            if b"HiddenNotes" not in p
+                            and n.startswith("xl/worksheets/"))
+        fmt_before = re.search(rb"<sheetFormatPr[^>]*>", sheet_before)
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].column_dimensions["B"].width = 30
+        out = str(tmp_path / "width.xlsx")
+        wb.save(out)
+        sheet_after = next(p for n, p in part_payloads(out).items()
+                           if b"HiddenNotes" not in p
+                           and n.startswith("xl/worksheets/"))
+        fmt_after = re.search(rb"<sheetFormatPr[^>]*>", sheet_after)
+        assert fmt_after.group(0) == fmt_before.group(0)
+        wb2 = load_workbook(out)
+        assert wb2["Visible"].column_dimensions["B"].width == 30
+        assert wb2["Visible"].column_dimensions["C"].hidden is True
+
+    def test_sheetformatpr_edit_on_cols_sheet_now_works(
+            self, fixture_copy, tmp_path):
+        # refused under the interim pin; the pure render makes it splice
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].sheet_format.defaultRowHeight = 22.5
+        out = str(tmp_path / "fmt.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Visible"].sheet_format.defaultRowHeight == 22.5
+
+    def test_column_grouping_works_on_cols_sheet(
+            self, fixture_copy, tmp_path):
+        # the gate's collateral repro: grouping refused under the interim
+        # pin; now splices, with the outline sync landing in BOTH cols and
+        # sheetFormatPr exactly as a stock save would write them
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].column_dimensions.group("E", "F", outline_level=1)
+        out = str(tmp_path / "grouped.xlsx")
+        wb.save(out)
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if b"outlineLevel" in p and n.startswith("xl/worksheets/"))
+        assert b'outlineLevelCol="1"' in sheet
+        wb2 = load_workbook(out)
+        assert wb2["Visible"].column_dimensions["E"].outlineLevel == 1
+
+    def test_explicit_outlinelevelcol_edit_matches_stock_semantics(
+            self, fixture_copy, tmp_path):
+        # outlineLevelCol is derived metadata: on a cols-bearing sheet the
+        # writer's sync owns it (stock parity — the assignment is
+        # normalized away); on a cols-free sheet it lands verbatim
+        src = fixture_copy("features/hidden.xlsx")
+        wb = load_workbook(src, preserve=True)
+        wb["Visible"].sheet_format.outlineLevelCol = 5
+        out = str(tmp_path / "derived.xlsx")
+        wb.save(out)
+        assert b'outlineLevelCol="5"' not in part_payloads(out)[
+            "xl/worksheets/sheet1.xml"]
+
+        src2 = fixture_copy("minimal/minimal_clean.xlsx")
+        wb = load_workbook(src2, preserve=True)
+        wb["Sheet1"].sheet_format.outlineLevelCol = 5
+        out2 = str(tmp_path / "derived2.xlsx")
+        wb.save(out2)
+        sheet = next(p for n, p in part_payloads(out2).items()
+                     if n.startswith("xl/worksheets/"))
+        assert b'outlineLevelCol="5"' in sheet
 
 
 class TestSaveTargets:

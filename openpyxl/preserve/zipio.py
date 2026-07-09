@@ -67,14 +67,32 @@ def raw_copy_supported(info):
 
 
 def _read_raw_stream(zin, info):
-    """Read one entry's compressed byte stream straight from the archive."""
+    """Read one entry's compressed byte stream straight from the archive,
+    verifying central-vs-local header AGREEMENT first (PLAN-v0.1 7
+    hardening: a zip-confusion payload shows different content to parsers
+    that trust different headers). Returns None on disagreement — the
+    caller falls back to recompression, which normalizes the entry to the
+    central directory's view (the view zipfile and Excel read)."""
     f = zin.fp
     f.seek(info.header_offset)
     header = f.read(30)
     if header[:4] != b"PK\x03\x04":
         raise zipfile.BadZipFile(
             "bad local file header for {0!r}".format(info.filename))
+    method, = struct.unpack("<H", header[8:10])
+    local_crc, local_csize, local_usize = struct.unpack("<LLL",
+                                                        header[14:26])
     name_len, extra_len = struct.unpack("<HH", header[26:30])
+    local_name = f.read(name_len)
+    if local_name != info.filename.encode("utf-8") \
+            or method != info.compress_type:
+        return None
+    # sizes/CRC of 0 in the local header are legal when a data
+    # descriptor follows — but descriptor entries never reach this path
+    # (raw_copy_supported excludes GP bit 3), so disagreement is real
+    if (local_crc, local_csize, local_usize) != (
+            info.CRC, info.compress_size, info.file_size):
+        return None
     f.seek(info.header_offset + 30 + name_len + extra_len)
     return f.read(info.compress_size)
 
@@ -85,8 +103,9 @@ def copy_entry(zin, info, zout):
     Payload bytes are identical either way; the raw path also preserves the
     compressed stream. Entry metadata is normalized for determinism.
     """
-    if raw_copy_supported(info):
-        payload_stream = _read_raw_stream(zin, info)
+    payload_stream = _read_raw_stream(zin, info) \
+        if raw_copy_supported(info) else None
+    if payload_stream is not None:
         new = zipfile.ZipInfo(info.filename, date_time=FIXED_DATE_TIME)
         new.compress_type = info.compress_type
         new.external_attr = _EXTERNAL_ATTR
@@ -147,7 +166,53 @@ def deliver(data, target):
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())     # durability BEFORE the rename
         os.replace(tmp_path, target)
+        _fsync_directory(directory)  # ... and of the rename itself
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _fsync_directory(directory):
+    """Best-effort fsync of a directory (the rename's durability); not
+    every platform allows opening directories."""
+    try:
+        dfd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
+
+
+def build_and_deliver(build_fn, target):
+    """Build the archive DIRECTLY into the delivery temp file for path
+    targets (PLAN-v0.1 7 hardening: ~1x file-size peak memory instead of
+    a whole in-memory copy), atomically replaced and fsynced; file-like
+    targets keep the in-memory build."""
+    if hasattr(target, "write"):
+        deliver(build_archive_bytes(build_fn), target)
+        return
+    target = os.fspath(target)
+    directory = os.path.dirname(os.path.abspath(target))
+    fd, tmp_path = tempfile.mkstemp(prefix=".paper_save_", suffix=".tmp",
+                                    dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as zout:
+                build_fn(zout)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target)
+        _fsync_directory(directory)
     except BaseException:
         try:
             os.unlink(tmp_path)

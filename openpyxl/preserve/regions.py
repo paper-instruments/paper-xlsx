@@ -35,9 +35,26 @@ def _views(ws):
 
 
 def _sheet_format(ws):
-    # mirror _writer.write_format, including the outline sync
-    ws.sheet_format.outlineLevelCol = ws.column_dimensions.max_outline
-    return ws.sheet_format.to_tree()
+    # mirror _writer.write_format's outline sync, but PURELY: upstream
+    # reads DimensionHolder.max_outline, a value to_tree() only refreshes
+    # DURING a cols render — order-dependent state that false-dirtied
+    # sheetFormatPr on every cols-bearing sheet (Batch-0 gate). Compute
+    # the same quantity the way holder.to_tree() does (reindex is the
+    # idempotent min/max normalization upstream runs on every render;
+    # membership = renders-to-something), without touching max_outline
+    # or the model's sheet_format.
+    import copy as _copy
+
+    outlines = set()
+    for dim in ws.column_dimensions.values():
+        dim.reindex()
+        if dim.to_tree() is not None:
+            outlines.add(dim.outlineLevel)
+    fmt = ws.sheet_format
+    if outlines:
+        fmt = _copy.copy(fmt)
+        fmt.outlineLevelCol = max(outlines)
+    return fmt.to_tree()
 
 
 def _cols(ws):
@@ -172,9 +189,16 @@ SPLICEABLE_REGIONS = [
 ]
 REGION_BY_TAG = {r.tag: r for r in SPLICEABLE_REGIONS}
 
-# regions whose USER change is detected but not writable in v0: refusal,
-# never silent drop. Table add/remove needs table-part lifecycle.
-DETECT_ONLY_REGIONS = ["tableParts"]
+# regions whose USER change is detected but written only via the saver's
+# own planners (the model render is a detection signature, not writable
+# bytes): the tableParts element is rebuilt by preserve.tables and rides
+# the region splice as crafted bytes (Batch 2)
+DETECT_ONLY_REGIONS = []
+
+# regions whose replacement bytes come from the SAVER's own planner (never
+# from a model render): the splice accepts them as-is
+SAVER_CRAFTED_REGIONS = frozenset(["tableParts", "legacyDrawing",
+                                   "extLst", "drawing"])
 
 
 def _render_cf(ws):
@@ -256,7 +280,13 @@ def snapshot_row_attrs(ws):
 
 
 def diff_regions(ws, armed_snapshot):
-    """Return {tag: new_serialization} for regions the user changed."""
+    """Return {tag: new_serialization} for regions the user changed.
+
+    Rendered twice, second pass kept: the arm snapshot is the settled
+    render (ledger double-render, PLAN-v0.1 0.3), so the comparison must
+    be settled-vs-settled or an impure serializer's first-pass output
+    false-dirties the region."""
+    snapshot_regions(ws)
     current = snapshot_regions(ws)
     changed = {}
     for tag, rendered in current.items():

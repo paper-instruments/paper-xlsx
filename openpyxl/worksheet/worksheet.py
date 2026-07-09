@@ -71,7 +71,8 @@ def _structural_guard(ws, operation, index, amount=1):
     led = getattr(wb, "_paper_ledger", None) if wb is not None else None
     if led is not None and led.armed:
         if operation == "move_range":
-            _refuse_structural_edit(ws, operation, index)
+            from openpyxl.preserve.ledger import begin_move_range
+            begin_move_range(ws, index)      # index carries the move spec
             return False
         from openpyxl.preserve.ledger import begin_structural_edit
         return begin_structural_edit(ws, operation, index, amount)
@@ -356,6 +357,14 @@ class Worksheet(_WorkbookChild):
     def __delitem__(self, key):
         row, column = coordinate_to_tuple(key)
         if (row, column) in self._cells:
+            # deleting a locked cell is a value-level change: the same
+            # protection check as a write, BEFORE the deletion (Batch-1
+            # gate: del ws['A1'] evaded what ws['A1']=None refused)
+            wb = getattr(self, "parent", None)
+            if wb is not None \
+                    and getattr(wb, "_paper_ledger", None) is not None:
+                from openpyxl.preserve.ledger import check_protection
+                check_protection(self._cells[(row, column)])
             was_formula = self._cells[(row, column)].data_type == 'f'
             del self._cells[(row, column)]
             _mark_deleted_cell(self, row, column, was_formula)
@@ -583,6 +592,27 @@ class Worksheet(_WorkbookChild):
         self.data_validations.append(data_validation)
 
 
+    def locate(self, label, *, prefer="right"):
+        """The value cell belonging to a text label (paper-xlsx,
+        PLAN-v0.1 Batch 6; battery 23): exact-then-normalized match over
+        this sheet, value = nearest non-label neighbour to the ``right``
+        (or ``below``). Zero matches raise
+        :class:`~openpyxl.errors.TargetNotFoundError`; multiple labels
+        or no locatable value raise
+        :class:`~openpyxl.errors.AmbiguousTargetError` listing every
+        candidate."""
+        from openpyxl.preserve.locate import locate as _locate
+
+        return _locate(self, label, prefer=prefer)
+
+    def allowed_values(self, cell):
+        """The data-validation vocabulary for ``cell`` (address string or
+        Cell), or None when no list-type validation covers it
+        (paper-xlsx, PLAN-v0.1 Batch 6)."""
+        from openpyxl.preserve.locate import allowed_values as _allowed
+
+        return _allowed(self, cell)
+
     def add_chart(self, chart, anchor=None):
         """
         Add a chart to the sheet
@@ -756,27 +786,49 @@ class Worksheet(_WorkbookChild):
     def insert_rows(self, idx, amount=1):
         """
         Insert row or rows before row==idx
+
+        Under ``preserve=True`` on a loaded sheet the fork rewrites every
+        reference that points into the shifted range (formulas, defined
+        names, chart series) and returns an ``AddressRemap`` so pre-edit
+        addresses can be remapped; a shift that would strand a reference it
+        cannot rewrite refuses with ``UnsupportedStructureError`` and
+        changes nothing. Stock loads and in-session-added sheets keep the
+        upstream behaviour — references are NOT updated — and return
+        ``None``.
         """
         fixup = _structural_guard(self, "insert_rows", idx, amount)
         self._move_cells(min_row=idx, offset=amount, row_or_col="row")
         self._current_row = self.max_row
         if fixup:
-            _finish_structural_edit(self, "insert_rows", idx, amount)
+            return _finish_structural_edit(self, "insert_rows", idx, amount)
 
 
     def insert_cols(self, idx, amount=1):
         """
         Insert column or columns before col==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a shift that would strand a reference refuses with
+        ``UnsupportedStructureError`` and changes nothing. Stock loads and
+        added sheets keep upstream behaviour and return ``None``.
         """
         fixup = _structural_guard(self, "insert_cols", idx, amount)
         self._move_cells(min_col=idx, offset=amount, row_or_col="column")
         if fixup:
-            _finish_structural_edit(self, "insert_cols", idx, amount)
+            return _finish_structural_edit(self, "insert_cols", idx, amount)
 
 
     def delete_rows(self, idx, amount=1):
         """
         Delete row or rows from row==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a delete that would strand a reference (or drop cells a chart or
+        name still points at) refuses with ``UnsupportedStructureError``
+        and changes nothing. Stock loads and added sheets keep upstream
+        behaviour and return ``None``.
         """
         fixup = _structural_guard(self, "delete_rows", idx, amount)
 
@@ -795,12 +847,18 @@ class Worksheet(_WorkbookChild):
         if not self._cells:
             self._current_row = 0
         if fixup:
-            _finish_structural_edit(self, "delete_rows", idx, amount)
+            return _finish_structural_edit(self, "delete_rows", idx, amount)
 
 
     def delete_cols(self, idx, amount=1):
         """
         Delete column or columns from col==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a delete that would strand a reference refuses with
+        ``UnsupportedStructureError`` and changes nothing. Stock loads and
+        added sheets keep upstream behaviour and return ``None``.
         """
         fixup = _structural_guard(self, "delete_cols", idx, amount)
 
@@ -817,7 +875,7 @@ class Worksheet(_WorkbookChild):
                     del self._cells[row, col]
 
         if fixup:
-            _finish_structural_edit(self, "delete_cols", idx, amount)
+            return _finish_structural_edit(self, "delete_cols", idx, amount)
 
     def move_range(self, cell_range, rows=0, cols=0, translate=False):
         """
@@ -826,6 +884,12 @@ class Worksheet(_WorkbookChild):
         right if cols > 0 and left if cols < 0
         Existing cells will be overwritten.
         Formulae and references will not be updated.
+
+        Under ``preserve=True`` the move lands as tracked cell edits and
+        refuses with ``UnsupportedStructureError`` (changing nothing) when
+        it cannot keep the sheet coherent — e.g. merged ranges, tables,
+        conditional formatting or data validation intersecting either
+        rectangle, or outside formulas that reference the moved block.
         """
         if isinstance(cell_range, str):
             cell_range = CellRange(cell_range)
@@ -833,7 +897,8 @@ class Worksheet(_WorkbookChild):
             raise ValueError("Only CellRange objects can be moved")
         if not rows and not cols:
             return
-        _structural_guard(self, "move_range", None)
+        _structural_guard(self, "move_range",
+                          (cell_range, rows, cols, translate))
 
         down = rows > 0
         right = cols > 0

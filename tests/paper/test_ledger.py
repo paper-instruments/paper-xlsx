@@ -183,24 +183,35 @@ class TestSheetLifecycle:
         assert ws not in led.added_sheets
         assert ws not in led.cells
 
-    def test_move_sheet_refuses(self, preserved):
-        wb, _ = preserved
-        with pytest.raises(UnsupportedStructureError, match="move_sheet"):
-            wb.move_sheet("Data", -1)
+    def test_move_sheet_records_reorder(self, preserved):
+        # FLIPPED by v0.1 Batch 3 (was a refusal): reorder is expressed at
+        # save by rebuilding the sheets element from original entry bytes
+        wb, led = preserved
+        before = list(wb.sheetnames)
+        wb.move_sheet("Data", -1)
+        after = list(wb.sheetnames)
+        assert set(before) == set(after) and before != after
 
-    def test_copy_worksheet_refuses(self, preserved):
-        wb, _ = preserved
-        with pytest.raises(UnsupportedStructureError, match="copy_worksheet"):
-            wb.copy_worksheet(wb["Data"])
+    def test_copy_worksheet_registers_as_added(self, preserved):
+        # FLIPPED by v0.1 Batch 3 (was a refusal): the copy is an ADDED
+        # sheet, generated whole at save (battery job 11 covers the file)
+        wb, led = preserved
+        cp = wb.copy_worksheet(wb["Data"])
+        assert cp in led.added_sheets
 
-    def test_rename_loaded_sheet_refuses_added_sheet_allowed(self, preserved):
-        wb, _ = preserved
-        with pytest.raises(UnsupportedStructureError, match="renaming"):
-            wb["Data"].title = "Records"
-        assert "Data" in wb.sheetnames
+    def test_rename_cascades_and_added_sheet_still_free(self, preserved):
+        # FLIPPED by v0.1 Batch 3 (was a refusal): loaded-sheet renames
+        # cascade (full coverage in battery job 8); in-session sheets
+        # rename with no ledger involvement at all
+        wb, led = preserved
+        wb["Data"].title = "Records"
+        assert "Records" in wb.sheetnames
+        assert "Records" in led.loaded_sheet_titles     # still LOADED
+        assert "Data" not in led.loaded_sheet_titles
         ws = wb.create_sheet("New")
         ws.title = "Renamed"                     # in-session sheets may rename
         assert ws.title == "Renamed"
+        assert ws not in led.renames             # no cascade recorded
 
 
 class TestMarkDirty:
@@ -261,3 +272,63 @@ class TestStyleRegistryGuard:
         ns.font = Font(italic=True)
         wb.add_named_style(ns)
         led.check_style_registry(wb)
+
+
+class TestSheetLifecycleCascade:
+    """PLAN-v0.1 3.2: delete and reorder on LOADED sheets."""
+
+    def test_remove_clean_sheet_cascades(self, fixture_copy, tmp_path):
+        from openpyxl import load_workbook as _load
+
+        # gauntlet 'Notes' sheet: nothing references it
+        src = fixture_copy("gauntlet/gauntlet.xlsx")
+        wb = _load(src, preserve=True)
+        victim_title = next(t for t in wb.sheetnames
+                            if t not in ("Model", "Data", "Summary")
+                            and not wb[t]._charts)
+        report = wb.remove(wb[victim_title])
+        assert report is not None
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = _load(out)
+        assert victim_title not in wb2.sheetnames
+        assert "Model" in wb2.sheetnames
+        # the traps on surviving sheets are intact
+        from .support.partdiff import part_payloads
+
+        sheet = next(p for n, p in part_payloads(out).items()
+                     if b"Quarterly Model" in p)
+        assert b"sparklineGroups" in sheet
+
+    def test_remove_referenced_sheet_refuses_with_enumeration(
+            self, fixture_copy, tmp_path):
+        from openpyxl import load_workbook as _load
+
+        src = fixture_copy("features/schedule.xlsx")
+        with open(src, "rb") as f:
+            before = f.read()
+        wb = _load(src, preserve=True)
+        # Summary!B1 references Schedule -> audit must refuse
+        with pytest.raises(UnsupportedStructureError, match="Summary!B1"):
+            wb.remove(wb["Schedule"])
+        assert "Schedule" in wb.sheetnames          # nothing changed
+        with open(src, "rb") as f:
+            assert f.read() == before
+
+    def test_reorder_round_trips_with_scoped_names(self, fixture_copy,
+                                                   tmp_path):
+        from openpyxl import load_workbook as _load
+
+        src = fixture_copy("features/defined_names.xlsx")
+        wb = _load(src, preserve=True)
+        original_order = list(wb.sheetnames)
+        wb.move_sheet(original_order[0], 1)
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = _load(out)
+        assert wb2.sheetnames == [original_order[1], original_order[0]] \
+            + original_order[2:]
+        # sheet-scoped names still resolve on their sheets
+        for ws in wb2.worksheets:
+            for name, dn in ws.defined_names.items():
+                assert dn.value

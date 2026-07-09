@@ -18,6 +18,13 @@ from openpyxl.xml.constants import ARC_APP, EXT_TYPES
 # worksheet extLst families we can name (URI -> human name), from upstream
 _EXT_URI_RE = re.compile(br'<ext[^>]+uri="(\{[^"]+\})"')
 
+# chart auxiliary parts as real producers name them (colors1.xml, style5.xml)
+_CHART_AUX_RE = re.compile(r"(?:colors|style)\d*\.xml$")
+
+# a rich-text run inside sharedStrings: <r> holding an <rPr> (plain <r> with
+# no properties flattens losslessly)
+_RICH_RUN_RE = re.compile(br"<r\b[^>]*>\s*<rPr")
+
 # drawing anchors that are NOT plain chart/image content: shapes, connectors,
 # group shapes, and alternate-content blocks all die in stock's rebuild
 _DRAWING_LOSS_MARKERS = (
@@ -90,7 +97,7 @@ def _ext_names(payload):
     return names
 
 
-def scan_archive(archive, valid_files, keep_vba=False):
+def scan_archive(archive, valid_files, keep_vba=False, rich_text=False):
     """Build a :class:`LossInventory` from an open source ZipFile.
 
     ``valid_files`` is the archive namelist (already computed by the reader).
@@ -122,6 +129,21 @@ def scan_archive(archive, valid_files, keep_vba=False):
                 for label in _ext_names(payload) or ["Unknown"]:
                     inv.add("worksheet-extension", name,
                             "{0} extension will be removed".format(label))
+            if not rich_text and b"<is>" in payload \
+                    and _RICH_RUN_RE.search(payload):
+                inv.add("rich-text", name,
+                        "in-cell formatting runs (inline strings) will be "
+                        "flattened to plain text (load with rich_text=True "
+                        "to model them, or preserve=True to keep them "
+                        "verbatim)")
+            if b"<protectedRanges" in payload \
+                    or b"<protectedRange " in payload:
+                # a WORKSHEET-level element (ECMA-376 18.3.1.99) — the v0.1
+                # first cut scanned workbook.xml for it: dead code the gate
+                # caught; allow-edit ranges carry password hashes
+                inv.add("worksheet-content", name,
+                        "protected ranges (allow-edit ranges, incl. their "
+                        "password hashes) will be dropped")
         elif name.startswith("xl/drawings/") and name.endswith(".xml"):
             payload = read(name)
             found = sorted({label for marker, label in _DRAWING_LOSS_MARKERS
@@ -136,7 +158,9 @@ def scan_archive(archive, valid_files, keep_vba=False):
                     inv.add("chart-extension", name,
                             "chart-internal extensions will be removed when "
                             "the chart is rebuilt")
-            if name.endswith(("colors.xml", "style.xml")):
+            # real producers number these parts (colors1.xml/style1.xml):
+            # a bare endswith never matched them (v0.1 Batch-1 fix)
+            if _CHART_AUX_RE.search(name):
                 inv.add("chart-auxiliary", name,
                         "chart colors/style part will be dropped")
         elif name == ARC_APP:
@@ -148,5 +172,21 @@ def scan_archive(archive, valid_files, keep_vba=False):
             inv.add("custom-xml", name, "customXml part will be dropped")
         elif name.startswith("xl/printerSettings/"):
             inv.add("printer-settings", name, "printer settings will be dropped")
+        elif name.startswith("xl/threadedComments/"):
+            inv.add("threaded-comments", name,
+                    "threaded comments part will be dropped")
+        elif name == "xl/workbook.xml":
+            payload = read(name)
+            if b"<fileSharing" in payload:
+                inv.add("workbook-content", name,
+                        "fileSharing (read-only recommendation/reservation) "
+                        "will be dropped")
+        elif name == "xl/sharedStrings.xml":
+            payload = read(name)
+            if not rich_text and _RICH_RUN_RE.search(payload):
+                inv.add("rich-text", name,
+                        "in-cell formatting runs will be flattened to plain "
+                        "text (load with rich_text=True to model them, or "
+                        "preserve=True to keep them verbatim)")
 
     return inv

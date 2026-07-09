@@ -14,7 +14,10 @@ from openpyxl.errors import UnsupportedStructureError
 from openpyxl.utils.cell import range_boundaries
 
 from . import emit
-from .regions import CT_ORDER_INDEX, REGION_BY_TAG, DETECT_ONLY_REGIONS
+import re
+
+from .regions import (CT_ORDER_INDEX, REGION_BY_TAG, DETECT_ONLY_REGIONS,
+                      SAVER_CRAFTED_REGIONS)
 from .xmlscan import scan_sheet
 
 
@@ -56,15 +59,20 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
     if not dirty:
         return dirty
 
-    # array formulas: refuse on intersection
+    # array/spill formulas: refuse on intersection, naming the anchor
+    # (PLAN-v0.1 3.4: the in_spill context — members of a dynamic-array
+    # spill are blank cells in the file; the range lives on the anchor)
     for ref in scan.array_refs:
         hit = dirty & _cells_in_ref(ref)
         if hit:
+            anchor = ref.split(":")[0]
             raise SpliceRefusal(
-                "cannot edit cell(s) {0} on sheet {1!r}: they intersect the "
-                "array formula range {2}. Editing array formulas is not "
-                "supported in v0; nothing was written.".format(
-                    sorted(hit), ws.title, ref))
+                "cannot edit cell(s) {0} on sheet {1!r}: they are inside "
+                "the array/spill range {2} (in_spill; anchored at {3}). "
+                "Array editing is not supported under preserve mode — "
+                "reopen without preserve=True to restructure the array. "
+                "Nothing was written.".format(
+                    sorted(hit), ws.title, ref, anchor))
 
     # shared-formula groups: dissolve on touch. Membership comes from the
     # OBSERVED member cells (every member carries si); the host's ref
@@ -93,12 +101,11 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
         cell_span = row_span.cells.get(col) if row_span else None
         if cell_span is None:
             continue
-        if "cm" in cell_span.attrs or "vm" in cell_span.attrs:
-            raise SpliceRefusal(
-                "cannot edit cell {0}{1} on sheet {2!r}: it carries cell "
-                "metadata (cm/vm — dynamic-array or rich-value metadata) "
-                "that would go stale on the new value. Nothing was "
-                "written.".format(_col_letter(col), row, ws.title))
+        # cm/vm cell metadata (dynamic-array / rich-value): a plain
+        # value overwrite is CORRECT with the attributes dropped — the
+        # cell simply stops being a rich value/spill anchor; the metadata
+        # part keeps unreferenced records (legal dead weight). The emit
+        # carry excludes cm/vm (PLAN-v0.1 3.4; was a v0 refusal).
         if cell_span.has_extlst:
             raise SpliceRefusal(
                 "cannot edit cell {0}{1} on sheet {2!r}: it carries a "
@@ -117,7 +124,8 @@ def _col_letter(col):
 
 def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                  scan=None, cf_replacement=None, hyperlinks_replacement=None,
-                 style_resolver=None):
+                 style_resolver=None,
+                 value_overwrites=frozenset(), cache_writes=None):
     """Return the new part payload for one worksheet.
 
     ``dirty_cells``: resolved coordinate set (see resolve_dirty_cells).
@@ -131,6 +139,10 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     ``hyperlinks_replacement``: bytes replacing the hyperlinks element.
     ``style_resolver``: cell -> FILE xf index (StyleTranslator; PR-0 D2) —
     model style indices must never reach the spliced bytes.
+    ``cache_writes``: {(row, col): computed_value} — cached-value updates
+    for UNTOUCHED formula cells (oracle write-back, PLAN-v0.1 5.3): the
+    <f> bytes stay verbatim, only the cached <v> (and its t attribute)
+    change.
     """
     if scan is None:
         scan = scan_sheet(original)
@@ -143,11 +155,16 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                 "changes to {0} on sheet {1!r} are not writable in v0 "
                 "(table-part lifecycle); nothing was "
                 "written.".format(tag, ws.title))
-        if tag not in REGION_BY_TAG:
+        if tag not in REGION_BY_TAG and tag not in SAVER_CRAFTED_REGIONS:
             raise SpliceRefusal(
                 "internal: unexpected region change {0!r}".format(tag))
         spans = scan.regions.get(tag, [])
         for span in spans:
+            if tag in SAVER_CRAFTED_REGIONS:
+                # crafted bytes are composed FROM the original (extensions
+                # preserved by construction) — the model-render guard
+                # below does not apply
+                continue
             if b"extLst" in original[span.start:span.end]:
                 raise SpliceRefusal(
                     "cannot rewrite the {0} element on sheet {1!r}: the "
@@ -158,17 +175,8 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                 "cannot rewrite {0} on sheet {1!r}: multiple original "
                 "elements. Nothing was written.".format(tag, ws.title))
 
-    # x14 twin gates (PR-0 D15): a DV change with an x14 dataValidations
-    # block in the sheet extLst desyncs the twins
-    if "dataValidations" in region_changes:
-        ext_spans = scan.regions.get("extLst", [])
-        for span in ext_spans:
-            if b"dataValidations" in original[span.start:span.end]:
-                raise SpliceRefusal(
-                    "cannot change data validations on sheet {0!r}: the "
-                    "sheet carries x14 data validations in its extLst; "
-                    "editing the classic element alone would desync them. "
-                    "Nothing was written.".format(ws.title))
+    # x14 twin coexistence is checked by the saver (preserve.x14, Batch 3);
+    # the v0 blanket gates moved there with the composed-CF machinery
 
     if dirty_cells:
         new_rows = {r for (r, c) in dirty_cells} - set(scan.rows)
@@ -198,21 +206,10 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     # 1b. conditional formatting: replace the whole (possibly multi-element)
     # run with the freshly rendered blocks (dxf handling done by the caller)
     if cf_replacement is not None:
+        # twin-bearing sheets reach here only with COMPOSED bytes (the
+        # saver's x14 planner, Batch 3) — the v0 orphaning gates moved
+        # into that planner
         spans = scan.regions.get("conditionalFormatting", [])
-        for span in spans:
-            if b"extLst" in original[span.start:span.end]:
-                raise SpliceRefusal(
-                    "cannot change conditional formatting on sheet {0!r}: an "
-                    "original rule carries an extLst (x14 twin pointer); "
-                    "editing the classic element alone would orphan the "
-                    "twin. Nothing was written.".format(ws.title))
-        for span in scan.regions.get("extLst", []):
-            if b"conditionalFormatting" in original[span.start:span.end]:
-                raise SpliceRefusal(
-                    "cannot change conditional formatting on sheet {0!r}: "
-                    "the sheet carries x14 conditional formatting in its "
-                    "extLst; editing the classic element alone would desync "
-                    "the twins. Nothing was written.".format(ws.title))
         cf_rank = CT_ORDER_INDEX["conditionalFormatting"]
         if spans:
             edits.append((spans[0].start, spans[0].end, cf_replacement,
@@ -238,7 +235,16 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     # every insertable region, so offsets never collide with them)
     edits.extend((s, e, r, 0) for (s, e, r)
                  in _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes,
-                                     style_resolver))
+                                     style_resolver,
+                                     value_overwrites=value_overwrites))
+    if cache_writes:
+        overlap = set(cache_writes) & set(dirty_cells)
+        if overlap:
+            raise SpliceRefusal(
+                "internal: cache writes and dirty cells overlap at "
+                "{0}".format(sorted(overlap)[:4]))
+        edits.extend((s, e, r, 0) for (s, e, r)
+                     in _cache_value_edits(ws, scan, original, cache_writes))
 
     # ------- apply (sorted, non-overlapping by construction) -------------
     edits.sort(key=lambda e: (e[0], e[1], e[3]))
@@ -272,7 +278,8 @@ def _region_insert_offset(scan, tag):
     return scan.root_end_offset
 
 
-def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve):
+def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve,
+                     value_overwrites=frozenset()):
     edits = []
     by_row = {}
     for (row, col) in dirty_cells:
@@ -300,7 +307,8 @@ def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve):
     for row_index in sorted(r for r in touched_rows if r in scan.rows):
         row_span = scan.rows[row_index]
         row_edits = _row_edits(ws, row_span, by_row.get(row_index, set()),
-                               row_attr_changes.get(row_index), resolve)
+                               row_attr_changes.get(row_index), resolve,
+                               value_overwrites=value_overwrites)
         edits.extend(row_edits)
 
     # new rows: insert each before the first existing row with a larger index
@@ -355,7 +363,8 @@ def _emit_rows_block(ws, row_indices, by_row, row_attr_changes, resolve):
     return b"".join(parts)
 
 
-def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve):
+def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve,
+               value_overwrites=frozenset()):
     """Edits inside one existing row: replace/insert/delete cells, sync the
     row start tag's attributes when they changed."""
     edits = []
@@ -416,7 +425,9 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve):
         rendered = emit.emit_cell(ws, cell, resolve(cell)) \
             if cell is not None else None
         if rendered is not None and cell_span is not None:
-            rendered = emit.carry_attributes(rendered, cell_span.attrs)
+            rendered = emit.carry_attributes(
+                rendered, cell_span.attrs,
+                drop_metadata=(row_span.index, col) in value_overwrites)
 
         if cell_span is not None:
             # replace or delete an existing cell element
@@ -430,3 +441,88 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve):
                 offset = row_span.content_end
             edits.append((offset, offset, rendered))
     return edits
+
+
+# ---------------------------------------------------------------------
+# oracle write-back (PLAN-v0.1 5.3): cached-value updates on untouched
+# formula cells — the <f> bytes verbatim, the <v> replaced
+
+_F_BLOCK_RE = re.compile(br"<f\b[^>]*?(?:/>|>.*?</f>)", re.S)
+_CELL_HEAD_RE = re.compile(br"<c\b([^>]*?)(/?)>", re.S)
+
+
+def _serialize_cached_value(value, epoch):
+    """(t_attr_or_None, v_text) for a computed value; the mirror of what
+    Excel itself writes for a formula cell's cache."""
+    import datetime
+
+    from openpyxl.utils.datetime import to_excel
+
+    if isinstance(value, bool):
+        return b"b", b"1" if value else b"0"
+    if isinstance(value, (int, float)):
+        return None, repr(value).encode("ascii")
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time,
+                          datetime.timedelta)):
+        return None, repr(to_excel(value, epoch)).encode("ascii")
+    if isinstance(value, str):
+        from openpyxl.cell.cell import ERROR_CODES
+
+        text = value.encode("utf-8")
+        text = (text.replace(b"&", b"&amp;").replace(b"<", b"&lt;")
+                .replace(b">", b"&gt;"))
+        if value.strip() in ERROR_CODES:
+            return b"e", text
+        return b"str", text
+    raise SpliceRefusal(
+        "cache write value {0!r} has no cached-value serialization. "
+        "Nothing was written.".format(value))
+
+
+def _cache_value_edits(ws, scan, original, cache_writes):
+    edits = []
+    epoch = ws.parent.epoch
+    for (row, col), value in sorted(cache_writes.items()):
+        label = "{0}!r{1}c{2}".format(ws.title, row, col)
+        row_span = scan.rows.get(row)
+        cell_span = row_span.cells.get(col) if row_span is not None else None
+        if cell_span is None:
+            raise SpliceRefusal(
+                "cache write target {0} does not exist in the original "
+                "bytes. Nothing was written.".format(label))
+        cell_bytes = original[cell_span.start:cell_span.end]
+        edits.append((cell_span.start, cell_span.end,
+                      _patch_cached_value(cell_bytes, value, epoch, label)))
+    return edits
+
+
+def _patch_cached_value(cell_bytes, value, epoch, label):
+    head = _CELL_HEAD_RE.match(cell_bytes)
+    if head is None or head.group(2) == b"/":
+        raise SpliceRefusal(
+            "cache write target {0} is not a formula cell. Nothing was "
+            "written.".format(label))
+    f_m = _F_BLOCK_RE.search(cell_bytes)
+    if f_m is None:
+        raise SpliceRefusal(
+            "cache write target {0} carries no formula. Nothing was "
+            "written.".format(label))
+    # the cell must hold nothing but its formula and cache: any other
+    # child (extLst, inline string) is content this surgery would drop
+    rest = _F_BLOCK_RE.sub(b"", cell_bytes[head.end():-len(b"</c>")], 1)
+    rest = re.sub(br"<v\b[^>]*?(?:/>|>.*?</v>)", b"", rest, 1, re.S)
+    if rest.strip():
+        raise SpliceRefusal(
+            "cache write target {0} carries content besides its formula "
+            "and cached value; updating it is not supported. Nothing was "
+            "written.".format(label))
+    t_attr, v_text = _serialize_cached_value(value, epoch)
+    attr_blob = head.group(1)
+    attr_blob = re.sub(br"\st=(?:\"[^\"]*\"|'[^']*')", b"", attr_blob)
+    if t_attr is not None:
+        attr_blob += b' t="' + t_attr + b'"'
+    v_open = b"<v>"
+    if isinstance(value, str) and value != value.strip():
+        v_open = b'<v xml:space="preserve">'
+    return (b"<c" + attr_blob + b">" + f_m.group(0)
+            + v_open + v_text + b"</v></c>")

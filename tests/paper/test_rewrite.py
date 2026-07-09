@@ -196,12 +196,20 @@ class TestShiftRefusals:
         with pytest.raises(UnsupportedStructureError, match="array"):
             wb["Calc"].insert_rows(3)
 
-    def test_second_shift_same_session_refuses(self, fixture_copy):
-        src = fixture_copy("features/schedule.xlsx")
-        wb = load_workbook(src, preserve=True)
-        wb["Schedule"].insert_rows(5)
-        with pytest.raises(UnsupportedStructureError, match="save the workbook"):
-            wb["Schedule"].insert_rows(7)
+    def test_second_shift_same_session_composes(self, fixture_copy,
+                                                 tmp_path):
+        # FLIPPED by v0.1 Batch 3 (was a refusal): shifts compose; full
+        # coverage in test_structural.TestMultipleShifts
+        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
+                           preserve=True)
+        ws = wb["Schedule"]
+        ws.insert_rows(3)
+        ws.insert_rows(5)                       # second shift: composes
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        wb2 = load_workbook(out)
+        assert wb2["Schedule"]["B14"].value == "=SUM(B2:B13)"
+
 
     def test_move_range_still_refuses(self, fixture_copy):
         src = fixture_copy("features/schedule.xlsx")
