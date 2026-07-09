@@ -149,6 +149,11 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                 "internal: unexpected region change {0!r}".format(tag))
         spans = scan.regions.get(tag, [])
         for span in spans:
+            if tag in SAVER_CRAFTED_REGIONS:
+                # crafted bytes are composed FROM the original (extensions
+                # preserved by construction) — the model-render guard
+                # below does not apply
+                continue
             if b"extLst" in original[span.start:span.end]:
                 raise SpliceRefusal(
                     "cannot rewrite the {0} element on sheet {1!r}: the "
@@ -159,17 +164,8 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                 "cannot rewrite {0} on sheet {1!r}: multiple original "
                 "elements. Nothing was written.".format(tag, ws.title))
 
-    # x14 twin gates (PR-0 D15): a DV change with an x14 dataValidations
-    # block in the sheet extLst desyncs the twins
-    if "dataValidations" in region_changes:
-        ext_spans = scan.regions.get("extLst", [])
-        for span in ext_spans:
-            if b"dataValidations" in original[span.start:span.end]:
-                raise SpliceRefusal(
-                    "cannot change data validations on sheet {0!r}: the "
-                    "sheet carries x14 data validations in its extLst; "
-                    "editing the classic element alone would desync them. "
-                    "Nothing was written.".format(ws.title))
+    # x14 twin coexistence is checked by the saver (preserve.x14, Batch 3);
+    # the v0 blanket gates moved there with the composed-CF machinery
 
     if dirty_cells:
         new_rows = {r for (r, c) in dirty_cells} - set(scan.rows)
@@ -199,21 +195,10 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     # 1b. conditional formatting: replace the whole (possibly multi-element)
     # run with the freshly rendered blocks (dxf handling done by the caller)
     if cf_replacement is not None:
+        # twin-bearing sheets reach here only with COMPOSED bytes (the
+        # saver's x14 planner, Batch 3) — the v0 orphaning gates moved
+        # into that planner
         spans = scan.regions.get("conditionalFormatting", [])
-        for span in spans:
-            if b"extLst" in original[span.start:span.end]:
-                raise SpliceRefusal(
-                    "cannot change conditional formatting on sheet {0!r}: an "
-                    "original rule carries an extLst (x14 twin pointer); "
-                    "editing the classic element alone would orphan the "
-                    "twin. Nothing was written.".format(ws.title))
-        for span in scan.regions.get("extLst", []):
-            if b"conditionalFormatting" in original[span.start:span.end]:
-                raise SpliceRefusal(
-                    "cannot change conditional formatting on sheet {0!r}: "
-                    "the sheet carries x14 conditional formatting in its "
-                    "extLst; editing the classic element alone would desync "
-                    "the twins. Nothing was written.".format(ws.title))
         cf_rank = CT_ORDER_INDEX["conditionalFormatting"]
         if spans:
             edits.append((spans[0].start, spans[0].end, cf_replacement,

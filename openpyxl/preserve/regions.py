@@ -197,7 +197,8 @@ DETECT_ONLY_REGIONS = []
 
 # regions whose replacement bytes come from the SAVER's own planner (never
 # from a model render): the splice accepts them as-is
-SAVER_CRAFTED_REGIONS = frozenset(["tableParts", "legacyDrawing"])
+SAVER_CRAFTED_REGIONS = frozenset(["tableParts", "legacyDrawing",
+                                   "extLst"])
 
 
 def _render_cf(ws):

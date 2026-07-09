@@ -636,21 +636,30 @@ class TestBatteryToday:
         assert "reviewed: ok" in comment.text
         assert wb2["Sheet1"]["B2"].value is not None   # cell data intact
 
-    # job 20 — today: refuse (x14 twin desync gate). Batch 3 flips to
-    # correct twin-sync.
-    def test_job20_x14_cf_edit_refuses(self, fixture_copy, tmp_path):
-        from openpyxl.errors import UnsupportedStructureError
+    # job 20 — Batch-3 state: CORRECT twin-sync (was the highest-traffic
+    # refusal): classic CF composes from ORIGINAL bytes so x14 twin
+    # pointers survive verbatim; new rules append.
+    def test_job20_x14_cf_edit_is_correct(self, fixture_copy, tmp_path):
         from openpyxl.formatting.rule import CellIsRule
         from openpyxl.styles import PatternFill
 
-        wb = load_workbook(fixture_copy("gauntlet/gauntlet.xlsx"),
-                           preserve=True)
+        src = fixture_copy("gauntlet/gauntlet.xlsx")
+        sheet_before = _sheet_payload(src, b"Quarterly Model")[1]
+        twins_before = sheet_before.count(b"<x14:id>")
+        wb = load_workbook(src, preserve=True)
         wb["Model"].conditional_formatting.add(
             "B3:B5", CellIsRule(
                 operator="greaterThan", formula=["1000"],
                 fill=PatternFill(start_color="FFC7CE", fill_type="solid")))
-        with pytest.raises(UnsupportedStructureError, match="x14"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        _, sheet_after = _sheet_payload(out, b"Quarterly Model")
+        # every twin pointer AND the x14 twin block survive byte-wise
+        assert sheet_after.count(b"<x14:id>") == twins_before
+        assert b"x14:conditionalFormattings" in sheet_after
+        assert b'"greaterThan"' in sheet_after         # the new rule landed
+        wb2 = load_workbook(out)
+        assert len(wb2["Model"].conditional_formatting) == 4  # 3 + new
 
     # job 21 — today: refuse (cm metadata). Batch 3 flips to correct
     # cm/vm bookkeeping.

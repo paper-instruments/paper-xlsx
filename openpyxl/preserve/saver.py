@@ -311,7 +311,26 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
         cf_replacement = None
         if "conditionalFormatting" in all_region_changes:
-            cf_replacement = render_cf_for_write(ws)
+            from . import x14
+
+            if x14.sheet_has_cf_twins(scan, original):
+                # Batch 3 (PR-1 2.1): twin-bearing CF is COMPOSED from
+                # original bytes (the model drops <x14:id> pointers on
+                # re-render) with the extLst twins patched in lockstep
+                cf_replacement, ext_crafted = x14.plan_cf_composed(
+                    workbook, ws, scan, original,
+                    led.region_snapshots.get(ws, {}).get(
+                        "conditionalFormatting", ()))
+                if ext_crafted is not None:
+                    region_changes["extLst"] = ext_crafted
+            else:
+                cf_replacement = render_cf_for_write(ws)
+        if "dataValidations" in region_changes:
+            from . import x14
+
+            # classic DV edits coexist with verbatim x14 DVs unless the
+            # ranges overlap (Batch 3 lifts the blanket D15 refusal)
+            x14.check_dv_coexistence(ws, scan, original)
 
         if shift_ops:
             # a shift splits/renumbers shared groups whose members would

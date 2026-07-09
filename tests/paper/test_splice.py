@@ -260,23 +260,44 @@ class TestRegionEdits:
         wb2 = load_workbook(out)
         assert [str(r) for r in wb2["Sheet1"].merged_cells.ranges] == ["F1:G2"]
 
-    def test_cf_change_refuses_when_x14_twins_present(self, fixture_copy, tmp_path):
-        # the gauntlet's dataBar rule carries an x14 twin pointer: editing
-        # the classic element alone would orphan it (PR-0 D15 gate)
-        from openpyxl.formatting.rule import CellIsRule
-        from openpyxl.styles import PatternFill
-
+    def test_cf_twin_sync_sqref_patch_and_delete(self, fixture_copy,
+                                                  tmp_path):
+        # FLIPPED by v0.1 Batch 3 (was the blanket twin refusal): sqref
+        # changes patch BOTH sides in lockstep; deleting a twin-bearing
+        # rule removes its twin entry; untouched blocks stay verbatim
         src = fixture_copy(GAUNTLET)
-        with open(src, "rb") as f:
-            before = f.read()
         wb = load_workbook(src, preserve=True)
-        wb["Model"].conditional_formatting.add(
-            "B9:B9", CellIsRule(operator="lessThan", formula=["0"],
-                                fill=PatternFill("solid", fgColor="FF0000AA")))
-        with pytest.raises(UnsupportedStructureError, match="twin"):
-            wb.save(str(tmp_path / "o.xlsx"))
-        with open(src, "rb") as f:
-            assert f.read() == before
+        cfs = list(wb["Model"].conditional_formatting)
+        databar = next(cf for cf in cfs
+                       if any(r.type == "dataBar" for r in cf.rules))
+        # sqref is the block's dict key upstream: re-key, never mutate
+        cf_list = wb["Model"].conditional_formatting
+        rules = cf_list._cf_rules.pop(databar)
+        databar.sqref = "B6:F6"                    # sqref-only change
+        cf_list._cf_rules[databar] = rules
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        _, sheet = _model_sheet(out)
+        assert b'sqref="B6:F6"' in sheet           # classic side patched
+        assert b"<xm:sqref>B6:F6</xm:sqref>" in sheet   # twin side synced
+        assert b"<x14:id>" in sheet
+        wb2 = load_workbook(out)
+        assert any(str(cf.sqref) == "B6:F6"
+                   for cf in wb2["Model"].conditional_formatting)
+
+        # deletion: the twin entry goes with the rule
+        wb3 = load_workbook(src, preserve=True)
+        cf_list = wb3["Model"].conditional_formatting
+        target = next(cf for cf in cf_list
+                      if any(r.type == "dataBar" for r in cf.rules))
+        twins_before = _model_sheet(src)[1].count(b"<x14:id>")
+        cf_list._cf_rules.pop(target)
+        out2 = str(tmp_path / "o2.xlsx")
+        wb3.save(out2)
+        _, sheet2 = _model_sheet(out2)
+        assert sheet2.count(b"<x14:id>") == twins_before - 1
+        wb4 = load_workbook(out2)
+        assert len(wb4["Model"].conditional_formatting) == 2
 
 
 class TestV0Refusals:
