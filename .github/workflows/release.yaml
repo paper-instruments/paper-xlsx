@@ -30,6 +30,7 @@ jobs:
         run: uv run --isolated --no-project --with dist/*.tar.gz python -c "import openpyxl; print(openpyxl.__paper_version__)"
       - name: Publish
         # Publish only when triggered by a version tag push (e.g., v1.2.3);
-        # manual workflow_dispatch runs build + smoke test but never publish.
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        # manual workflow_dispatch runs build + smoke test but never publish
+        # (event_name guard prevents a dispatch selected against a tag ref).
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
         run: uv publish
