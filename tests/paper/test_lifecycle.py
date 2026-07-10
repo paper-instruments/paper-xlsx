@@ -1,5 +1,4 @@
-"""The part-lifecycle engine and its dividends (PLAN-v0.1 Batch 2;
-PR-1 §1). Every part a save creates or deletes routes through
+"""The part-lifecycle engine and its dividends. Every part a save creates or deletes routes through
 PartPlan.add_part/remove_part — no bespoke cascades."""
 from __future__ import annotations
 

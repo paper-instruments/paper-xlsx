@@ -48,7 +48,7 @@ def find_images(archive, path):
         chart = read_chart(cs)
         chart.anchor = rel.anchor
         # paper-xlsx: the chart's package part, so preserve mode can
-        # express per-property edits as byte patches (PLAN-v0.1 4.3)
+        # express per-property edits as byte patches
         dep = deps.get(rel.id)
         if dep is not None:
             chart._paper_part = dep.target

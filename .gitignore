@@ -11,3 +11,6 @@ __pycache__/
 *.py[cod]
 /reference/
 /scratch/
+
+# generated Sphinx autodoc stubs (APIDOC=True build)
+/doc/api/

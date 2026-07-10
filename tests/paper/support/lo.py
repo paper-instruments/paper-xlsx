@@ -1,7 +1,7 @@
 """LibreOffice test driver (lo_smoke tier).
 
-Operational rules distilled from the Phase-0 oracle probes
-(agent_docs/OPEN-QUESTIONS.md Q10), which this module must never violate:
+Operational rules distilled from the oracle probes, which this module
+must never violate:
 
 - The caller's file is NEVER handed to LibreOffice: every conversion copies
   the input into a fresh temp dir first (asserted by tests).
@@ -12,7 +12,7 @@ Operational rules distilled from the Phase-0 oracle probes
   exits 0 on unloadable input, and successful runs may emit stderr noise.
 - Timeouts kill the whole process group (macOS/Debian both spawn children).
 
-This is a test helper; the production oracle (Phase 5) re-implements the same
+This is a test helper; the production oracle re-implements the same
 rules as package code with typed errors.
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# paper-xlsx: formula pre-flight linter (PLAN-v0.1 5.2, PR-1 §4.2)
+# paper-xlsx: formula pre-flight linter
 
 """Tokenizer-based formula checks — no evaluation, ever.
 
@@ -60,7 +60,7 @@ def _split_sheet(operand):
             if "[" in sheet:
                 # '[Budget.xlsx]Sheet One'!A1 / 'C:\path\[B.xlsx]S'!A1:
                 # the quoted storage form of external-workbook references
-                # — never judged (Batch-5 gate: flagged as unknown-sheet)
+                # — never judged (flagged as unknown-sheet)
                 return ("<external>", None)
             return (sheet, operand[end + 2:])
         return (None, operand)
@@ -196,13 +196,13 @@ def lint_formula(text, *, workbook=None, sheet=None):
                     # an in-session table has no tableColumns until save
                     # (openpyxl derives them from the header row at write
                     # time): its columns are unknowable here, never
-                    # unknown (Batch-5 gate: false refusals on the normal
+                    # unknown (false refusals on the normal
                     # add-table-then-write-formulas order)
                     continue
                 if "'" in m.group(2):
                     # Excel's ' escape for [ ] # ' @ in column names:
                     # decoding needs a full structured-ref parser —
-                    # unknowable, never unknown (Batch-5 gate)
+                    # unknowable, never unknown
                     continue
                 columns = {c.casefold()
                            for c in (table.column_names or [])}

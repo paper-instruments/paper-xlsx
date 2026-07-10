@@ -3,7 +3,7 @@
 """Manage individual cells in a spreadsheet.
 
 The Cell class is required to know its value and type, display options,
-and any other features of an Excel cell.  Utilities for referencing
+and any other features of an Excel cell. Utilities for referencing
 cells using Excel's 'A1' column/row nomenclature are also provided.
 
 """
@@ -132,7 +132,7 @@ class Cell(StyleableObject):
     def data_type(self, value):
         # a direct data_type assignment changes how the value serializes
         # (it can silently demote a formula to literal text), so it is a
-        # ledger chokepoint like any other cell mutation (PR-0 D5)
+        # ledger chokepoint like any other cell mutation
         old = self._data_type
         self._data_type = value
         _mark_cell_dirty(self, formula_involved='f' in (old, value))
@@ -196,7 +196,7 @@ class Cell(StyleableObject):
 
         # single inline fast bail for BOTH paper hooks (the helper call
         # costs ~28% on the fresh-generation hot path, and doubling the
-        # lookup chain measured +13% — Batch-1 gate): resolved once here,
+        # lookup chain measured +13%): resolved once here,
         # reused for the pre-bind protection check and the post-bind mark
         ws = self.parent
         paper_armed = (
@@ -204,7 +204,7 @@ class Cell(StyleableObject):
             and getattr(ws, "parent", None) is not None
             and getattr(ws.parent, "_paper_ledger", None) is not None)
         if paper_armed:
-            # protection awareness (PLAN-v0.1 1.6) runs BEFORE any
+            # protection awareness runs BEFORE any
             # mutation so a strict-mode refusal is atomic
             _check_protection(self)
 
@@ -225,7 +225,7 @@ class Cell(StyleableObject):
         if dt == "f" and paper_armed:
             # ArrayFormula/DataTableFormula objects carry their text out
             # of band: they must not bypass the lint chokepoint
-            # (Batch-5 gate)
+            #
             text = getattr(value, "text", None)
             if isinstance(text, str) and text.startswith("="):
                 from openpyxl.formula.lint import lint_on_bind
@@ -243,7 +243,7 @@ class Cell(StyleableObject):
             value = self.check_string(value)
             if len(value) > 1 and value.startswith("="):
                 if paper_armed:
-                    # pre-flight lint (PLAN-v0.1 5.2): warns or refuses
+                    # pre-flight lint: warns or refuses
                     # BEFORE the value lands (a refusal restores the
                     # pre-bind type; nothing was assigned yet)
                     from openpyxl.formula.lint import lint_on_bind

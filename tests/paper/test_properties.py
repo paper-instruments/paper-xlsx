@@ -1,11 +1,12 @@
-"""Permanent property invariants (PLAN-v0.1 §0.4).
+"""Permanent property invariants.
 
 Two properties that hold across the WHOLE corpus, forever:
 
 - a zero-edit preserve save is byte-identical on every part, for every
-  loadable fixture — the invariant the fork is named for. The Batch-0
-  false-dirty bug survived v0 because the no-op test enumerated fixtures
-  by hand and skipped the one that failed; this one enumerates the corpus.
+  loadable fixture — the invariant the fork is named for. An early
+  false-dirty bug slipped through because the no-op test enumerated
+  fixtures by hand and skipped the one that failed; this one enumerates
+  the corpus.
 - the ledger cross-check covers REGIONS, not just cells: a region the
   saver never claimed may never differ in the output.
 """
@@ -95,7 +96,7 @@ class TestRegionClaimsCrossCheck:
                           "xl/worksheets/sheet1.xml": {"pageMargins"}})
 
     def test_unclaimed_row_attr_drift_raises(self):
-        # the Batch-0 gate's blind spot: row display attributes rewritten
+        # a blind spot: row display attributes rewritten
         # on rows the ledger never claimed
         from openpyxl.preserve.crosscheck import (
             LedgerCrossCheckError,

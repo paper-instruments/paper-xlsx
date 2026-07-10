@@ -1,4 +1,4 @@
-# paper-xlsx: perception — manifest and dependency sketch (PLAN Phase 4)
+# paper-xlsx: perception — manifest and dependency sketch
 
 """What an agent needs to know about a workbook before touching it:
 what is in it, what of that is preservable under the active mode, and
@@ -16,7 +16,7 @@ import zipfile
 
 from openpyxl.utils.cell import range_boundaries
 
-# CONVENTIONS §3.7 (pinned): nondeterministic volatiles are excluded from
+# nondeterministic volatiles are excluded from
 # certification; INDIRECT/OFFSET are volatile but deterministic given inputs
 VOLATILE_NONDETERMINISTIC = ("NOW", "TODAY", "RAND", "RANDBETWEEN",
                              "RANDARRAY")
@@ -58,7 +58,7 @@ def build_manifest(wb):
 
         with zipfile.ZipFile(io.BytesIO(source)) as _zin:
             # CURRENT-title keyed (renamed sheets keep their part —
-            # Batch-6 gate: part_name went stale/None after a rename)
+            # part_name went stale/None after a rename)
             part_names = {title: part for part, title
                           in current_titles_by_part(wb, _zin).items()}
     for ws in wb.worksheets:
@@ -90,7 +90,7 @@ def build_manifest(wb):
             "protection": bool(ws.protection.sheet),
             "defined_names": {name: dn.value for name, dn
                               in sorted(ws.defined_names.items())},
-            # Batch-6 enrichment (PLAN-v0.1 6.5)
+            # additional manifest fields
             "formula_addresses": formula_addresses,
             "part_name": part_names.get(ws.title),
         }
@@ -120,7 +120,7 @@ def build_manifest(wb):
                  or wb.security.revisionsPassword)),
         "confession": _confession(wb),
         "preservation": _preservation(wb),
-        # Batch-6 enrichment (PLAN-v0.1 6.5)
+        # additional manifest fields
         "computation": _computation_summary(wb),
         "protection_summary": {
             "protected_sheets": [ws.title for ws in wb.worksheets
@@ -245,7 +245,7 @@ def _preservation(wb):
 
 
 # ---------------------------------------------------------------------
-# dependency sketch (feeds the Phase 6 guards)
+# dependency sketch (feeds the shift guards)
 
 class DependencySketch:
     """Coarse formula-dependency map: which cells feed which.
@@ -254,7 +254,7 @@ class DependencySketch:
     of references its formula makes, as (sheet_title, bounds, raw) tuples —
     bounds may contain None for open-ended (whole-row/column) ranges.
     Table/structured references cannot be resolved to cells and are listed
-    in ``unresolved`` (Phase 6 treats them as always-intersecting).
+    in ``unresolved`` (treated as always-intersecting).
     """
 
     def __init__(self):
@@ -306,7 +306,7 @@ _SHEET_REF_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([^'!]+))!(.+)$")
 
 def dependency_sketch(wb):
     """Build a :class:`DependencySketch` from every formula in the model
-    (tokenizer-based; PLAN Phase 4 — coarse is fine)."""
+    (tokenizer-based; — coarse is fine)."""
     from openpyxl.formula import Tokenizer
 
     sketch = DependencySketch()
@@ -327,7 +327,7 @@ def dependency_sketch(wb):
                 operands = [t.value for t in tokens
                             if t.type == "OPERAND" and t.subtype == "RANGE"]
                 # INDIRECT/OFFSET with computed-string targets leave no
-                # RANGE operand at all (Batch-1 gate): the formula must
+                # RANGE operand at all: the formula must
                 # count as unresolved (always-intersecting), never as
                 # invisible
                 indirect = any(
@@ -363,7 +363,7 @@ def _classify(sketch, wb, ws, address, raw):
         # a 3-D span (Sheet1:Sheet3!A1) is not one sheet: classify it
         # conservatively as unresolved (always-intersecting) rather than
         # recording a phantom sheet name nothing can ever match
-        # (Batch-1 gate: the phantom key silently defeated the recalc
+        # (the phantom key silently defeated the recalc
         # guard and certification taint)
         sketch.unresolved.setdefault(address, []).append(raw)
         return
@@ -372,7 +372,7 @@ def _classify(sketch, wb, ws, address, raw):
     # a pure-alphabetic token without ':' is NEVER a cell/column reference
     # in a formula (column refs need "IN:IN"; cells need a row number) —
     # range_boundaries would happily parse "IN" as a column and hand the
-    # taint walk phantom bounds (Batch-5 gate: a defined name shaped like
+    # taint walk phantom bounds (a defined name shaped like
     # a column letter escaped the input taint)
     if ":" not in plain and not any(ch.isdigit() for ch in plain):
         name = wb.defined_names.get(raw) or ws.defined_names.get(raw)
@@ -400,7 +400,7 @@ def _classify(sketch, wb, ws, address, raw):
             return
         if name.value and "[" in name.value:
             # external-workbook reference hiding behind the name: the
-            # expansion would drop the external marker (Batch-1 gate)
+            # expansion would drop the external marker
             sketch.unresolved.setdefault(address, []).append(raw)
             return
         try:

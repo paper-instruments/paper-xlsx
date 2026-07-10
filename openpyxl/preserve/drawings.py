@@ -1,4 +1,4 @@
-# paper-xlsx: drawing-part creation under preserve (PLAN-v0.1 Batch 4)
+# paper-xlsx: drawing-part creation under preserve
 
 """Charts and images added in-session become NEW drawing/chart/media parts
 through the lifecycle engine — the stock writer's own serialization, never
@@ -6,12 +6,12 @@ a re-render of preserved bytes.
 
 Three shapes, in increasing contact with original bytes:
 
-- ADDED sheet (4.1): the stock worksheet writer already emitted
+- ADDED sheet: the stock worksheet writer already emitted
   ``<drawing r:id>``; this module supplies the parts and fills the rel.
-- LOADED sheet, no drawing machinery (4.2): a fresh drawing part plus ONE
+- LOADED sheet, no drawing machinery: a fresh drawing part plus ONE
   ``<drawing r:id>`` element spliced into the sheet at its schema
   position.
-- LOADED sheet, existing drawing (4.2): new anchors appended INTO the
+- LOADED sheet, existing drawing: new anchors appended INTO the
   original drawing part — only when that part is anchor-only; anything
   else refuses.
 
@@ -81,7 +81,7 @@ def _image_payload(image):
         elif hasattr(ref, "seek") and hasattr(ref, "read"):
             # PIL leaves the stream position wherever parsing stopped:
             # reading from the CURRENT position saves garbage media bytes
-            # (Batch-4 gate) — read the whole stream, restore the position
+            # — read the whole stream, restore the position
             pos = ref.tell()
             ref.seek(0)
             data = ref.read()
@@ -139,7 +139,7 @@ def _register_objects(workbook, ws, part_plan, names, charts, images):
     # validate everything first: image data readable, charts single-use.
     # the seen-set lives on the PART PLAN (one save), not the workbook —
     # a second save of the same workbook replans the same additions and
-    # must not false-refuse (Batch-4 gate suspicion, confirmed)
+    # must not false-refuse
     image_data = [_image_payload(img) for img in images]
     seen = getattr(part_plan, "_drawn_charts", None)
     if seen is None:
@@ -169,7 +169,7 @@ def _register_objects(workbook, ws, part_plan, names, charts, images):
 
 
 def plan_added_sheet_drawing(workbook, ws, part_plan, names, rel_entries):
-    """Charts/images on an ADDED sheet (4.1): the stock writer emitted
+    """Charts/images on an ADDED sheet: the stock writer emitted
     ``<drawing r:id>`` into the fresh sheet payload with an empty rel
     Target; supply the drawing/chart/media parts and fill the target.
     Returns the updated sheet rel entries."""
@@ -201,7 +201,7 @@ def plan_added_sheet_drawing(workbook, ws, part_plan, names, rel_entries):
 
 def plan_fresh_drawing(workbook, ws, part_plan, names, sheet_part,
                        original_sheet_rels, charts, images):
-    """Charts/images on a LOADED sheet with no drawing machinery (4.2):
+    """Charts/images on a LOADED sheet with no drawing machinery:
     a fresh drawing part via the engine plus ONE spliced element. Returns
     the ``<drawing r:id>`` bytes for the region splice."""
     _register_objects(workbook, ws, part_plan, names, charts, images)
@@ -249,7 +249,7 @@ def _existing_drawing_part(zin, names, sheet_part):
 def _iter_tags(body):
     """Yield (is_closing, local_name, self_closing) for every tag in
     ``body``, quote-aware (a '>' inside an attribute value never ends a
-    tag — Batch-4 gate: false refusals). Raises ScanRefusal on
+    tag — false refusals). Raises ScanRefusal on
     unterminated tags."""
     pos = 0
     n = len(body)
@@ -357,7 +357,7 @@ def _anchor_only(payload):
 
 def plan_drawing_append(workbook, ws, part_plan, names, drawing_part,
                         original, existing_rels, charts, images):
-    """Charts/images on a LOADED sheet whose drawing already exists (4.2):
+    """Charts/images on a LOADED sheet whose drawing already exists:
     new anchors appended INTO the original drawing bytes (``original`` may
     already carry this save's shift patches) — only when that drawing is
     anchor-only. Returns the new drawing payload."""
@@ -377,7 +377,7 @@ def plan_drawing_append(workbook, ws, part_plan, names, drawing_part,
     # remap the render's local rId1..rIdN to ids reserved on the ORIGINAL
     # drawing's rels — through collision-proof placeholders: a sequential
     # in-place replace cross-wires anchors whenever a reserved id equals a
-    # still-unreplaced local id (Batch-4 gate: chart anchor pointed at the
+    # still-unreplaced local id (chart anchor pointed at the
     # PNG, output unreadable)
     drawing_rels_part = _rels_path(drawing_part)
     rel_appends = []

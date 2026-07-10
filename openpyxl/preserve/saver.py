@@ -1,4 +1,4 @@
-# paper-xlsx: the preserve-mode save (CONVENTIONS §3.4/§3.5; PR-0 §3/§6)
+# paper-xlsx: the preserve-mode save
 
 """Save dispatch target for preserve-mode workbooks.
 
@@ -10,8 +10,8 @@ against the original payloads. Everything is validated BEFORE the first
 output byte, so every refusal is atomic.
 
 Still refused in v0 (typed, never silent): comment changes on loaded sheets;
-table add/remove; charts/images/comments/tables on ADDED sheets (D9 partial
-deferral, recorded in PAPER.md); custom-property part creation; workbook.xml
+table add/remove; charts/images/comments/tables on ADDED sheets (partially
+deferred); custom-property part creation; workbook.xml
 elements outside {sheets, definedNames, calcPr, bookViews}; chartsheet
 changes; mark_dirty on non-worksheet parts.
 """
@@ -69,14 +69,14 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
     force_calcpr = False
     if led.formulas_changed or _dirty_feeds_formulas(workbook, led):
-        # honesty organ (PLAN Phase 3, widened by PLAN-v0.1 1.2): a human
+        # honesty organ: a human
         # opener's Excel must always compute fresh numbers — stale cached
         # values can never masquerade as current. That holds for formula
         # TEXT edits and equally for the most common agent edit of all: a
         # VALUE write into cells that formulas read. The model's
         # CalcProperties defaults the flag to True, so the arm-vs-save
         # diff cannot see this change: calcPr is forced into the
-        # workbook.xml plan (sanctioned collateral, PR-0 D2) and
+        # workbook.xml plan (sanctioned collateral) and
         # re-rendered from the fully-modeled object.
         workbook.calculation.fullCalcOnLoad = True
         force_calcpr = True
@@ -122,7 +122,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
     # model style indices drift from the file's on non-openpyxl producers
     # (numFmt normalization, Normal-style bootstrap): every emitted s
-    # attribute goes through the translator (PR-0 D2)
+    # attribute goes through the translator
     translator = None
     if ARC_STYLE in names:
         from .styletrans import StyleTranslator
@@ -163,7 +163,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 new_rels_parts.append((_rels_path(part_name), sheet_rels))
             # rIds reserved through the ENGINE's shared allocator: an
             # engine append to workbook rels in the same save (styles.xml
-            # creation) must never collide (Batch-2 gate: duplicate rId4)
+            # creation) must never collide (duplicate rId4)
             rid = part_plan.reserve_rid(wb_rels_part, original_wb_rels)
             new_sheet_entries.append(
                 (ws.title, next_sheet_id + i, rid, ws.sheet_state))
@@ -177,7 +177,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     dirty_by_part = {}
     region_claims = {}        # part -> region tags knowingly rewritten
     row_claims = {}           # part -> row indices with claimed attr edits
-    baselines = {}            # part -> shifted baseline bytes (Phase 6b)
+    baselines = {}            # part -> shifted baseline bytes
     sheet_rels_updates = {}   # part_name -> new payload
     need_styles_part = False  # styled writes into a styles-less package
     for ws in workbook.worksheets:
@@ -193,7 +193,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                          and key in getattr(ws, "tables", {})]
         changed_objects = [(kind, key) for kind, key in changed_objects
                            if kind != "table"]
-        # Batch 4 (PR-1 §3): chart/image ADDITIONS on loaded sheets become
+        # chart/image ADDITIONS on loaded sheets become
         # new parts through the engine; per-property chart MUTATIONS
         # become byte patches when chartpatch can express them
         new_drawables = [
@@ -217,7 +217,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             # a shift rewrites chart <c:f> texts itself; composing a
             # property edit on top would shift the NEW range too (silent
             # double-shift). Refuse — but ONLY for chart parts a shift
-            # actually patches (Batch-4 gate: a shift on an unrelated
+            # actually patches (a shift on an unrelated
             # sheet false-refused every chart edit)
             shift_affected = set()
             for shifted_ws, ops in led.shifts.items():
@@ -258,7 +258,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 base = chart_prop_parts.get(part_name)
                 if base is None:
                     # compose over an earlier shift's chart patch, never
-                    # over the raw source (the Phase-6b overrides lesson)
+                    # over the raw source (later overrides must stack)
                     base = plan.get(part_name)
                 if base is None:
                     base = zin.read(part_name)
@@ -271,7 +271,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 (kind, k) for kind, k in changed_objects
                 if not (kind == "chart" and k in chart_mutations)]
         if changed_objects:
-            # the boundary class (PLAN-v0.1 1.1): these objects' backing
+            # the boundary class: these objects' backing
             # parts are preserved bytes the splice never re-serializes —
             # an accepted-but-unsaved edit is the forbidden fourth outcome
             details = "; ".join(
@@ -296,7 +296,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             # the region's serializer disagreed with itself at arm time
             # (render-time side effects): its output cannot be trusted to
             # express only the user's edit, so splicing it risks silent
-            # drift — refuse instead (PLAN-v0.1 0.3)
+            # drift — refuse instead
             _refuse(
                 "region(s) {0} changed on sheet {1!r}, but their "
                 "serializers are impure (arm-time renders disagreed with "
@@ -313,7 +313,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         table_lifecycle = "tableParts" in all_region_changes
 
         # renamed sheets are still keyed by their ORIGINAL title in the
-        # original workbook.xml (PLAN-v0.1 3.2)
+        # original workbook.xml
         original_title = led.renames.get(ws, ws.title)
         part = sheet_parts.get(original_title)
         if part is None or part not in names:
@@ -321,7 +321,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                     "the workbook relationships.".format(ws.title))
         original = zin.read(part)
         if table_changes:
-            # Batch 2 (PR-1 1.2): loaded-table mutations re-render the
+            # loaded-table mutations re-render the
             # table part from the fully-modeled Table via the engine
             from . import tables as tables_mod
 
@@ -345,7 +345,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 workbook, ws, part, zin, part_plan, names)
         table_parts_bytes = _UNSET = object()
         if table_lifecycle:
-            # Batch 2 (PR-1 1.2): table ADD/REMOVE via the lifecycle
+            # table ADD/REMOVE via the lifecycle
             # engine; the crafted tableParts bytes ride the region splice
             from . import tables as tables_mod
 
@@ -354,7 +354,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 led.region_snapshots.get(ws, {}).get("tableParts", ()),
                 plan, part_plan, names)
         if shift_ops:
-            # Phase 6b: the byte renumber runs first (deleted rows cut,
+            # the byte renumber runs first (deleted rows cut,
             # shifted r attributes rewritten, all other bytes verbatim);
             # the standard splice then treats the shifted bytes as its
             # baseline
@@ -387,7 +387,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         if legacy_drawing_bytes is not None:
             region_changes["legacyDrawing"] = legacy_drawing_bytes
         if new_drawables:
-            # Batch 4 (PR-1 §3): new chart/image objects become fresh
+            # new chart/image objects become fresh
             # parts through the engine; the sheet gains ONE spliced
             # <drawing r:id> element, or the anchors land in the sheet's
             # EXISTING drawing part (anchor-only originals only)
@@ -423,13 +423,13 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                     # legal-but-odd package: the drawing rel and part
                     # exist, the sheet never references them — without
                     # this element the appended objects are invisible
-                    # (Batch-4 gate: orphan drawing rel)
+                    # (orphan drawing rel)
                     region_changes["drawing"] = (
                         b'<drawing xmlns:r="%s" r:id="%s"/>'
                         % (REL_NS.encode("ascii"),
                            existing_drawing_rid.encode("ascii")))
 
-        # PR-0 D2 applies to ROW and COLUMN styles too: dict(RowDimension)
+        # ROW and COLUMN styles need translating too: dict(RowDimension)
         # and ColumnDimension.to_tree() carry MODEL style indices — every
         # one must be translated to the FILE's xf numbering (and the xf
         # appended) before touching the spliced bytes
@@ -444,7 +444,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             from . import x14
 
             if x14.sheet_has_cf_twins(scan, original):
-                # Batch 3 (PR-1 2.1): twin-bearing CF is COMPOSED from
+                # twin-bearing CF is COMPOSED from
                 # original bytes (the model drops <x14:id> pointers on
                 # re-render) with the extLst twins patched in lockstep
                 cf_replacement, ext_crafted = x14.plan_cf_composed(
@@ -459,7 +459,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             from . import x14
 
             # classic DV edits coexist with verbatim x14 DVs unless the
-            # ranges overlap (Batch 3 lifts the blanket D15 refusal)
+            # ranges overlap (lifts the blanket refusal)
             x14.check_dv_coexistence(ws, scan, original)
 
         if shift_ops:
@@ -492,7 +492,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             continue
         if translator is None:
             # no styles.xml in the package: the part is CREATED from the
-            # model via the lifecycle engine (PR-1 1.4), and cells write
+            # model via the lifecycle engine, and cells write
             # MODEL indices (a fresh part shares the model's numbering)
             styles_needed = any(
                 ws._cells[(r, c)]._style is not None
@@ -510,7 +510,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             value_overwrites=led.value_overwrites.get(ws, frozenset()),
             cache_writes=cache_writes)
         # cache-written cells are CLAIMED changes: the crosscheck verifies
-        # them exactly like dirty cells (PLAN-v0.1 5.3)
+        # them exactly like dirty cells
         dirty_by_part[part] = dirty | set(cache_writes)
         claims = set(region_changes)
         if cf_replacement is not None:
@@ -520,7 +520,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         region_claims[part] = claims
         row_claims[part] = set(row_changes)
 
-    # ---- removed sheets: the part cascade (3.2) ----------------------------
+    # ---- removed sheets: the part cascade ----------------------------
     for removed_title in led.removed_sheets:
         removed_part = sheet_parts.get(removed_title)
         if removed_part is None or removed_part not in names:
@@ -536,7 +536,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
 
     # ---- rename cascade: chart parts, ONE simultaneous mapping ------------
     # (sequential pairwise patching merges reference classes on title
-    # SWAPS — Batch-3 gate)
+    # SWAPS)
     rename_map = {orig: ws_obj.title
                   for ws_obj, orig in led.renames.items()
                   if ws_obj.title != orig}
@@ -593,13 +593,13 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
     loaded_now = [t for t in order_now if t in set(led.sheet_order)]
     if led.removed_sheets or loaded_now != armed_minus_removed:
         # localSheetId and activeTab are position-derived: re-render both
-        # workbook elements whenever positions changed (PLAN-v0.1 3.2)
+        # workbook elements whenever positions changed
         if workbook.chartsheets and any(
                 ws_.defined_names for ws_ in workbook.worksheets):
             # upstream's writer numbers localSheetId over WORKSHEETS only
             # while readers index the full sheet list: a forced re-render
             # on a chartsheet-bearing book mis-scopes every local name
-            # (Batch-3 gate) — refuse until the writer is fixed
+            # — refuse until the writer is fixed
             _refuse("sheet removal/reorder on a workbook with chartsheets "
                     "AND sheet-scoped defined names would mis-scope the "
                     "names (writer numbering skew).")
@@ -649,7 +649,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         if rels_part == wb_rels_part:
             continue
         # compose ON TOP of the hyperlink planner's output when both touch
-        # one rels part (Batch-2 gate: the engine payload shadowed the
+        # one rels part (the engine payload shadowed the
         # hyperlink rel — dangling r:id in the saved sheet)
         if rels_part in sheet_rels_updates:
             existing = sheet_rels_updates.pop(rels_part)
@@ -715,7 +715,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                 zipio.write_entry(zout, part_name, payload)
 
     # contradictory combos refuse rather than resolve silently
-    # (Batch-2 gate: replace_part payloads vanished under drops/re-renders)
+    # (replace_part payloads vanished under drops/re-renders)
     for name in led.replaced_parts:
         if name in part_plan.dropped:
             _refuse("replace_part({0!r}) conflicts with this save removing "
@@ -734,7 +734,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         zipio.deliver(data, target)
         return True
 
-    # spool-to-disk for path targets (PLAN-v0.1 7 hardening)
+    # spool-to-disk for path targets
     zipio.build_and_deliver(build, target)
     return True
 
@@ -755,10 +755,10 @@ def _namelist(source):
 
 def _dirty_feeds_formulas(workbook, led):
     """True when any ledger-dirty cell intersects a reference some formula
-    makes (PLAN-v0.1 1.2): the saved file's caches for those formulas are
+    makes: the saved file's caches for those formulas are
     stale, and the human opener must recompute. Structured/table and
-    unresolvable references count as always-intersecting (conservative,
-    like the Phase-6 guards)."""
+    unresolvable references count as always-intersecting
+    (conservative)."""
     if not any(led.cells.values()):
         return False
     from .perception import dependency_sketch
@@ -833,7 +833,7 @@ def _next_sheet_id(wb_xml):
 
 
 def _check_added_sheet_supported(ws):
-    # charts/images on added sheets generate via the Batch-4 machinery
+    # charts/images on added sheets generate via the drawing machinery
     # (preserve/drawings.py — stock writer output through the engine)
     if getattr(ws, "_pivots", None):
         _refuse("sheet {0!r} was added with pivot tables; not supported in "
@@ -841,7 +841,7 @@ def _check_added_sheet_supported(ws):
     if ws.tables:
         _refuse("sheet {0!r} was added with tables; table-part generation "
                 "is not supported in v0.".format(ws.title))
-    # comments on added sheets generate via the Batch-2 machinery (the
+    # comments on added sheets generate via the comment-creation machinery (the
     # stock writer emits <legacyDrawing r:id="anysvml"/> whenever the
     # sheet has comments; the saver adds the matching parts + rels)
 
@@ -900,7 +900,7 @@ def _exclusive_closure(zin, names, root_part):
 
 
 def _plan_added_sheet_comments(workbook, ws, part_plan, names, sheet_rels):
-    """Comments on an ADDED sheet (PLAN-v0.1 3.2, enabling copy_worksheet
+    """Comments on an ADDED sheet (enabling copy_worksheet
     of commented sheets): the stock writer already emitted
     <legacyDrawing r:id="anysvml"/> and collected CommentRecords during
     generation; add the parts via the engine and the two rels the stock
@@ -965,7 +965,7 @@ def _generate_sheet_part(ws):
 
 def _translate_row_styles(ws, row_changes, translator):
     """Row display attrs carry the MODEL style index in 's'; translate to
-    the FILE xf numbering (allocating the appended xf) — PR-0 D2."""
+    the FILE xf numbering (allocating the appended xf)."""
     out = {}
     for idx, attrs in row_changes.items():
         attrs = dict(attrs)
@@ -988,7 +988,7 @@ def _translate_row_styles(ws, row_changes, translator):
 
 def _translate_col_styles(ws, rendered_cols, translator):
     """The cols element render carries MODEL style indices in style
-    attributes; rewrite each through the translator (PR-0 D2)."""
+    attributes; rewrite each through the translator."""
     if b"style=" not in rendered_cols:
         return rendered_cols
     if translator is None:
@@ -1011,8 +1011,8 @@ def _translate_col_styles(ws, rendered_cols, translator):
 
 def _rewrite_added_sheet_styles(payload, workbook, translator):
     """A freshly generated (added) sheet part carries MODEL style indices in
-    its s attributes; rewrite them into FILE xf indices via the translator
-    (PR-0 D2). Cells without an s attribute keep the implicit 0 — file xf 0
+    its s attributes; rewrite them into FILE xf indices via the translator.
+    Cells without an s attribute keep the implicit 0 — file xf 0
     by construction, since loaded entries keep their positions."""
     if translator is None or b' s="' not in payload:
         return payload
@@ -1045,7 +1045,7 @@ def _plan_hyperlinks(workbook, ws, led, zin, sheet_part, names,
     payload. Removals/changes refuse (dangling or rewritten relationships).
     Ids come from the ENGINE's shared per-rels-part allocator — an
     independent next_rid computation collides with any other planner
-    touching the same rels part in one save (Batch-4 gate: duplicate rId
+    touching the same rels part in one save (duplicate rId
     with a fresh drawing)."""
     arm = led.region_snapshots.get(ws, {}).get("hyperlinks", {})
     now = hyperlink_signatures(ws)
@@ -1094,8 +1094,7 @@ _HYPERLINK_REL = ("http://schemas.openxmlformats.org/officeDocument/2006/"
 
 
 def _package_info(zin):
-    """(workbook part name, {sheet title -> part name}), rels-driven (PR-0
-    D11): via [Content_Types] -> workbook part -> workbook rels -> targets.
+    """(workbook part name, {sheet title -> part name}), rels-driven: via [Content_Types] -> workbook part -> workbook rels -> targets.
     Never pattern-matches canonical paths."""
     from openpyxl.packaging.manifest import Manifest
     from openpyxl.packaging.relationship import get_dependents, get_rels_path

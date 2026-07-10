@@ -1,10 +1,10 @@
-# paper-xlsx: the model map (PLAN-v0.1 Batch 6.2, PR-1 §5)
+# paper-xlsx: the model map
 
 """Classify every populated cell of formula-bearing sheets by its ROLE in
 the model: inputs (no formula, referenced by formulas), calculations
 (formula, referenced), outputs (formula, unreferenced), constants (no
 formula, unreferenced). Measurements, never judgments — set_input()
-(Batch 7) consumes this; nothing here decides anything.
+consumes this; nothing here decides anything.
 
 Fill-color corroboration: when the sheet uses a consistent fill for its
 classified inputs, the map records that convention (an agent can then
@@ -89,8 +89,8 @@ def build_model_map(wb):
         has_formulas = any(cell.data_type == "f"
                            for cell in ws._cells.values())
         # a formula-free sheet whose cells other sheets READ is part of
-        # the model: its referenced cells are inputs (Batch-6 gate:
-        # cross-sheet inputs were invisible in the map and the manifest)
+        # the model: its referenced cells are inputs
+        # (cross-sheet inputs were invisible in the map and the manifest)
         if not has_formulas and ws.title not in referenced_titles:
             continue
         roles = {"inputs": [], "calculations": [], "outputs": [],

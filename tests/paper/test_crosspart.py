@@ -1,5 +1,5 @@
-"""Phase 2d: cross-part edits — new sheets, styles append, workbook.xml
-splice, calcChain cascade, hyperlink relationships (PR-0 D2/D9/D11-D13)."""
+"""Cross-part edits — new sheets, styles append, workbook.xml
+splice, calcChain cascade, hyperlink relationships (/D9/D11-D13)."""
 from __future__ import annotations
 
 import zipfile
@@ -138,7 +138,7 @@ class TestAddedSheets:
         assert wb2["Links"]["A1"].hyperlink.target == "https://example.org/doc"
 
     def test_added_sheet_with_chart_saves(self, fixture_copy, tmp_path):
-        # Batch 4 (PLAN-v0.1 4.1) lifted the v0 add-time refusal: charts
+        # charts
         # on ADDED sheets are stock-writer output routed through the
         # lifecycle engine — zero splice risk
         from openpyxl.chart import BarChart, Reference
@@ -313,7 +313,7 @@ class TestHyperlinks:
         assert wb2["Model"]["A13"].hyperlink.target == "https://example.org/new"
 
     def test_hyperlink_removal_refuses(self, fixture_copy, tmp_path):
-        # retyped in v0.1 Batch 1 (1.3): relationship-rewrite policy is
+        # relationship-rewrite policy is
         # exactly RelationshipPolicyError's pinned domain
         from openpyxl.errors import RelationshipPolicyError
 
@@ -367,7 +367,7 @@ class TestConditionalFormattingLift:
 class TestV0CrosspartRefusals:
 
     def test_table_add_now_correct(self, fixture_copy, tmp_path):
-        # FLIPPED by v0.1 Batch 2 (was a v0 refusal): table add rides the
+        # (was a v0 refusal): table add rides the
         # part-lifecycle engine; full coverage in test_lifecycle.py
         from openpyxl.worksheet.table import Table
 
@@ -395,7 +395,7 @@ class TestV0CrosspartRefusals:
 class TestStyleTranslation:
     """Model style numbering drifts from the file's on non-openpyxl
     producers (numFmt normalization, Normal-style bootstrap at load) —
-    every emitted s attribute goes through the StyleTranslator (PR-0 D2).
+    every emitted s attribute goes through the StyleTranslator.
     Regression tests for a measured corruption on LO-authored files."""
 
     def test_edit_on_lo_authored_file_keeps_valid_style_indices(

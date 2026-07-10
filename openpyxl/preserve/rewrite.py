@@ -1,11 +1,11 @@
-# paper-xlsx: Excel-insert-semantics reference rewriting (PLAN Phase 6b)
+# paper-xlsx: Excel-insert-semantics reference rewriting
 
 """Rewrite references for row/column inserts and deletes the way EXCEL
 does — not the way fill/copy translation does.
 
 Upstream's ``Translator`` implements FILL semantics: ``$``-anchored parts
 are pinned and every reference shifts unconditionally. Excel's INSERT
-semantics differ on every axis that matters (Phase 0, Q13): references at
+semantics differ on every axis that matters: references at
 or below the insertion point shift *including* ``$B$2``-style absolutes,
 references above it stay, and ranges spanning the point EXPAND. Both
 behaviors fall out of one rule: shift each endpoint independently when it
@@ -290,7 +290,7 @@ def rename_sheet_in_formula(formula, old_title, new_title):
         sheet = m.group(1).replace("''", "'") if m.group(1) else m.group(2)
         ref = m.group(3)
         # 3-D spans: 'Sheet1:Sheet3' — QUOTED spans ('My Data:Sheet3')
-        # quote the whole span, so split unconditionally (Batch-3 gate)
+        # quote the whole span, so split unconditionally
         parts = sheet.split(":") if ":" in sheet else [sheet]
         new_parts = [new_title if p.casefold() == folded else p
                      for p in parts]

@@ -326,7 +326,7 @@ class WorkSheetParser:
     def parse_extensions(self, element):
         if not self.warn_extensions:
             # preserve mode: the splice passes extLst through untouched, so
-            # the stock "will be removed" warning would be false (PR-0 D14)
+            # the stock "will be removed" warning would be false
             return
         extLst = ExtensionList.from_tree(element)
         for e in extLst.ext:

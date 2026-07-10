@@ -1,17 +1,14 @@
-"""The pinned-surface CI check (PLAN-v0.1 process amendment 1).
+"""The pinned-surface CI check.
 
-Every exception class, result state, and return type pinned in CONVENTIONS
-or an approved API proposal must be raised/produced by at least one test,
-or carry an explicit entry in PAPER.md's pinned-surface debt ledger. This
-mechanizes away the v0 breach class: AddressRemap was pinned and returned
-None for two phases with nothing failing; three refusal classes were
-defined and never raised.
+Every exception class, result state, and return type in the public
+contract must be raised/produced by at least one test, or carry an
+explicit entry in the ``KNOWN_DEBTS`` set below. This mechanizes away a
+whole breach class: AddressRemap was pinned and returned None with
+nothing failing; three refusal classes were defined and never raised.
 
-A debt entry is a line in PAPER.md of the form:
-    - `Name` — owed to Batch N (...)
-Paying the debt (implementing + testing the surface) makes the ledger
-entry stale; this check then REQUIRES its removal (a paid debt may not
-linger and mask a future regression).
+Paying a debt (implementing + testing the surface) makes its entry
+stale; this check then REQUIRES its removal (a paid debt may not linger
+and mask a future regression).
 """
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
-# exception classes pinned by CONVENTIONS §2 / PR-0 §2
+# exception classes in the public contract
 PINNED_EXCEPTIONS = [
     "PaperRefusal",
     "AmbiguousTargetError",
@@ -38,11 +35,11 @@ PINNED_EXCEPTIONS = [
     "LintWarning",
 ]
 
-# result states pinned by PR-0 §7 (oracle) — each must be produced somewhere
+# oracle result states — each must be produced somewhere
 PINNED_RESULT_STATES = ["CERTIFIED", "DIVERGED", "BASELINE_UNVERIFIABLE"]
 
-# return types pinned by CONVENTIONS §2 (structural edits return a remap)
-# + PR-1 §4 (computation layer results)
+# return types in the public contract (structural edits return a remap;
+# computation-layer results)
 PINNED_RETURN_TYPES = ["AddressRemap", "Evaluation", "WriteBackResult"]
 
 
@@ -66,22 +63,23 @@ def _grep(root, pattern, strip_comments=False):
         except UnicodeDecodeError:
             continue
         if strip_comments:
-            # a TODO comment must never satisfy the produced-arm (gate
-            # finding: comment mentions flipped the check)
+            # a TODO comment must never satisfy the produced-arm
+            # (comment mentions would otherwise flip the check)
             text = _COMMENT.sub("", text)
         if rx.search(text):
             return True
     return False
 
 
+# Pinned surface that is intentionally not yet produced-and-tested.
+# Empty = every pinned name below is implemented and asserted somewhere.
+# To record a future debt, add the exact pinned name here with a comment
+# explaining why it isn't yet raised-and-tested.
+KNOWN_DEBTS: set[str] = set()
+
+
 def _debt_ledger():
-    paper = (REPO / "PAPER.md").read_text(encoding="utf-8")
-    section = re.search(
-        r"## Pinned-surface debt ledger\n(.*?)(?:\n## |\Z)", paper, re.S)
-    if not section:
-        return set()
-    return set(re.findall(r"^- `(\w+)` — owed to",
-                          section.group(1), re.M))
+    return KNOWN_DEBTS
 
 
 @pytest.mark.parametrize("name", PINNED_EXCEPTIONS)
@@ -101,7 +99,7 @@ def test_pinned_exception_is_raised_and_tested_or_ledgered(name):
                              r"class \w+\({0}\)".format(name),
                              strip_comments=True))    # raised via subclass
         # the tested-arm demands the exception be ASSERTED, not mentioned
-        # (gate finding: bare imports/comments satisfied a \b-grep)
+        # (bare imports/comments would otherwise satisfy a \b-grep)
         tested = _grep(REPO / "tests" / "paper",
                        r"raises\(\s*{0}\b|except {0}\b".format(name),
                        strip_comments=True)
@@ -109,12 +107,12 @@ def test_pinned_exception_is_raised_and_tested_or_ledgered(name):
     if produced and tested:
         assert not ledgered, (
             "{0} is implemented and tested but still carries a debt entry "
-            "in PAPER.md — remove the paid debt.".format(name))
+            "in KNOWN_DEBTS — remove the paid debt.".format(name))
         return
     assert ledgered, (
         "{0} is pinned but not raised-and-tested (produced={1}, "
-        "tested={2}) and carries no PAPER.md debt entry. Either raise it "
-        "with a test, or ledger the debt with its owning batch.".format(
+        "tested={2}) and carries no KNOWN_DEBTS entry. Either raise it "
+        "with a test, or add it to KNOWN_DEBTS.".format(
             name, produced, tested))
 
 
@@ -132,8 +130,8 @@ def test_pinned_return_type_exists_and_tested_or_ledgered(name):
     if produced and tested:
         assert not ledgered, (
             "{0} is implemented and tested but still carries a debt entry "
-            "in PAPER.md — remove the paid debt.".format(name))
+            "in KNOWN_DEBTS — remove the paid debt.".format(name))
         return
     assert ledgered, (
         "{0} is pinned but absent (produced={1}, tested={2}) and carries "
-        "no PAPER.md debt entry.".format(name, produced, tested))
+        "no KNOWN_DEBTS entry.".format(name, produced, tested))

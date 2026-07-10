@@ -1,4 +1,4 @@
-# paper-xlsx: cross-part edits (CONVENTIONS §3.5; PR-0 D2/D9/D11/D12/D13)
+# paper-xlsx: cross-part edits
 
 """Targeted edits to non-worksheet parts under preserve mode.
 
@@ -7,7 +7,7 @@ appended entries land before the container's end tag, removed entries are
 cut at their scanned spans, and everything unmodeled (extLst,
 mc:AlternateContent, fileVersion, unknown attributes) passes through
 untouched. Rels are append-only with ``rId = max numeric existing + 1``
-(PR-0 D11); [Content_Types].xml is edited by targeted append/remove, never
+; [Content_Types].xml is edited by targeted append/remove, never
 regenerated (D12); calcChain removal cascades to its content-type override
 and workbook relationship (D13).
 """
@@ -417,7 +417,7 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
             renamed[original_title] = ws_obj.title
 
     # removals/reorder rebuild the sheets children from ORIGINAL entry
-    # bytes (PLAN-v0.1 3.2); the per-entry patch path handles the rest
+    # bytes; the per-entry patch path handles the rest
     removed = set(getattr(led, "removed_sheets", ()))
     current_originals = []
     added = getattr(led, "added_sheets", set())
@@ -425,7 +425,7 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
         if sheet in added:
             continue          # membership by OBJECT: a freed title reused
                               # by create_sheet is NOT a loaded sheet
-                              # (Batch-3 gate: duplicate/dangling entries)
+                              # (duplicate/dangling entries)
         orig = getattr(led, "renames", {}).get(sheet, sheet.title)
         current_originals.append(orig)
     armed_order = [t for t in getattr(led, "sheet_order", ())
@@ -473,7 +473,7 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
             # key (led re-keyed at rename time) is the NEW one. Both
             # changes compose into ONE whole-entry edit — two _patch_attr
             # edits span the same start tag and trip the overlap guard
-            # (Batch-3 gate: rename+state in one session)
+            # (rename+state in one session)
             name = entry.attrs.get("name")
             effective = renamed.get(name, name)
             new_state = state_changes.get(effective)
@@ -560,7 +560,7 @@ def _patch_attr(data, node, attr, value, drop_value=None):
 
 
 # ---------------------------------------------------------------------
-# styles.xml append (PR-0 D2: append-only, never renumber)
+# styles.xml append (append-only, never renumber)
 
 # CT_Stylesheet child sequence
 CT_STYLESHEET_ORDER = [
@@ -602,7 +602,7 @@ def plan_styles_xml(wb, led, original, translator):
     Fonts/fills/borders/dxfs come from the MODEL tails (their numbering is
     file-stable at load: seeded in file order, never renumbered). Cell xfs
     and custom number formats come from the :class:`StyleTranslator`, which
-    owns the model-to-file numbering translation (PR-0 D2)."""
+    owns the model-to-file numbering translation."""
     (n_fonts, n_fills, n_borders, _n_align, _n_prot,
      _n_numfmts) = led._style_lengths
     additions = {}

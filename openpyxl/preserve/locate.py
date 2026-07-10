@@ -1,4 +1,4 @@
-# paper-xlsx: label localization (PLAN-v0.1 Batch 6, PR-1 §5; battery 23)
+# paper-xlsx: label localization
 
 """Find the VALUE cell that belongs to a text label — "give me the cell
 next to 'Growth rate'" — with typed honesty about ambiguity.
@@ -32,7 +32,7 @@ def _label_matches(ws, label):
 
 def _value_neighbour(ws, row, col, prefer):
     """The nearest value cell in the preferred direction — REFUSE, never
-    guess (Batch-6 gate: every silent-guess branch was a lying
+    guess (every silent-guess branch was a lying
     instrument). Walk rules:
 
     - merged-range interiors are COVERED cells, never targets: skipped;
@@ -76,7 +76,7 @@ def _value_neighbour(ws, row, col, prefer):
 
 
 def locate(ws, label, *, prefer="right"):
-    """Worksheet.locate implementation (PR-1 §5)."""
+    """Worksheet.locate implementation."""
     if not isinstance(label, str) or not label.strip():
         raise TypeError("locate() takes a non-empty label string")
     if prefer not in ("right", "below"):
@@ -132,7 +132,7 @@ def _col_letter(col):
 
 
 # ---------------------------------------------------------------------
-# data-validation vocabulary (PR-1 §5: Worksheet.allowed_values)
+# data-validation vocabulary (Worksheet.allowed_values)
 
 def allowed_values(ws, cell):
     """The list-type data-validation vocabulary covering ``cell``
@@ -177,7 +177,7 @@ def allowed_values(ws, cell):
         except ValueError:
             return None            # a name/formula source: not readable
         # whole-column/row sources clamp to the populated extent
-        # (range_boundaries hands back None bounds — Batch-6 gate: raw
+        # (range_boundaries hands back None bounds — raw
         # TypeError); reversed sources normalize (gate: silent [])
         min_row = 1 if min_row is None else min_row
         min_col = 1 if min_col is None else min_col

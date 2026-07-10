@@ -1,5 +1,5 @@
-"""Phase 4: perception — manifest, diff_cells, dependency sketch
-(PLAN Phase 4; PR-0 §5)."""
+"""Perception — manifest, diff_cells, dependency sketch
+."""
 from __future__ import annotations
 
 import json
@@ -18,7 +18,7 @@ class TestManifest:
 
     def test_gauntlet_manifest_matches_golden(self, fixture_copy):
         # golden files update only via explicit command with human-reviewed
-        # diffs (CONVENTIONS §4)
+        # diffs
         wb = load_workbook(fixture_copy("gauntlet/gauntlet.xlsx"),
                            preserve=True)
         doc = wb.manifest().to_dict()

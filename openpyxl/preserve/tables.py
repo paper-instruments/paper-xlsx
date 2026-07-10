@@ -1,4 +1,4 @@
-# paper-xlsx: table support under preserve (PLAN-v0.1 Batch 2; PR-1 §1.2)
+# paper-xlsx: table support under preserve
 
 """Loaded-table mutation, and the table row discipline.
 
@@ -59,7 +59,7 @@ def sheet_table_parts(zin, sheet_part):
 
 
 def validate_table(tbl, original_ref):
-    """The PR-1 §1.2 geometry guards, against the ORIGINAL ref."""
+    """Geometry guards, against the ORIGINAL ref."""
     try:
         min_col, min_row, max_col, max_row = range_boundaries(tbl.ref)
     except Exception:
@@ -125,7 +125,7 @@ def plan_table_mutations(wb, ws, sheet_part, zin, changed_names, plan):
         else:
             # a table part whose ref we cannot locate cannot be guard-
             # checked: refuse rather than silently disabling the anchor
-            # guard (Batch-2 gate: single-quoted ref no-op'd it)
+            # guard (single-quoted ref no-op'd it)
             _refuse("table {0!r}: the original part's ref attribute could "
                     "not be located; the geometry guards cannot "
                     "run.".format(name))
@@ -169,8 +169,8 @@ def _check_display_name(wb, ws, tbl, original_names):
 
 
 def append_row(ws, table_name, values):
-    """Append one row of ``values`` below the table's last data row
-    (PR-1 §1.2; battery job 10): writes the cells, extends ``tbl.ref``,
+    """Append one row of ``values`` below the table's last data row: writes
+    the cells, extends ``tbl.ref``,
     keeps the totals row last (its cells move down one row), re-derives
     calculated-column formulas, and syncs the table's autoFilter.
 
@@ -213,7 +213,7 @@ def append_row(ws, table_name, values):
         row_values += [None] * (n_cols - len(row_values))
 
     # content below the table cannot be shifted here (tables are shift
-    # blockers; PR-1 scope note) — refuse loudly
+    # blockers) — refuse loudly
     below = max_row + 1
     for (r, c), cell in ws._cells.items():
         if r >= below and min_col <= c <= max_col \
@@ -223,7 +223,7 @@ def append_row(ws, table_name, values):
                     "it. Move that content, or restructure the "
                     "edit.".format(ws.title, below, table_name))
 
-    # validate EVERY column before any mutation (Batch-2 gate: a late
+    # validate EVERY column before any mutation (a late
     # calc-column refusal left the totals row moved and half a data row
     # written — "Nothing was written" must be true)
     for i in range(n_cols):
@@ -245,7 +245,7 @@ def append_row(ws, table_name, values):
                 dst._style = src._style
             src.value = None
             # the freed slot becomes a DATA row: style it like the row
-            # above, not like the totals row it used to be (Batch-2 gate)
+            # above, not like the totals row it used to be
             model = ws.cell(row=max_row - 1, column=col)
             src._style = model._style if model.has_style else None
 
@@ -337,7 +337,7 @@ def plan_table_lifecycle(wb, ws, sheet_part, zin, armed_names, plan,
 
     # hyperlink additions allocate rIds on the same rels part through a
     # separate planner: refusing the combination keeps both allocators
-    # deterministic (PR-1 scope note)
+    # deterministic
     from .regions import hyperlink_signatures
 
     led = wb._paper_ledger
@@ -368,7 +368,7 @@ def plan_table_lifecycle(wb, ws, sheet_part, zin, armed_names, plan,
         if m:
             existing_numbers.append(int(m.group(1)))
     # table ids are WORKBOOK-unique (ECMA-376): scan every table part in
-    # the package, not just this sheet's (Batch-2 gate: duplicate id=1)
+    # the package, not just this sheet's (duplicate id=1)
     for n in names:
         if n.startswith("xl/tables/") and n.endswith(".xml"):
             m = re.search(br'<table[^>]*\sid="(\d+)"', zin.read(n))

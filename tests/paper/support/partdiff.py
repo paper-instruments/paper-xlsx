@@ -1,9 +1,9 @@
 """Part-level package comparison for the contract harness.
 
-Phase-1 test-local implementation; becomes a thin wrapper over
-``openpyxl.package`` once the kernel lands (Phase 2). The byte-identity
-invariant is defined on part *payloads*, never whole-archive bytes
-(CONVENTIONS §7): zip entry metadata (timestamps, attrs) is out of scope here.
+Test-local implementation; becomes a thin wrapper over
+``openpyxl.package`` once the kernel lands. The byte-identity
+invariant is defined on part *payloads*, never whole-archive bytes:
+zip entry metadata (timestamps, attrs) is out of scope here.
 """
 from __future__ import annotations
 

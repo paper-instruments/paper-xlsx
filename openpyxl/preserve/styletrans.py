@@ -1,4 +1,4 @@
-# paper-xlsx: model-to-file style index translation (PR-0 D2)
+# paper-xlsx: model-to-file style index translation
 
 """Translate the model's style indices into the ORIGINAL file's xf indices.
 

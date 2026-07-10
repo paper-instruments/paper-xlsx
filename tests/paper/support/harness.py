@@ -1,4 +1,4 @@
-"""The five-assertion contract harness (CONVENTIONS §4).
+"""The five-assertion contract harness.
 
 Every mutating API in this fork must pass, on the relevant fixtures:
   1. save → reopen → assert (never assert on the in-memory object),

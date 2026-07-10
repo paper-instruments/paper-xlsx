@@ -1,4 +1,4 @@
-"""The pinned exception taxonomy (CONVENTIONS §2, PR-0 §2)."""
+"""The pinned exception taxonomy."""
 from __future__ import annotations
 
 import pytest

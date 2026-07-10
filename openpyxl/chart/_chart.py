@@ -196,7 +196,7 @@ class ChartBase(Serialisable):
 
     def repoint(self, series_index, new_range):
         """Point a series' VALUES at ``new_range`` — "the chart now covers
-        Q1-Q4" (paper-xlsx, PLAN-v0.1 4.3). ``new_range`` must be a
+        Q1-Q4" (paper-xlsx). ``new_range`` must be a
         sheet-qualified single-area range like "'Data'!$B$2:$B$13"; it is
         validated here, and under preserve mode the save expresses the
         change as a byte patch of the chart's <c:f> text."""

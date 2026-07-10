@@ -462,11 +462,11 @@ class AutoFilter(Serialisable):
         Add row filter for specified column.
 
         :param col_id: Zero-origin column id. 0 means first column.
-        :type  col_id: int
+        :type col_id: int
         :param vals: Value list to show.
-        :type  vals: str[]
+        :type vals: str[]
         :param blank: Show rows that have blank cell if True (default=``False``)
-        :type  blank: bool
+        :type blank: bool
         """
         self.filterColumn.append(FilterColumn(colId=col_id, filters=Filters(blank=blank, filter=vals)))
 
@@ -476,9 +476,9 @@ class AutoFilter(Serialisable):
         Add sort condition for cpecified range of cells.
 
         :param ref: range of the cells (e.g. 'A2:A150')
-        :type  ref: string, is the same as that of the filter
+        :type ref: string, is the same as that of the filter
         :param descending: Descending sort order (default=``False``)
-        :type  descending: bool
+        :type descending: bool
         """
         cond = SortCondition(ref, descending)
         if self.sortState is None:

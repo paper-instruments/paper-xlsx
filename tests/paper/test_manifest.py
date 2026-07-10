@@ -1,6 +1,6 @@
 """The fixture corpus is frozen: every fixture's SHA-256 must match
 MANIFEST.sha256, every fixture must have a sidecar with the pinned schema,
-and no unmanifested fixture may appear (CONVENTIONS §4)."""
+and no unmanifested fixture may appear."""
 from __future__ import annotations
 
 import hashlib
@@ -81,5 +81,5 @@ def test_every_fixture_has_a_conforming_sidecar():
         if "excel" in str(prov.get("app", "")).lower():
             problems.append(
                 "{0}: provenance claims Excel — this corpus cannot contain "
-                "Excel-authored fixtures (FIXTURE-REQUESTS.md)".format(rel))
+                "Excel-authored fixtures".format(rel))
     assert not problems, "\n".join(problems)

@@ -1,4 +1,4 @@
-# paper-xlsx: x14 twin-sync (PLAN-v0.1 Batch 3; PR-1 §2.1)
+# paper-xlsx: x14 twin-sync
 
 """Conditional-formatting edits on sheets whose rules carry x14 twins.
 
@@ -86,7 +86,7 @@ def plan_cf_composed(wb, ws, scan, original, armed_blocks):
     def _match(cur, cur_sig, position):
         # ORDER-PRESERVING: prefer the same position, then the earliest
         # unconsumed match (byte-identical blocks must never cross-steal
-        # each other's twins — Batch-3 gate)
+        # each other's twins)
         if position < len(armed_blocks) and not consumed[position] \
                 and armed_blocks[position] == cur:
             return ("same", position)
@@ -125,8 +125,8 @@ def plan_cf_composed(wb, ws, scan, original, armed_blocks):
 
     # an unconsumed twin-bearing block whose range a NEW block claims is a
     # MODIFICATION, not a deletion: re-rendering would lose the <x14:id>
-    # pointer, so it refuses (Batch-3 gate: modification silently deleted
-    # the twin — the exact battery-job-1 carnage this module prevents)
+    # pointer, so it refuses (modification silently deleted
+    # the twin)
     new_sqrefs = {_block_sqref(nb) for nb in new_blocks}
     deleted_guids = set()
     for j, used in enumerate(consumed):

@@ -1,4 +1,4 @@
-# paper-xlsx: the structural-edit guard (PLAN Phase 6a; PR-0 §8)
+# paper-xlsx: the structural-edit guard
 
 """Analyze what a row/column shift would strand.
 
@@ -6,7 +6,7 @@ The scariest damage in the model is here: ``insert_rows`` moves cells while
 updating NOTHING — not formulas, not defined names, not chart ranges — so
 one inserted row silently corrupts every SUM below it with numbers that
 look plausible (measured: LibreOffice computes 1100/6399/5400 where the
-correct answers are 7499/6500 — OPEN-QUESTIONS Q11). Under preserve mode
+correct answers are 7499/6500). Under preserve mode
 the shift refuses with the precise list of what would break; the stock path
 keeps stock behavior plus a loud warning.
 """
@@ -27,7 +27,7 @@ EXCEL_MAX_COL = 16384
 
 
 class AddressRemap:
-    """How one structural edit moved addresses (CONVENTIONS §2, pinned):
+    """How one structural edit moved addresses:
     every pre-edit address must be remapped through this, never reused.
 
     ``map('Model!B12') -> 'Model!B13'``; addresses whose cells the edit
@@ -164,7 +164,7 @@ def analyze_shift(ws, kind, index):
             ", ".join(sorted(tables_hit))))
 
     # preserved charts: their XML is raw retained bytes — a shift makes them
-    # point at wrong rows with no error anywhere (PR-0 §8: refusal is the
+    # point at wrong rows with no error anywhere (refusal is the
     # only honest v0 answer on chart-referenced sheets)
     led_ref = getattr(wb, "_paper_ledger", None)
     chart_title = led_ref.renames.get(ws, ws.title) if led_ref else ws.title
@@ -235,7 +235,7 @@ STOCK_WARNING = (
 
 
 # ---------------------------------------------------------------------
-# Phase 6b: performing the shift (model fixups + byte renumber)
+# performing the shift (model fixups + byte renumber)
 
 def shift_blockers(ws, operation, index, amount=1):
     """Content that makes a shift unsafe to REWRITE in v0 — anything whose
@@ -247,13 +247,13 @@ def shift_blockers(ws, operation, index, amount=1):
     led = getattr(wb, "_paper_ledger", None)
     # multiple shifts per session compose: model fixups and snapshot
     # rebases run at edit time in order, the byte renumber replays the
-    # recorded ops in order at save (PLAN-v0.1 3.3 retired the
+    # recorded ops in order at save (retired the
     # one-shift-per-session refusal)
     led_ref = getattr(wb, "_paper_ledger", None)
     lookup_title = led_ref.renames.get(ws, ws.title) if led_ref else ws.title
     # in-session charts are model-rendered at save: a delete that removes
     # their charted cells has no honest rewrite — block BEFORE any cell
-    # moves (Batch-4 gate)
+    # moves
     if led_ref is not None and operation.startswith("delete"):
         from .rewrite import shift_name_value
 
@@ -286,7 +286,7 @@ def shift_blockers(ws, operation, index, amount=1):
             or b"t='dataTable'" in part_payload:
         blockers.append("the sheet carries what-if data tables; their "
                         "ref/r1/r2 inputs live in unmodeled bytes and "
-                        "would silently mis-shift (Batch-3 gate)")
+                        "would silently mis-shift")
     if any(cell._comment is not None for cell in ws._cells.values()):
         blockers.append("the sheet carries comments; their anchors live in "
                         "comment/VML parts the shift cannot rewrite")
@@ -294,7 +294,7 @@ def shift_blockers(ws, operation, index, amount=1):
         blockers.append("the sheet references a legacy (VML) drawing")
     charts = _charts_referencing(wb, ws.title)
     if charts:
-        # Phase 6c: chart series references and drawing anchors are
+        # chart series references and drawing anchors are
         # patchable in place — dry-run the planner; only its blockers
         # (extension machinery, would-be #REF!) refuse now
         from .chartpatch import plan_chart_updates
@@ -423,7 +423,7 @@ def apply_model_shift(ws, operation, index, amount):
 
     # 1. formulas everywhere in the workbook that reference this sheet
     # (machinery-derived rewrites of accepted formulas: the lint
-    # chokepoint must not judge them — Batch-6 gate, same class as the
+    # chokepoint must not judge them — same class as the
     # rename cascade)
     _saved_lint = getattr(wb, "formula_lint", "warn")
     wb.formula_lint = "off"
@@ -456,7 +456,7 @@ def apply_model_shift(ws, operation, index, amount):
     # 2b. charts ADDED this session are model-rendered at save, so their
     # data-source references must follow the shift like every other model
     # reference (loaded charts' parts are byte-patched by
-    # plan_chart_updates instead) — Batch-4 gate: an added chart's range
+    # plan_chart_updates instead) — an added chart's range
     # silently pointed at the pre-shift cells
     if led is not None:
         for sheet in wb.worksheets:

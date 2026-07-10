@@ -1,4 +1,4 @@
-# paper-xlsx: style verbs (PLAN-v0.1 Batch 7, PR-1 §6)
+# paper-xlsx: style verbs
 
 """Format work an agent actually asks for, preserve-safe by construction
 (cell style edits ride the splice; styles.xml stays append-only via the
@@ -98,7 +98,7 @@ def apply_profile(ws, profile):
             if "locked" in spec:
                 # preserve the cell's other protection flags (hidden):
                 # a fresh Protection(locked=...) would silently drop a
-                # hidden formula's hiding (the gate found this)
+                # hidden formula's hiding
                 prot = copy(cell.protection) if cell.protection is not None \
                     else Protection()
                 prot.locked = bool(spec["locked"])

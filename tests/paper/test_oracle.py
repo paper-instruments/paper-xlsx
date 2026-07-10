@@ -1,5 +1,5 @@
-"""Phase 5: the LibreOffice oracle — driver rules, recalc, certification
-(PLAN Phase 5; PR-0 §7/D16/D17)."""
+"""The LibreOffice oracle — driver rules, recalc, certification
+."""
 from __future__ import annotations
 
 import os
@@ -35,7 +35,7 @@ class TestDriverRules:
     @pytest.mark.lo_smoke
     def test_original_path_never_reaches_libreoffice(
             self, lo, fixture_copy, monkeypatch):
-        # the tested invariant (CONVENTIONS §4): temp copies only
+        # the tested invariant: temp copies only
         import subprocess as sp
 
         src = fixture_copy("features/schedule.xlsx")
@@ -174,7 +174,7 @@ class TestCertify:
 
 
 class TestCertificationNoiseClasses:
-    """PLAN-v0.1 1.7: external links and oracle-unsupported functions are
+    """External links and oracle-unsupported functions are
     excluded-with-reason, like volatiles — DIVERGED keeps meaning
     'genuine disagreement'."""
 

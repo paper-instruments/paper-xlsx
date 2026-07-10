@@ -72,11 +72,11 @@ setup(
     version=PAPER_VERSION,
     description="A Python library to read/write Excel 2010 xlsx/xlsm files",
     long_description=README,
-    author=f"{__author__}; Paper Instruments",
+    author=f"{__author__}; Paper Instruments, Inc.",
     author_email=__author_email__,
     url="https://github.com/The-LLM-Data-Company/paper-xlsx",
     license=__license__,
-    maintainer="Paper Instruments",
+    maintainer="Paper Instruments, Inc.",
     python_requires=f">={__python__}",
     install_requires=[
         'et_xmlfile',

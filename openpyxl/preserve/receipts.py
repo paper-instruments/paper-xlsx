@@ -1,4 +1,4 @@
-# paper-xlsx: the edit receipt (PLAN-v0.1 Batch 6.6, PR-1 §5)
+# paper-xlsx: the edit receipt
 
 """One artifact answering "what did that save actually do?": cells-diff
 + package-diff + confession + optional recalc/certification status."""

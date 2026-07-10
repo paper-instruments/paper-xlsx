@@ -1,5 +1,5 @@
-"""Phase 3: honesty organs — the data_only trap, recalc-on-load, format
-refusals (PLAN Phase 3; PR-0 §3)."""
+"""Honesty organs — the data_only trap, recalc-on-load, format
+refusals."""
 from __future__ import annotations
 
 import warnings
@@ -129,7 +129,7 @@ class TestFormatRefusals:
 
 
 class TestLossInventoryCompleteness:
-    """PLAN-v0.1 1.4: the damage classes the v0 scan provably missed —
+    """The damage classes the v0 scan provably missed —
     each was verified silently damaged by a stock save with zero warnings
     in the post-v0 review."""
 
@@ -151,8 +151,8 @@ class TestLossInventoryCompleteness:
                         b'<row r="9"><c r="A9" t="inlineStr"><is><r><rPr>'
                         b'<b/></rPr><t>bold run</t></r></is></c></row>'
                         b'</sheetData>', 1)
-                    # protectedRanges is a WORKSHEET element (the gate
-                    # caught the first cut scanning workbook.xml for it)
+                    # protectedRanges is a WORKSHEET element, not a
+                    # workbook.xml one
                     payload = payload.replace(
                         b'</sheetData>',
                         b'</sheetData><protectedRanges><protectedRange '
@@ -211,7 +211,7 @@ class TestLossInventoryCompleteness:
 
 
 class TestProducerFingerprint:
-    """PLAN-v0.1 1.8: what we stamp into app.xml is PINNED — the field
+    """What we stamp into app.xml is PINNED — the field
     incident on record is Excel rendering charts differently on the
     producer string alone, a class LibreOffice smoke checks are blind to.
     Changing this string is a reviewed decision, never drive-by."""

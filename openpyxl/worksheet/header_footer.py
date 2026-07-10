@@ -59,26 +59,26 @@ class _HeaderFooterPart(Strict):
 
     Header & Footer ampersand codes:
 
-    * &A   Inserts the worksheet name
-    * &B   Toggles bold
-    * &D or &[Date]   Inserts the current date
-    * &E   Toggles double-underline
-    * &F or &[File]   Inserts the workbook name
-    * &I   Toggles italic
-    * &N or &[Pages]   Inserts the total page count
-    * &S   Toggles strikethrough
-    * &T   Inserts the current time
-    * &[Tab]   Inserts the worksheet name
-    * &U   Toggles underline
-    * &X   Toggles superscript
-    * &Y   Toggles subscript
-    * &P or &[Page]   Inserts the current page number
-    * &P+n   Inserts the page number incremented by n
-    * &P-n   Inserts the page number decremented by n
-    * &[Path]   Inserts the workbook path
-    * &&   Escapes the ampersand character
-    * &"fontname"   Selects the named font
-    * &nn   Selects the specified 2-digit font point size
+    * &A Inserts the worksheet name
+    * &B Toggles bold
+    * &D or &[Date] Inserts the current date
+    * &E Toggles double-underline
+    * &F or &[File] Inserts the workbook name
+    * &I Toggles italic
+    * &N or &[Pages] Inserts the total page count
+    * &S Toggles strikethrough
+    * &T Inserts the current time
+    * &[Tab] Inserts the worksheet name
+    * &U Toggles underline
+    * &X Toggles superscript
+    * &Y Toggles subscript
+    * &P or &[Page] Inserts the current page number
+    * &P+n Inserts the page number incremented by n
+    * &P-n Inserts the page number decremented by n
+    * &[Path] Inserts the workbook path
+    * && Escapes the ampersand character
+    * &"fontname" Selects the named font
+    * &nn Selects the specified 2-digit font point size
 
     Colours are in RGB Hex
     """

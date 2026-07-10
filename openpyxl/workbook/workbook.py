@@ -52,7 +52,7 @@ INTEGER_TYPES = (int,)
 
 def _require_materialized_cells(wb, api):
     """The perception verbs read ws._cells; read-only and write-only
-    workbooks never materialize it (Batch-6 gate: raw AttributeError /
+    workbooks never materialize it (raw AttributeError /
     silently empty results)."""
     if getattr(wb, "_read_only", False) or wb.write_only:
         raise ValueError(
@@ -65,19 +65,19 @@ class Workbook:
 
     _read_only = False
     _data_only = False
-    # paper-xlsx preserve mode (PR-0 §3): set by the reader, never directly
+    # paper-xlsx preserve mode: set by the reader, never directly
     _preserve = False
     _paper_source = None            # retained source-package bytes
     _paper_loss_inventory = None    # content the stock save cannot preserve
     _paper_ledger = None            # the dirty ledger; armed after load
-    # protection awareness (PLAN-v0.1 1.6): True turns writes to locked
+    # protection awareness: True turns writes to locked
     # cells on protected sheets into typed refusals (default: warn once
     # per sheet). Protection is reported, never enforced or bypassed.
-    # PRESERVE-MODE workbooks only in v0.1 (the check rides the armed
+    # preserve-mode workbooks only (the check rides the armed
     # ledger); on stock loads the flag is inert.
     strict_protection = False
     # formula pre-flight lint mode at the value-bind chokepoint
-    # (PLAN-v0.1 5.2; preserve-mode workbooks only): "off"|"warn"|"refuse"
+    # (preserve-mode workbooks only): "off"|"warn"|"refuse"
     formula_lint = "warn"
     template = False
     path = "/xl/workbook.xml"
@@ -171,7 +171,7 @@ class Workbook:
 
     def mark_dirty(self, target):
         """Escape hatch for anyone reaching below the public API in
-        preserve mode (CONVENTIONS §3.3): declare that ``target`` was
+        preserve mode: declare that ``target`` was
         mutated so the splice save re-emits it from the model.
 
         ``target`` is either a sheet-qualified A1 range (``"Model!B7"``,
@@ -184,7 +184,7 @@ class Workbook:
 
     def replace_part(self, name, payload):
         """Raw byte swap of one unmanaged package part under preserve
-        mode (PR-1 1.4) — media swaps are the intended use
+        mode — media swaps are the intended use
         (``wb.replace_part("xl/media/image1.png", new_png_bytes)``).
 
         The part must exist (:class:`~openpyxl.errors.TargetNotFoundError`
@@ -205,8 +205,7 @@ class Workbook:
         self._paper_ledger.replaced_parts[name] = payload
 
     def set_input(self, name_or_label, value):
-        """Set a model INPUT by defined name or text label (paper-xlsx,
-        PLAN-v0.1 Batch 7): resolution order is defined names, then
+        """Set a model INPUT by defined name or text label (paper-xlsx): resolution order is defined names, then
         ``locate`` over every sheet (a label found on several sheets is
         ambiguous). Refuses to overwrite a formula cell — set_input never
         destroys a calculation. Returns the Cell written."""
@@ -279,11 +278,9 @@ class Workbook:
 
     def protect_for_delivery(self, password=None):
         """Lock every populated cell EXCEPT the model map's classified
-        inputs, and enable sheet protection (paper-xlsx, PLAN-v0.1 Batch
-        7). Every non-input cell is ACTIVELY locked (a workbook authored
+        inputs, and enable sheet protection (paper-xlsx). Every non-input cell is ACTIVELY locked (a workbook authored
         with locked=False cells — templates, LibreOffice output — would
-        otherwise ship editable under a "protected" sheet: the gate found
-        this). Each cell's other protection flags (hidden) are preserved.
+        otherwise ship editable under a "protected" sheet). Each cell's other protection flags (hidden) are preserved.
         Protection is advisory in the file format and REPORTED here —
         returns {"locked_sheets", "unlocked_inputs", "locked_cells"}."""
         from copy import copy as _copy
@@ -323,8 +320,7 @@ class Workbook:
 
     def scrub(self, remove=("comments", "metadata", "personal",
                             "hidden-sheets")):
-        """Strip delivery-inappropriate content (paper-xlsx, PLAN-v0.1
-        Batch 7). Returns a scrub REPORT — everything removed is listed,
+        """Strip delivery-inappropriate content (paper-xlsx). Returns a scrub REPORT — everything removed is listed,
         everything that could NOT be removed is reported with its reason
         (hidden sheets whose removal would strand references refuse the
         removal and land in "skipped"; never silent).
@@ -347,7 +343,7 @@ class Workbook:
             # a sheet whose comments come from PRESERVED machinery cannot
             # have them removed (the saver refuses editing preserved
             # comment parts) — nulling them would both LIE in the report
-            # and brick the save (the gate found exactly this). Detect
+            # and brick the save. Detect
             # per sheet FIRST, then only null in-session comments on
             # comment-free sheets (compute-then-mutate keeps scrub atomic
             # and its report honest).
@@ -424,7 +420,7 @@ class Workbook:
 
     def set_pivot_refresh_on_load(self):
         """Byte-patch ``refreshOnLoad="1"`` onto every pivotCacheDefinition
-        in the preserved package (paper-xlsx, PLAN-v0.1 Batch 7): pivots
+        in the preserved package (paper-xlsx): pivots
         are preserved verbatim, so refresh-on-load is how their data stays
         honest after cell edits. Preserve mode only. Returns the list of
         parts patched."""
@@ -458,8 +454,7 @@ class Workbook:
 
     def model_map(self):
         """Role classification of every populated cell on formula-bearing
-        sheets — inputs / calculations / outputs / constants (paper-xlsx,
-        PLAN-v0.1 6.2; pinned schema "model_map" v1). Returns
+        sheets — inputs / calculations / outputs / constants (paper-xlsx). Returns
         :class:`openpyxl.preserve.modelmap.ModelMap`."""
         from openpyxl.preserve.modelmap import build_model_map
 
@@ -468,7 +463,7 @@ class Workbook:
 
     def search(self, text_or_regex, *, regex=False, values=True,
                formulas=True):
-        """Find text across the workbook (paper-xlsx, PLAN-v0.1 Batch 6).
+        """Find text across the workbook (paper-xlsx).
         Returns ``[{"address", "match", "kind"}, ...]`` where kind is
         "value" or "formula"."""
         import re as _re
@@ -496,7 +491,7 @@ class Workbook:
                     continue
                 if is_formula and not isinstance(value, str):
                     # ArrayFormula/DataTableFormula objects: search their
-                    # TEXT, never the Python repr (Batch-6 gate: repr
+                    # TEXT, never the Python repr (repr
                     # fabricated matches and hid real ones)
                     text = getattr(value, "text", None)
                     if not isinstance(text, str):
@@ -522,7 +517,7 @@ class Workbook:
 
     def validate(self):
         """Run the preserve saver's FULL validation pass without
-        delivering a file (paper-xlsx, PLAN-v0.1 Batch 6): every refusal
+        delivering a file (paper-xlsx): every refusal
         a save would raise is raised now; on success returns None and
         nothing is written anywhere."""
         if not self._preserve or self._paper_ledger is None:
@@ -536,7 +531,7 @@ class Workbook:
 
     def evaluate(self, set, read, *, timeout=120.0):
         """What-if scenario against THIS workbook's preserved source
-        bytes (PLAN-v0.1 5.1): inputs applied to a temp copy through the
+        bytes: inputs applied to a temp copy through the
         spine, LibreOffice recalculates, outputs harvested. Neither the
         original file nor this live workbook is touched.
 
@@ -661,7 +656,7 @@ class Workbook:
         """
         if not isinstance(sheet, Worksheet):
             sheet = self[sheet]
-        # v0.1 Batch 3: reorder is expressed at save by reordering the
+        # reorder is expressed at save by reordering the
         # ORIGINAL <sheet> entry bytes; definedNames/bookViews re-render
         # (localSheetId and activeTab are position-derived by the writer)
         idx = self._sheets.index(sheet)
@@ -677,7 +672,7 @@ class Workbook:
         audit first (anything on another sheet pointing at the victim
         refuses with the enumeration) and returns a
         :class:`~openpyxl.preserve.ledger.RemovalReport`; the part
-        cascade happens at save (PLAN-v0.1 3.2)."""
+        cascade happens at save."""
         report = None
         if not _ledger.allow_sheet_removal(self, worksheet):
             _ledger.audit_sheet_removal(self, worksheet)
@@ -847,8 +842,7 @@ class Workbook:
             bytes). On the stock path the flag silences the loud warning.
         :param receipt: preserve mode only — return an
             :class:`openpyxl.preserve.receipts.EditReceipt` comparing the
-            saved file against the AS-LOADED source bytes (PLAN-v0.1
-            6.6). NOTE: after several saves from one session the receipt
+            saved file against the AS-LOADED source bytes. NOTE: after several saves from one session the receipt
             is cumulative — it describes the session, not the last call.
 
         .. warning::
@@ -892,7 +886,7 @@ class Workbook:
         """
         if self.__write_only or self._read_only:
             raise ValueError("Cannot copy worksheets in read-only or write-only mode")
-        # v0.1 Batch 3: the copy registers as an ADDED sheet (create_sheet
+        # the copy registers as an ADDED sheet (create_sheet
         # below is ledger-hooked) and is generated whole at save; charts/
         # images do not copy (upstream's copier skips them), comments and
         # hyperlinks ride the added-sheet generators

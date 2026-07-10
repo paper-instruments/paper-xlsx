@@ -1,5 +1,4 @@
 # paper-xlsx: deterministic, atomic zip writing + raw compressed-stream copy
-# (CONVENTIONS §7; PR-0 D4/D10; evidence: OPEN-QUESTIONS Q1)
 
 """Zip-layer machinery for the preserve-mode save.
 
@@ -8,7 +7,7 @@
   streams) are reproducible run-to-run.
 - Raw compressed-stream copy: untouched parts are copied without
   recompression (measured 235x faster and byte-identical); guarded by the
-  D10 conditions, with transparent fallback to recompression.
+  the raw-copy guards, with transparent fallback to recompression.
 - Atomic targets: path targets are written temp-file-then-``os.replace``
   (in-place truncation is the measured corruption hazard); file-like targets
   are built fully in memory and written in one seek/write/truncate pass.
@@ -68,8 +67,7 @@ def raw_copy_supported(info):
 
 def _read_raw_stream(zin, info):
     """Read one entry's compressed byte stream straight from the archive,
-    verifying central-vs-local header AGREEMENT first (PLAN-v0.1 7
-    hardening: a zip-confusion payload shows different content to parsers
+    verifying central-vs-local header AGREEMENT first (a zip-confusion payload shows different content to parsers
     that trust different headers). Returns None on disagreement — the
     caller falls back to recompression, which normalizes the entry to the
     central directory's view (the view zipfile and Excel read)."""
@@ -195,7 +193,7 @@ def _fsync_directory(directory):
 
 def build_and_deliver(build_fn, target):
     """Build the archive DIRECTLY into the delivery temp file for path
-    targets (PLAN-v0.1 7 hardening: ~1x file-size peak memory instead of
+    targets (~1x file-size peak memory instead of
     a whole in-memory copy), atomically replaced and fsynced; file-like
     targets keep the in-memory build."""
     if hasattr(target, "write"):

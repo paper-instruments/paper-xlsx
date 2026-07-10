@@ -1,9 +1,9 @@
-# paper-xlsx: the LibreOffice oracle (PLAN Phase 5; PR-0 §7/D17)
+# paper-xlsx: the LibreOffice oracle
 
 """Bounded recalculation and certification via headless LibreOffice.
 
 This library never calculates — a partial engine is a silent-wrongness
-machine (CONVENTIONS §5). Instead it routes to a real implementation of
+machine. Instead it routes to a real implementation of
 Excel's semantics and reports MEASUREMENTS, never judgments:
 
 - :func:`recalc` recomputes all cells on a TEMP COPY and scans for Excel
@@ -11,9 +11,9 @@ Excel's semantics and reports MEASUREMENTS, never judgments:
 - :func:`certify` checks whether LibreOffice reproduces the file's own
   cached values (Excel's answer key for its current inputs) within the
   pinned tolerance, excluding cells downstream of nondeterministic volatile
-  functions (CONVENTIONS §3.7).
+  functions.
 
-Driver rules, all measured in Phase 0 (OPEN-QUESTIONS Q10):
+Driver rules, all measured:
 the caller's file is NEVER handed to LibreOffice (temp copies only — tested
 invariant); every invocation gets its own ``-env:UserInstallation`` profile
 (shared profiles fail nondeterministically); success is ``returncode == 0
@@ -40,7 +40,7 @@ ERROR_TOKENS = frozenset((
     "#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!",
 ))
 
-# pinned numeric tolerance (CONVENTIONS §3.7)
+# pinned numeric tolerance
 REL_TOL = 1e-9
 ABS_TOL = 1e-11
 
@@ -318,13 +318,12 @@ class CertificationResult:
         self.divergences = divergences          # [{"address", "cached", "computed"}]
         self.volatile_excluded = volatile_excluded
         self.unverifiable = unverifiable        # formula cells without a cache
-        # excluded-with-reason (PLAN-v0.1 1.7): DIVERGED keeps meaning
+        # excluded-with-reason: DIVERGED keeps meaning
         # "genuine disagreement" because known-unverifiable classes are
         # named, never silently checked-and-wrong or silently skipped
         self.external_excluded = external_excluded or []
         self.unsupported_excluded = unsupported_excluded or []
-        # scenario-runner inputs and their downstream cells (PLAN-v0.1
-        # 5.1): legitimately different from the file's caches, never a
+        # scenario-runner inputs and their downstream cells: legitimately different from the file's caches, never a
         # divergence
         self.input_excluded = input_excluded or []
 
@@ -359,7 +358,7 @@ def _values_match(cached, computed, epoch=None):
         return v
 
     # a date SERIAL and its parsed datetime are the same value: compare
-    # numerically (Batch-5 gate: write_back's own serials were judged
+    # numerically (write_back's own serials were judged
     # DIVERGED by its own certification)
     if isinstance(cached, (_dt.datetime, _dt.date, _dt.time,
                            _dt.timedelta))             or isinstance(computed, (_dt.datetime, _dt.date, _dt.time,
@@ -402,7 +401,7 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
     wb_formulas = load_workbook(io.BytesIO(data), data_only=False)
     wb_cached = load_workbook(io.BytesIO(data), data_only=True)
 
-    # excluded-with-reason (§3.7 + PLAN-v0.1 1.7): nondeterministic
+    # excluded-with-reason: nondeterministic
     # volatiles, oracle-unsupported functions, and external-workbook
     # references are all excluded from certification — so DIVERGED keeps
     # meaning "genuine disagreement" — with the reason recorded, never a
@@ -415,7 +414,7 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
         # unresolved references (INDIRECT/OFFSET, structured refs, 3-D
         # spans) are always-intersecting: with scenario inputs in play
         # they may read ANY input, so they and their downstream inherit
-        # the input taint (Batch-5 gate: a cell fed only through
+        # the input taint (a cell fed only through
         # INDIRECT escaped, and the certification falsely DIVERGED)
         for address in sketch.unresolved:
             key = _address_key(address, wb_formulas)
@@ -473,7 +472,7 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
         # openpyxl-written files carry empty <v></v>: no answer key
         # exists — but the exclusion classes still ride along, so
         # write_back(allow_uncertified=True) never writes volatile/
-        # external/unsupported cells (Batch-5 gate)
+        # external/unsupported cells
         vol, ext, uns = _bucket_reasons()
         return CertificationResult(
             CertificationResult.BASELINE_UNVERIFIABLE, 0, [], vol,
@@ -532,7 +531,7 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
 # functions LibreOffice's recalc cannot be trusted to reproduce (version-
 # dependent or environment-dependent semantics). Conservative by design:
 # an excluded cell is NAMED with its reason; a mis-checked cell would be a
-# false DIVERGED (PLAN-v0.1 1.7).
+# false DIVERGED.
 ORACLE_UNSUPPORTED_FUNCS = frozenset([
     "LAMBDA", "LET", "MAP", "REDUCE", "SCAN", "BYROW", "BYCOL",
     "MAKEARRAY", "ISOMITTED",
@@ -572,7 +571,7 @@ def _exclusion_seeds(wb_formulas):
                 if token.type == "FUNC" and token.subtype == "OPEN":
                     # Excel serializes post-2007 functions as _xlfn.NAME(
                     # — the catalog match must see the bare name
-                    # (Batch-1 gate: the prefixed form evaded exclusion)
+                    # (the prefixed form evaded exclusion)
                     up = token.value.upper()
                     if up.startswith("_XLFN."):
                         up = up[6:]
@@ -588,7 +587,7 @@ def _exclusion_seeds(wb_formulas):
                         reasons[key] = "external-link"
                     else:
                         # an external ref hiding behind a defined name
-                        # (Batch-1 gate): resolve the name, tag the cell
+                        # resolve the name, tag the cell
                         name = wb_formulas.defined_names.get(token.value)                             or ws.defined_names.get(token.value)
                         if name is not None and name.value                                 and "[" in name.value:
                             reasons[key] = "external-link"
@@ -622,7 +621,7 @@ def _bounds_hit_tainted(sheet, bounds, tainted):
 
 
 # ---------------------------------------------------------------------
-# scenario runner (PLAN-v0.1 5.1, PR-1 §4.1)
+# scenario runner
 
 class Evaluation:
     """One what-if run: inputs applied to a TEMP COPY through the spine,
@@ -715,7 +714,7 @@ def _resolve_single_cell(wb, address):
 
 def _set_input_cell(ws, row, col, value, address):
     """Assign one scenario input, refusing merged-cell interiors typed
-    (a raw AttributeError is not a legal outcome — Batch-5 gate)."""
+    (a raw AttributeError is not a legal outcome)."""
     from openpyxl.cell.cell import MergedCell
     from openpyxl.errors import TargetNotFoundError
 
@@ -777,7 +776,7 @@ def evaluate(source, set, read, *, timeout=120.0):
 
 def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
     """``evaluate`` for a list of input dicts, sharing warm LibreOffice
-    profiles across cases (PR-1 §4.1: the pool is an implementation
+    profiles across cases (the pool is an implementation
     detail — ``pool_size`` per-thread-isolated profiles, created lazily,
     crash-replaced once, destroyed before return)."""
     import shutil as _shutil
@@ -853,7 +852,7 @@ def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
 
 
 # ---------------------------------------------------------------------
-# certification-gated write-back (PLAN-v0.1 5.3, PR-1 §4.3; battery 24)
+# certification-gated write-back
 
 class WriteBackResult:
 
@@ -932,7 +931,7 @@ def write_back(source, *, timeout=120.0, allow_uncertified=False):
     path) — values only, formulas untouched, LibreOffice bytes never
     enter the output (macro-safe by construction).
 
-    Certification-gated (PLAN-v0.1 5.3): on DIVERGED or
+    Certification-gated: on DIVERGED or
     BASELINE_UNVERIFIABLE the call refuses unless
     ``allow_uncertified=True``, and then the result carries a loud
     ``uncertified=True``. Cells excluded from certification
@@ -1000,7 +999,7 @@ def write_back(source, *, timeout=120.0, allow_uncertified=False):
                 written.append(address)
                 continue
             if address in set(certification.unverifiable):
-                # previously cache-less: the whole point (battery 24)
+                # previously cache-less: the whole point
                 led.cache_writes.setdefault(ws, {})[(row, col)] = computed
                 written.append(address)
                 continue

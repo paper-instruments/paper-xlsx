@@ -67,7 +67,7 @@ source_suffix = '.rst'
 master_doc = 'index'
 
 # General information about the project.
-project = u'openpyxl'
+project = u'paper-xlsx'
 from datetime import date
 
 copyright = u'2010 - {0}, {1}'.format(date.today().year, openpyxl.__author__)
@@ -77,7 +77,7 @@ copyright = u'2010 - {0}, {1}'.format(date.today().year, openpyxl.__author__)
 # built documents.
 #
 # The full version, including alpha/beta/rc tags.
-release = openpyxl.__version__
+release = openpyxl.__paper_version__
 # The short X.Y version.
 version = ".".join(release.split(".")[:-1])
 
@@ -198,7 +198,7 @@ html_static_path = ['_static']
 #html_file_suffix = None
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'openpyxldoc'
+htmlhelp_basename = 'paperxlsxdoc'
 
 
 # -- Options for LaTeX output --------------------------------------------------
@@ -212,7 +212,7 @@ htmlhelp_basename = 'openpyxldoc'
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, documentclass [howto/manual]).
 latex_documents = [
-  ('index', 'openpyxl.tex', u'openpyxl Documentation',
+  ('index', 'paper-xlsx.tex', u'paper-xlsx Documentation',
    openpyxl.__author__, 'manual'),
 ]
 
@@ -245,7 +245,7 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    ('index', 'openpyxl', u'openpyxl Documentation',
+    ('index', 'paper-xlsx', u'paper-xlsx Documentation',
      [openpyxl.__author__], 1)
 ]
 

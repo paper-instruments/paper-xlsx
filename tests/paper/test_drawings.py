@@ -1,4 +1,4 @@
-"""Batch 4 (PLAN-v0.1, PR-1 §3): charts and images under preserve —
+"""Charts and images under preserve —
 creation on added sheets, fresh drawings on loaded sheets, appends into
 anchor-only originals, and per-property chart edits via chartpatch."""
 from __future__ import annotations
