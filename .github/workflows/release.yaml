@@ -29,5 +29,7 @@ jobs:
       - name: Smoke test (source distribution)
         run: uv run --isolated --no-project --with dist/*.tar.gz python -c "import openpyxl; print(openpyxl.__paper_version__)"
       - name: Publish
-        if: ${{ vars.PUBLISH_ENABLED == 'true' }}
+        # Publish only when triggered by a version tag push (e.g., v1.2.3);
+        # manual workflow_dispatch runs build + smoke test but never publish.
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: uv publish
