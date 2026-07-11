@@ -270,6 +270,7 @@ def test_path_backed_replace_failure_reopens_original(
     assert source.read_bytes() == original
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor rebinding")
 def test_path_backed_rebind_preflight_failure_does_not_commit(
         tmp_path, monkeypatch):
     from openpyxl.preserve import zipio
@@ -506,6 +507,7 @@ def test_nonseekable_destination_refused_before_model_mutation(tmp_path):
     assert wb.calculation.fullCalcOnLoad is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes and symlinks")
 def test_path_save_preserves_mode_and_symlink(tmp_path):
     wb, source = _preserved(tmp_path)
     os.chmod(source, 0o640)

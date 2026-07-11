@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -57,7 +57,7 @@ def test_doctor_record_filter_only_accepts_safe_openpyxl_paths():
         "paper_xlsx-0.1.1.dist-info/METADATA,sha256=def,2\n"
     )
     assert list(_openpyxl_record_entries(record)) == [
-        (Path("openpyxl/__init__.py"), "sha256=abc")]
+        (PurePosixPath("openpyxl/__init__.py"), "sha256=abc")]
 
     unsafe = "openpyxl/../outside.py,sha256=abc,1\n"
     with pytest.raises(DoctorError, match="unsafe path"):
