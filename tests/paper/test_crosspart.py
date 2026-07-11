@@ -387,9 +387,9 @@ class TestV0CrosspartRefusals:
     def test_mark_dirty_part_refuses(self, fixture_copy, tmp_path):
         src = fixture_copy(GAUNTLET)
         wb = load_workbook(src, preserve=True)
-        wb.mark_dirty("xl/media/image1.png")
         with pytest.raises(UnsupportedStructureError, match="mark_dirty"):
-            wb.save(str(tmp_path / "o.xlsx"))
+            wb.mark_dirty("xl/media/image1.png")
+        wb.save(str(tmp_path / "o.xlsx"))
 
 
 class TestStyleTranslation:

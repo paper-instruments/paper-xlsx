@@ -21,6 +21,7 @@ inserted anchors themselves.
 """
 
 import re
+from xml.etree import ElementTree as ET
 
 from openpyxl.errors import UnsupportedStructureError
 
@@ -42,7 +43,7 @@ _IMAGE_MIME = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif",
                "bmp": "image/bmp", "tiff": "image/tiff"}
 
 _ANCHOR_OPEN_RE = re.compile(
-    br"<(oneCellAnchor|twoCellAnchor|absoluteAnchor)(?=[ >])")
+    br"<((?:\w+:)?(?:oneCellAnchor|twoCellAnchor|absoluteAnchor))(?=[ >])")
 _CNVPR_ID_RE = re.compile(br'\bid=(?:"(\d+)"|\'(\d+)\')')
 
 
@@ -370,9 +371,15 @@ def plan_drawing_append(workbook, ws, part_plan, names, drawing_part,
     original = _expand_self_closing_root(original)
     _register_objects(workbook, ws, part_plan, names, charts, images)
     rendered, local_rels = _render_drawing(charts, images)
-    root_m = re.search(br"<wsDr\b[^>]*>", rendered)
-    close_m = re.search(br"</wsDr>\s*$", rendered)
-    body = rendered[root_m.end():close_m.start()]
+    try:
+        rendered_root = ET.fromstring(rendered)
+        # Serializing each child keeps all namespace declarations required by
+        # the child. This matters on the stdlib backend, which prefixes xdr
+        # on the stripped root rather than declaring a default namespace.
+        body = b"".join(ET.tostring(child, encoding="utf-8")
+                        for child in rendered_root)
+    except ET.ParseError as exc:
+        _refuse("the generated drawing XML is invalid ({0}).".format(exc))
 
     # remap the render's local rId1..rIdN to ids reserved on the ORIGINAL
     # drawing's rels — through collision-proof placeholders: a sequential
@@ -397,7 +404,7 @@ def plan_drawing_append(workbook, ws, part_plan, names, drawing_part,
     # render body itself is double-quoted by construction)
     max_id = _cnvpr_max_id(original)
     body = re.sub(
-        br'(<cNvPr\b[^>]*?\bid=")(\d+)(")',
+        br'(<(?:\w+:)?cNvPr\b[^>]*?\bid=")(\d+)(")',
         lambda m: m.group(1) + b"%d" % (int(m.group(2)) + max_id)
         + m.group(3),
         body)

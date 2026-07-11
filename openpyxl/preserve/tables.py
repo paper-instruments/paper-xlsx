@@ -10,13 +10,11 @@ moves, the data region vanishes, or the column count disagrees with
 tableColumns.
 """
 
-import io
 import re
-import zipfile
 
 from openpyxl.errors import UnsupportedStructureError
 from openpyxl.utils.cell import range_boundaries
-from openpyxl.xml.functions import fromstring, tostring
+from openpyxl.xml.functions import tostring
 
 from . import crosspart
 
@@ -168,6 +166,105 @@ def _check_display_name(wb, ws, tbl, original_names):
                         "unique.".format(name, other_name, sheet.title))
 
 
+def _validate_formula_grid(formula, table_name):
+    """Refuse formula references outside Excel's physical grid."""
+    from openpyxl.formula import Tokenizer
+    from openpyxl.utils.cell import range_boundaries
+    from openpyxl.errors import BoundaryViolationError
+
+    try:
+        tokens = Tokenizer(formula).items
+    except Exception:
+        return
+    for token in tokens:
+        if token.type != "OPERAND" or token.subtype != "RANGE" \
+                or "[" in token.value:
+            continue
+        ref = token.value.rsplit("!", 1)[-1].replace("$", "")
+        if ":" not in ref and not any(char.isdigit() for char in ref):
+            continue
+        try:
+            bounds = range_boundaries(ref)
+        except ValueError:
+            continue
+        cols = [value for value in (bounds[0], bounds[2])
+                if value is not None]
+        rows = [value for value in (bounds[1], bounds[3])
+                if value is not None]
+        if any(value > 16384 for value in cols) or any(
+                value > 1048576 for value in rows):
+            raise BoundaryViolationError(
+                "append_row would generate formula {0!r} outside Excel's "
+                "row/column limits for table {1!r}. Nothing was changed."
+                .format(formula, table_name))
+
+
+def _normalize_append_value(ws, row, col, value, table_name):
+    """Validate one planned value without materializing its destination."""
+    from openpyxl.cell.cell import (
+        CellRichText,
+        ILLEGAL_CHARACTERS_RE,
+        _TYPES,
+        get_type,
+    )
+    from openpyxl.utils import get_column_letter
+    from openpyxl.utils.exceptions import IllegalCharacterError
+
+    if value is None:
+        return None
+    value_type = type(value)
+    data_type = _TYPES.get(value_type)
+    if data_type is None:
+        data_type = get_type(value_type, value)
+    if data_type is None:
+        raise ValueError("Cannot convert {0!r} to Excel".format(value))
+
+    if data_type == "s" and not isinstance(value, CellRichText):
+        if not isinstance(value, str):
+            value = str(value, ws.parent.encoding)
+        value = str(value)[:32767]
+        if ILLEGAL_CHARACTERS_RE.search(value):
+            raise IllegalCharacterError(
+                "{0} cannot be used in worksheets.".format(value))
+    formula = value if isinstance(value, str) and value.startswith("=") \
+        else getattr(value, "text", None)
+    if isinstance(formula, str) and formula.startswith("="):
+        _validate_formula_grid(formula, table_name)
+        if getattr(ws.parent, "formula_lint", "warn") == "refuse":
+            from openpyxl.formula.lint import lint_formula
+            findings = lint_formula(formula, workbook=ws.parent, sheet=ws)
+            if findings:
+                from openpyxl.errors import UnsupportedStructureError
+
+                summary = "; ".join(
+                    "[{0}] {1}".format(item["code"], item["message"])
+                    for item in findings[:6])
+                raise UnsupportedStructureError(
+                    "formula planned for {0}!{1}{2} failed the pre-flight "
+                    "lint and wb.formula_lint is 'refuse': {3}. Nothing "
+                    "was changed.".format(
+                        ws.title, get_column_letter(col), row, summary))
+    return value
+
+
+def _preflight_append_protection(ws, coordinates):
+    """Strict protection refusal before any destination cell is created."""
+    if not bool(ws.protection.sheet) or not getattr(
+            ws.parent, "strict_protection", False):
+        return
+    from openpyxl.errors import UnsupportedStructureError
+    from openpyxl.utils import get_column_letter
+
+    for row, col in sorted(set(coordinates)):
+        cell = ws._cells.get((row, col))
+        if cell is None or cell.protection.locked:
+            raise UnsupportedStructureError(
+                "append_row would write locked cell {0}{1} on protected "
+                "sheet {2!r}, and strict_protection is enabled. Unlock the "
+                "target cells or unprotect the sheet. Nothing was changed."
+                .format(get_column_letter(col), row, ws.title))
+
+
 def append_row(ws, table_name, values):
     """Append one row of ``values`` below the table's last data row: writes
     the cells, extends ``tbl.ref``,
@@ -191,10 +288,35 @@ def append_row(ws, table_name, values):
                 table_name, ws.title))
     tbl = ws.tables[table_name]
     min_col, min_row, max_col, max_row = range_boundaries(tbl.ref)
-    header = tbl.headerRowCount if tbl.headerRowCount is not None else 1
     totals = tbl.totalsRowCount or 0
     new_data_row = max_row - totals + 1        # where the new data lands
     n_cols = max_col - min_col + 1
+
+    led = getattr(ws.parent, "_paper_ledger", None)
+    original_comments = led.comment_snapshots.get(ws, {}) if led else {}
+    original_links = (led.region_snapshots.get(ws, {}).get("hyperlinks", {})
+                      if led else {})
+    if totals and any((max_row, col) in original_comments
+                      for col in range(min_col, max_col + 1)):
+        _refuse(
+            "append_row: table {0!r} has a totals-row comment from the "
+            "original package; preserve mode cannot rewrite its existing "
+            "comment/VML anchor yet. Remove or relocate the comment in "
+            "Excel before appending".format(table_name))
+    if totals and any((max_row, col) in original_links
+                      for col in range(min_col, max_col + 1)):
+        _refuse(
+            "append_row: table {0!r} has a totals-row hyperlink from the "
+            "original package; preserve mode cannot move an existing "
+            "hyperlink relationship. Remove or relocate the hyperlink in "
+            "Excel before appending".format(table_name))
+
+    if max_row >= 1048576:
+        from openpyxl.errors import BoundaryViolationError
+
+        raise BoundaryViolationError(
+            "append_row would extend table {0!r} past row 1048576, Excel's "
+            "hard sheet limit. Nothing was changed.".format(table_name))
 
     # normalize values
     if isinstance(values, dict):
@@ -217,7 +339,9 @@ def append_row(ws, table_name, values):
     below = max_row + 1
     for (r, c), cell in ws._cells.items():
         if r >= below and min_col <= c <= max_col \
-                and (cell._value is not None or cell.has_style):
+                and (cell._value is not None or cell.has_style
+                     or cell._comment is not None
+                     or cell._hyperlink is not None):
             _refuse("append_row: sheet {0!r} has content at or below row "
                     "{1} under table {2!r}; appending would need to shift "
                     "it. Move that content, or restructure the "
@@ -235,41 +359,80 @@ def append_row(ws, table_name, values):
                     "its value derives from the column formula "
                     "(={1}).".format(tc.name, calc.attr_text))
 
+    planned_values = []
+    try:
+        from openpyxl.formula.translate import TranslatorError
+
+        for i, col in enumerate(range(min_col, max_col + 1)):
+            tc = tbl.tableColumns[i] if i < len(tbl.tableColumns) else None
+            calc = getattr(tc, "calculatedColumnFormula", None) if tc else None
+            given = row_values[i]
+            planned = given
+            if calc is not None and getattr(calc, "attr_text", None):
+                planned = "=" + calc.attr_text
+            elif calc is None and given is None \
+                    and new_data_row - 1 > min_row:
+                above = ws._cells.get((new_data_row - 1, col))
+                if above is not None and above.data_type == "f" \
+                        and isinstance(above.value, str):
+                    planned = Translator(
+                        above.value,
+                        origin="{0}{1}".format(
+                            get_column_letter(col), new_data_row - 1)
+                    ).translate_formula(
+                        "{0}{1}".format(
+                            get_column_letter(col), new_data_row))
+            planned_values.append(_normalize_append_value(
+                ws, new_data_row, col, planned, table_name))
+    except TranslatorError as exc:
+        from openpyxl.errors import BoundaryViolationError
+
+        raise BoundaryViolationError(
+            "append_row cannot translate an inherited formula within "
+            "Excel's grid for table {0!r}. Nothing was changed."
+            .format(table_name)) from exc
+
+    affected = [(new_data_row, col)
+                for col in range(min_col, max_col + 1)]
+    planned_totals = {}
+    if totals:
+        for col in range(min_col, max_col + 1):
+            source_value = ws._cells.get((max_row, col))
+            planned_totals[col] = _normalize_append_value(
+                ws, max_row + 1, col,
+                source_value.value if source_value is not None else None,
+                table_name)
+        affected.extend(
+            (row, col)
+            for row in (max_row, max_row + 1)
+            for col in range(min_col, max_col + 1))
+    _preflight_append_protection(ws, affected)
+
     # totals row moves down one: rewrite its cells at +1 first
     if totals:
+        from copy import copy
+
         for col in range(min_col, max_col + 1):
             src = ws.cell(row=max_row, column=col)
             dst = ws.cell(row=max_row + 1, column=col)
-            dst.value = src.value
-            if src.has_style:
-                dst._style = src._style
+            dst.value = planned_totals[col]
+            dst._style = copy(src._style) if src.has_style else None
+            dst.comment = src.comment
+            if src.hyperlink is not None:
+                dst.hyperlink = copy(src.hyperlink)
+            else:
+                dst.hyperlink = None
             src.value = None
+            src.comment = None
+            src.hyperlink = None
             # the freed slot becomes a DATA row: style it like the row
             # above, not like the totals row it used to be
             model = ws.cell(row=max_row - 1, column=col)
             src._style = model._style if model.has_style else None
 
     # write the new data row (calculated columns re-derive)
-    for i, col in enumerate(range(min_col, max_col + 1)):
-        tc = tbl.tableColumns[i] if i < len(tbl.tableColumns) else None
-        calc = getattr(tc, "calculatedColumnFormula", None) if tc else None
-        given = row_values[i]
-        if calc is not None and getattr(calc, "attr_text", None):
-            ws.cell(row=new_data_row, column=col).value = \
-                "=" + calc.attr_text
-        elif calc is None and given is None and new_data_row - 1 > min_row:
-            # no explicit calculatedColumnFormula: inherit the formula
-            # PATTERN of the cell above when there is one (Excel behavior)
-            above = ws.cell(row=new_data_row - 1, column=col)
-            if above.data_type == "f" and isinstance(above.value, str):
-                translated = Translator(
-                    above.value,
-                    origin="{0}{1}".format(get_column_letter(col),
-                                           new_data_row - 1)).translate_formula(
-                    "{0}{1}".format(get_column_letter(col), new_data_row))
-                ws.cell(row=new_data_row, column=col).value = translated
-        else:
-            ws.cell(row=new_data_row, column=col).value = given
+    for col, planned in zip(range(min_col, max_col + 1), planned_values):
+        ws.cell(row=new_data_row, column=col).value = planned
 
     # extend the ref; keep the autoFilter over the header+data region
     new_max_row = max_row + 1

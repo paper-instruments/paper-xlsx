@@ -11,6 +11,7 @@ Built at load time (the archive is gone by save time on the stock path) and
 stashed on the workbook; the stock save path warns from it.
 """
 
+import posixpath
 import re
 
 from openpyxl.xml.constants import ARC_APP, EXT_TYPES
@@ -35,6 +36,39 @@ _DRAWING_LOSS_MARKERS = (
     (b":grpSp", "group shape"),
     (b"AlternateContent", "alternate-content block"),
 )
+
+# Relationship families whose targets the stock writer explicitly models or
+# already inventories below. Other internal relationships are valid OPC
+# content that the stock writer cannot promise to emit.
+_MODELED_RELATIONSHIPS = frozenset((
+    "officeDocument", "worksheet", "chartsheet", "styles", "theme",
+    "sharedStrings", "calcChain", "externalLink", "externalLinkPath",
+    "hyperlink", "drawing", "image", "chart", "comments", "vmlDrawing",
+    "table", "pivotTable", "pivotCacheDefinition", "pivotCacheRecords",
+    "printerSettings", "core-properties", "extended-properties",
+    "custom-properties", "customXml", "customXmlProps", "metadata",
+    "richValueRel", "person", "threadedComment", "oleObject",
+    "vbaProject",
+))
+
+
+def _relationship_source(name):
+    folder, filename = posixpath.split(name)
+    parent = posixpath.dirname(folder)
+    if not filename.endswith(".rels"):
+        return None
+    return posixpath.join(parent, filename[:-5])
+
+
+def _unmodeled_relationships(payload):
+    from openpyxl.packaging.relationship import RelationshipList
+    from openpyxl.xml.functions import fromstring
+
+    rels = RelationshipList.from_tree(fromstring(payload))
+    for rel in rels:
+        family = rel.Type.rstrip("/").rsplit("/", 1)[-1]
+        if family not in _MODELED_RELATIONSHIPS:
+            yield rel
 
 
 class LossInventory:
@@ -188,5 +222,26 @@ def scan_archive(archive, valid_files, keep_vba=False, rich_text=False):
                         "in-cell formatting runs will be flattened to plain "
                         "text (load with rich_text=True to model them, or "
                         "preserve=True to keep them verbatim)")
+
+        if name.endswith(".rels"):
+            payload = read(name)
+            if not payload:
+                continue
+            try:
+                relationships = list(_unmodeled_relationships(payload))
+            except Exception as exc:
+                inv.add("unreadable-relationships", name,
+                        "could not inventory relationships: {0}".format(exc))
+                continue
+            source = _relationship_source(name)
+            for rel in relationships:
+                target = rel.Target
+                if rel.TargetMode != "External" and source is not None:
+                    target = posixpath.normpath(posixpath.join(
+                        posixpath.dirname(source), target))
+                inv.add(
+                    "unmodeled-opc", target,
+                    "relationship type {0!r} from {1} is not modeled and "
+                    "will be dropped on stock save".format(rel.Type, name))
 
     return inv

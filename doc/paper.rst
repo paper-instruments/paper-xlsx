@@ -38,12 +38,22 @@ Loading and saving
     receipt = wb.save(out_path, receipt=True)   # + an EditReceipt
     wb.validate()                        # run save validation without writing
 
+Preserve-mode file-like saves accept an open, exact ``io.BytesIO`` with no
+exported buffer views or the verified path-backed ``io.BufferedRandom`` used by
+pandas append mode. Use a filesystem path for any other stream type. Stock-mode
+saves retain openpyxl's file-like behavior.
+
 Setting ``PAPER_PRESERVE_DEFAULT=1`` in the environment makes ``preserve=True``
 the default for regular loads. Read-only and legacy formats fall back.
 
 Under preserve, ``docProps/core.xml`` is raw-copied and the ``modified``
 timestamp is **not** auto-stamped unless you explicitly change
 ``wb.properties`` — so a no-op save stays byte-identical.
+
+The PyPI distribution is ``paper-xlsx``, but the import package remains
+``openpyxl``. Do not install the separate ``openpyxl`` distribution in the same
+environment. The two distributions own the same files, and package-manager
+dependency metadata does not provide a safe replacement mechanism.
 
 Perception
 ----------
@@ -80,7 +90,8 @@ be remapped through it.
   labels, and does not overwrite formulas.
 * ``openpyxl.preserve.copy_format(ws, src, dst_range)`` and
   ``apply_profile(ws, profile)``: formatting as data, preserve-safe.
-* ``wb.mark_dirty(target)``: register a mutation made outside the preserve APIs.
+* ``wb.mark_dirty(sheet_range)``: register cell mutations made outside the
+  preserve APIs.
 * ``wb.replace_part(name, payload)``: raw byte swap of unmanaged
   parts (media).
 * ``wb.formula_lint``: ``"off" | "warn" | "refuse"`` pre-flight

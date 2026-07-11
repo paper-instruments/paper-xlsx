@@ -32,8 +32,8 @@ explicit outcomes:
   the exception names the remedy;
 * a **loud warning**: a stock-mode path reports that an operation may be lossy.
 
-``manifest``, ``model_map``, and ``locate`` expose workbook structure. Six
-pinned JSON schemas make their results available as structured data.
+``manifest``, ``model_map``, and ``locate`` expose workbook structure through
+versioned, JSON-compatible payloads.
 
 Quick start
 -----------
@@ -79,12 +79,17 @@ installed, the library delegates calculation to it as the oracle:
     ev = wb.evaluate(set={"Sheet!B1": 0.10}, read=["Sheet!B3"])
     ev.outputs                          # {'Sheet!B3': 1100}
     ev.certification.status             # did LibreOffice reproduce the file's caches?
-    oracle.write_back("model.xlsx")     # write cached values after certification
+    check = oracle.recalc("model.xlsx", output_path="model_recalculated.xlsx")
+    check.errors                        # formula-error cells found after recalculation
 
-Six pinned JSON schemas (``workbook_manifest``, ``model_map``, ``evaluation``,
-``oracle_write_back``, ``edit_receipt``, ``workbook_diff``) make every result
-machine-consumable. The **Preserve mode** guide (``doc/paper.rst``) provides the
-complete API overview and refusal taxonomy.
+``oracle.write_back(path)`` is a separate, certification-gated operation. It
+splices computed caches into the original package only when the existing
+caches provide a trustworthy baseline, unless the caller explicitly accepts an
+uncertified write.
+
+Results expose versioned, JSON-compatible payload contracts with stable
+``schema`` and ``version`` fields. The **Preserve mode** guide
+(``doc/paper.rst``) provides the complete API overview and refusal taxonomy.
 
 Preserve mode is opt-in today: pass ``preserve=True`` per call, or set
 ``PAPER_PRESERVE_DEFAULT=1``. Preserve-by-default for the public/pandas API
@@ -104,17 +109,30 @@ and the new API are purely additive.
 * PyPI distribution: ``paper-xlsx``
 * Built wheel/sdist names: ``paper_xlsx-*``
 * Python import: ``openpyxl``
-* Fork sentinel: ``openpyxl.__paper_version__ = "0.1.0"``
+* Fork sentinel: ``openpyxl.__paper_version__ = "0.1.1"``
 * Upstream base: openpyxl **3.1.5** (marker tag ``paper-base``)
 
-Upstream releases are merged (never rebased) on a roughly quarterly cadence, so
-drop-in compatibility with openpyxl holds over time.
+Upstream releases are merged rather than rebased. The ``paper-base`` tag records
+the current openpyxl fork point.
 
 Installation
 ------------
 
-This repository is private for now and publication to PyPI is gated. Install
-from Git::
+``paper-xlsx`` is published on PyPI (this source tree carries the version in
+``openpyxl/_paper_version.py``)::
+
+    python -m pip install paper-xlsx
+
+Install it in an environment that does not also contain the ``openpyxl``
+distribution. Both distributions own the same ``openpyxl`` import tree, and
+Python package metadata cannot make one satisfy a dependency on the other. If
+both are present, file ownership depends on installation order; the fork raises
+on import when it can detect that state. Verify any installed environment with::
+
+    paper-xlsx-doctor
+
+The source repository remains private. Users with repository access can install
+the current branch from Git::
 
     pip install "paper-xlsx @ git+https://github.com/The-LLM-Data-Company/paper-xlsx.git@main"
 
@@ -127,19 +145,20 @@ Verification
 
 Expected output::
 
-    0.1.0
+    0.1.1
 
 How it's tested
 ---------------
 
 * Upstream openpyxl's test suite runs on every change to check compatibility
   with existing behavior.
-* A frozen, hash-pinned fixture corpus under ``tests/paper`` includes real
-  third-party files with provenance labels, rather than only self-generated
-  fixtures.
-* The contract harness saves and reopens before asserting, enforces an exact
-  changed-part budget and refusal atomicity, and runs a headless LibreOffice
-  load smoke.
+* A frozen, hash-pinned fixture corpus under ``tests/paper`` records exact
+  provenance. Its current files come from openpyxl, LibreOffice, or documented
+  package surgery; the still-missing real-Excel and Google Sheets fixture
+  buckets are listed in the corpus README.
+* The contract harness saves and reopens before asserting, enforces exact
+  changed-part budgets, exercises refusal atomicity, and runs a headless
+  LibreOffice load smoke.
 
 License
 -------

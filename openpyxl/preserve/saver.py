@@ -29,6 +29,7 @@ from . import drawings as drawings_mod
 from . import ledger as ledger_mod
 from .ledger import render_core_model, render_custom_model, _render_chartsheet
 from .regions import (
+    CT_ORDER_INDEX,
     diff_regions,
     diff_row_attrs,
     hyperlink_signatures,
@@ -46,7 +47,93 @@ def _refuse(msg):
     raise UnsupportedStructureError(msg + " Nothing was written.")
 
 
+def _copy_ledger_value(value):
+    if isinstance(value, dict):
+        return {key: _copy_ledger_value(item) for key, item in value.items()}
+    if isinstance(value, set):
+        return set(value)
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return tuple(value)
+    return value
+
+
+class _PlanningState:
+    """Save-time serializer mutations, restored on success or refusal."""
+
+    def __init__(self, workbook):
+        self.workbook = workbook
+        self.calc_flag = workbook.calculation.fullCalcOnLoad
+        self.registries = []
+        for name in ("_fonts", "_fills", "_borders", "_alignments",
+                     "_protections", "_number_formats", "_cell_styles"):
+            registry = getattr(workbook, name)
+            self.registries.append((registry, list(registry),
+                                    registry.clean, dict(registry._dict)))
+        self.dxfs = list(workbook._differential_styles.styles)
+        self.attrs = []
+        led = workbook._paper_ledger
+        for ws in workbook.worksheets:
+            self.attrs.append((ws, "_id", ws._id))
+            self.attrs.append((ws, "_hyperlinks", ws._hyperlinks))
+            self.attrs.append((ws, "_comments", ws._comments))
+            self.attrs.append((ws.sheet_format, "outlineLevelCol",
+                               ws.sheet_format.outlineLevelCol))
+            link_coords = set()
+            if led is not None:
+                link_coords.update(led.region_snapshots.get(ws, {}).get(
+                    "hyperlinks", {}))
+                link_coords.update(led.dirty_coordinates(ws))
+            for coord in link_coords:
+                cell = ws._cells.get(coord)
+                if cell is None:
+                    continue
+                link = getattr(cell, "_hyperlink", None)
+                if link is not None:
+                    self.attrs.append((link, "id", link.id))
+            for cf in ws.conditional_formatting:
+                for rule in cf.rules:
+                    self.attrs.append((rule, "dxfId", rule.dxfId))
+            for chart in getattr(ws, "_charts", ()):
+                self.attrs.append((chart, "_id", chart._id))
+            for image in getattr(ws, "_images", ()):
+                self.attrs.append((image, "_id", image._id))
+                self.attrs.append((image, "format", image.format))
+            for table in ws.tables.values():
+                self.attrs.append((table, "id", table.id))
+        self.ledger = led
+        self.ledger_state = {
+            slot: _copy_ledger_value(getattr(led, slot))
+            for slot in led.__slots__
+        } if led is not None else None
+
+    def restore(self):
+        self.workbook.calculation.fullCalcOnLoad = self.calc_flag
+        for registry, values, clean, index in self.registries:
+            registry[:] = values
+            registry.clean = clean
+            registry._dict = index
+        self.workbook._differential_styles.styles[:] = self.dxfs
+        for obj, name, value in self.attrs:
+            setattr(obj, name, value)
+        if self.ledger_state is not None:
+            for slot, value in self.ledger_state.items():
+                setattr(self.ledger, slot, value)
+
+
 def save_preserved(workbook, target, *, allow_formula_loss=False):
+    """Plan and deliver without retaining serializer side effects."""
+    zipio.validate_target(target)
+    state = _PlanningState(workbook)
+    try:
+        return _save_preserved(workbook, target,
+                               allow_formula_loss=allow_formula_loss)
+    finally:
+        state.restore()
+
+
+def _save_preserved(workbook, target, *, allow_formula_loss=False):
     """Save a preserve-mode workbook to ``target`` (path or binary
     file-like). Validates fully, then writes atomically."""
     led = workbook._paper_ledger
@@ -502,13 +589,15 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             resolver = _model_style_resolver
         else:
             resolver = translator.resolver()
-        plan[part] = splice_sheet(
+        sheet_payload = splice_sheet(
             ws, original, dirty, region_changes, row_changes, scan=scan,
             cf_replacement=cf_replacement,
             hyperlinks_replacement=hyperlinks_replacement,
             style_resolver=resolver,
             value_overwrites=led.value_overwrites.get(ws, frozenset()),
             cache_writes=cache_writes)
+        plan[part], dimension_changed = _sync_dimension(
+            sheet_payload, ws, scan, dirty)
         # cache-written cells are CLAIMED changes: the crosscheck verifies
         # them exactly like dirty cells
         dirty_by_part[part] = dirty | set(cache_writes)
@@ -517,6 +606,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             claims.add("conditionalFormatting")
         if hyperlinks_replacement is not None:
             claims.add("hyperlinks")
+        if dimension_changed:
+            claims.add("dimension")
         region_claims[part] = claims
         row_claims[part] = set(row_changes)
 
@@ -746,6 +837,81 @@ def _model_style_resolver(cell):
     if cell._style is None:
         return None
     return cell.style_id
+
+
+def _sync_dimension(payload, ws, original_scan, dirty):
+    """Synchronize ``dimension`` to the final XML cell/merge extent."""
+    from openpyxl.utils import get_column_letter
+
+    emitted_dirty = set()
+    for coord in dirty:
+        cell = ws._cells.get(coord)
+        if cell is not None and (
+                cell._value is not None or cell.has_style
+                or getattr(cell, "_hyperlink", None) is not None
+                or getattr(cell, "_comment", None) is not None):
+            emitted_dirty.add(coord)
+    min_row = min_col = None
+    max_row = max_col = None
+    for row, span in original_scan.rows.items():
+        for col in span.cells:
+            coord = (row, col)
+            if coord in dirty and coord not in emitted_dirty:
+                continue
+            min_row = row if min_row is None else min(min_row, row)
+            max_row = row if max_row is None else max(max_row, row)
+            min_col = col if min_col is None else min(min_col, col)
+            max_col = col if max_col is None else max(max_col, col)
+    for row, col in emitted_dirty:
+        min_row = row if min_row is None else min(min_row, row)
+        max_row = row if max_row is None else max(max_row, row)
+        min_col = col if min_col is None else min(min_col, col)
+        max_col = col if max_col is None else max(max_col, col)
+    for merged in ws.merged_cells.ranges:
+        min_row = merged.min_row if min_row is None else min(
+            min_row, merged.min_row)
+        max_row = merged.max_row if max_row is None else max(
+            max_row, merged.max_row)
+        min_col = merged.min_col if min_col is None else min(
+            min_col, merged.min_col)
+        max_col = merged.max_col if max_col is None else max(
+            max_col, merged.max_col)
+    if min_row is not None:
+        ref = "{0}{1}:{2}{3}".format(
+            get_column_letter(min_col), min_row,
+            get_column_letter(max_col), max_row)
+    else:
+        ref = "A1:A1"
+    rendered = b'<dimension ref="%s"/>' % ref.encode("ascii")
+    spans = original_scan.regions.get("dimension", [])
+    if len(spans) > 1:
+        _refuse("worksheet carries multiple dimension elements")
+    if spans:
+        span = spans[0]
+        original = original_scan.data[span.start:span.end]
+        if original == rendered:
+            return payload, False
+        offset = payload.find(original)
+        if offset < 0:
+            _refuse("worksheet dimension moved unexpectedly during planning")
+        return (payload[:offset] + rendered + payload[offset + len(original):],
+                True)
+    rank = CT_ORDER_INDEX["dimension"]
+    offset = None
+    for tag, span in original_scan.region_order:
+        if CT_ORDER_INDEX.get(tag, len(CT_ORDER_INDEX)) > rank:
+            original = original_scan.data[span.start:span.end]
+            found = payload.find(original)
+            if found >= 0:
+                offset = found
+                break
+    if offset is None:
+        match = re.search(br"<(?:[A-Za-z_][\w.-]*:)?sheetData\b", payload)
+        if match is not None:
+            offset = match.start()
+    if offset is None:
+        _refuse("worksheet has no dimension insertion point")
+    return payload[:offset] + rendered + payload[offset:], True
 
 
 def _namelist(source):

@@ -33,10 +33,23 @@ _MODEL_ROW_ATTRS = frozenset((
 ))
 
 
-def _cells_in_ref(ref):
+def _range_bounds(ref):
     min_col, min_row, max_col, max_row = range_boundaries(ref)
-    return {(r, c) for r in range(min_row, max_row + 1)
-            for c in range(min_col, max_col + 1)}
+    return min_row, min_col, max_row, max_col
+
+
+def _coordinates_in_bounds(coordinates, bounds):
+    min_row, min_col, max_row, max_col = bounds
+    return {
+        (row, col) for row, col in coordinates
+        if min_row <= row <= max_row and min_col <= col <= max_col
+    }
+
+
+def _coordinate_in_bounds(coordinate, bounds):
+    row, col = coordinate
+    min_row, min_col, max_row, max_col = bounds
+    return min_row <= row <= max_row and min_col <= col <= max_col
 
 
 def resolve_dirty_cells(ws, ledger_dirty, scan):
@@ -63,7 +76,7 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
     # (the in_spill context — members of a dynamic-array
     # spill are blank cells in the file; the range lives on the anchor)
     for ref in scan.array_refs:
-        hit = dirty & _cells_in_ref(ref)
+        hit = _coordinates_in_bounds(dirty, _range_bounds(ref))
         if hit:
             anchor = ref.split(":")[0]
             raise SpliceRefusal(
@@ -81,7 +94,8 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
     for si, ref in scan.shared_groups.items():
         members = set(scan.shared_members.get(si, set()))
         try:
-            members |= _cells_in_ref(ref)
+            bounds = _range_bounds(ref)
+            members |= _coordinates_in_bounds(ws._cells, bounds)
         except Exception:
             pass
         if dirty & members:
@@ -466,12 +480,14 @@ def _serialize_cached_value(value, epoch):
                           datetime.timedelta)):
         return None, repr(to_excel(value, epoch)).encode("ascii")
     if isinstance(value, str):
-        from openpyxl.cell.cell import ERROR_CODES
+        from openpyxl.oracle import ERROR_TOKENS
 
-        text = value.encode("utf-8")
+        normalized = value.strip()
+        text = (normalized if normalized in ERROR_TOKENS else value).encode(
+            "utf-8")
         text = (text.replace(b"&", b"&amp;").replace(b"<", b"&lt;")
                 .replace(b">", b"&gt;"))
-        if value.strip() in ERROR_CODES:
+        if normalized in ERROR_TOKENS:
             return b"e", text
         return b"str", text
     raise SpliceRefusal(
@@ -482,6 +498,7 @@ def _serialize_cached_value(value, epoch):
 def _cache_value_edits(ws, scan, original, cache_writes):
     edits = []
     epoch = ws.parent.epoch
+    array_bounds = [_range_bounds(ref) for ref in scan.array_refs]
     for (row, col), value in sorted(cache_writes.items()):
         label = "{0}!r{1}c{2}".format(ws.title, row, col)
         row_span = scan.rows.get(row)
@@ -492,24 +509,34 @@ def _cache_value_edits(ws, scan, original, cache_writes):
                 "bytes. Nothing was written.".format(label))
         cell_bytes = original[cell_span.start:cell_span.end]
         edits.append((cell_span.start, cell_span.end,
-                      _patch_cached_value(cell_bytes, value, epoch, label)))
+                      _patch_cached_value(
+                          cell_bytes, value, epoch, label,
+                          allow_cache_only=any(
+                              _coordinate_in_bounds((row, col), bounds)
+                              for bounds in array_bounds))))
     return edits
 
 
-def _patch_cached_value(cell_bytes, value, epoch, label):
+def _patch_cached_value(cell_bytes, value, epoch, label,
+                        allow_cache_only=False):
     head = _CELL_HEAD_RE.match(cell_bytes)
-    if head is None or head.group(2) == b"/":
+    if head is None:
         raise SpliceRefusal(
             "cache write target {0} is not a formula cell. Nothing was "
             "written.".format(label))
     f_m = _F_BLOCK_RE.search(cell_bytes)
-    if f_m is None:
+    if f_m is None and not allow_cache_only:
         raise SpliceRefusal(
             "cache write target {0} carries no formula. Nothing was "
             "written.".format(label))
     # the cell must hold nothing but its formula and cache: any other
     # child (extLst, inline string) is content this surgery would drop
-    rest = _F_BLOCK_RE.sub(b"", cell_bytes[head.end():-len(b"</c>")], 1)
+    if head.group(2) == b"/":
+        rest = b""
+    else:
+        rest = cell_bytes[head.end():-len(b"</c>")]
+    if f_m is not None:
+        rest = _F_BLOCK_RE.sub(b"", rest, 1)
     rest = re.sub(br"<v\b[^>]*?(?:/>|>.*?</v>)", b"", rest, 1, re.S)
     if rest.strip():
         raise SpliceRefusal(
@@ -524,5 +551,6 @@ def _patch_cached_value(cell_bytes, value, epoch, label):
     v_open = b"<v>"
     if isinstance(value, str) and value != value.strip():
         v_open = b'<v xml:space="preserve">'
-    return (b"<c" + attr_blob + b">" + f_m.group(0)
+    formula = f_m.group(0) if f_m is not None else b""
+    return (b"<c" + attr_blob + b">" + formula
             + v_open + v_text + b"</v></c>")

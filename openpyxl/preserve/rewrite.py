@@ -24,9 +24,28 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 _CELL_RE = re.compile(r"^(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)$")
 _COL_RANGE_RE = re.compile(r"^(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})$")
 _ROW_RANGE_RE = re.compile(r"^(\$?)([0-9]+):(\$?)([0-9]+)$")
-_SHEET_PREFIX_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([A-Za-z0-9_.]+))!(.+)$")
+# Unquoted sheet names are not ASCII-only. Excel permits Unicode letters and
+# digits without quoting; exclude only syntax that belongs to quoted names or
+# 3-D spans. Structured/external references are screened before this regex.
+_SHEET_PREFIX_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([^'!:]+))!(.+)$")
 
 REF_ERROR = "#REF!"
+EXCEL_MAX_ROW = 1048576
+EXCEL_MAX_COL = 16384
+
+
+def _checked_span(span, axis):
+    if span is None:
+        return None
+    limit = EXCEL_MAX_ROW if axis == "rows" else EXCEL_MAX_COL
+    if span[0] < 1 or span[1] > limit:
+        from openpyxl.errors import BoundaryViolationError
+
+        label = "row 1048576" if axis == "rows" else "column XFD"
+        raise BoundaryViolationError(
+            "the structural edit would rewrite a reference past Excel's "
+            "hard {0} limit. Nothing was changed.".format(label))
+    return span
 
 
 def row_mapping(operation, index, amount):
@@ -66,6 +85,17 @@ def _shift_span(start, end, index, amount, is_delete):
     return new_start, new_end
 
 
+def _shift_reference_span(first, second, axis, index, amount, is_delete):
+    """Shift a possibly reversed formula range without losing orientation."""
+    reversed_order = first > second
+    span = _checked_span(
+        _shift_span(min(first, second), max(first, second),
+                    index, amount, is_delete), axis)
+    if span is None:
+        return None
+    return (span[1], span[0]) if reversed_order else span
+
+
 def shift_ref(ref, axis, index, amount, is_delete):
     """Shift one bare A1 reference (no sheet prefix). Returns the new text,
     ``ref`` unchanged when unaffected, or ``#REF!``. ``$`` markers are kept
@@ -75,12 +105,14 @@ def shift_ref(ref, axis, index, amount, is_delete):
         cd, col, rd, row = (m.group(1), m.group(2).upper(), m.group(3),
                             int(m.group(4)))
         if axis == "rows":
-            span = _shift_span(row, row, index, amount, is_delete)
+            span = _checked_span(
+                _shift_span(row, row, index, amount, is_delete), axis)
             if span is None:
                 return REF_ERROR
             return "{0}{1}{2}{3}".format(cd, col, rd, span[0])
         col_idx = column_index_from_string(col)
-        span = _shift_span(col_idx, col_idx, index, amount, is_delete)
+        span = _checked_span(
+            _shift_span(col_idx, col_idx, index, amount, is_delete), axis)
         if span is None:
             return REF_ERROR
         return "{0}{1}{2}{3}".format(cd, get_column_letter(span[0]), rd, row)
@@ -94,13 +126,15 @@ def shift_ref(ref, axis, index, amount, is_delete):
         c2d, c2, r2d, r2 = (m2.group(1), m2.group(2).upper(), m2.group(3),
                             int(m2.group(4)))
         if axis == "rows":
-            span = _shift_span(r1, r2, index, amount, is_delete)
+            span = _shift_reference_span(
+                r1, r2, axis, index, amount, is_delete)
             if span is None:
                 return REF_ERROR
             return "{0}{1}{2}{3}:{4}{5}{6}{7}".format(
                 c1d, c1, r1d, span[0], c2d, c2, r2d, span[1])
         i1, i2 = column_index_from_string(c1), column_index_from_string(c2)
-        span = _shift_span(i1, i2, index, amount, is_delete)
+        span = _shift_reference_span(
+            i1, i2, axis, index, amount, is_delete)
         if span is None:
             return REF_ERROR
         return "{0}{1}{2}{3}:{4}{5}{6}{7}".format(
@@ -110,7 +144,8 @@ def shift_ref(ref, axis, index, amount, is_delete):
     m = _ROW_RANGE_RE.match(ref)
     if m and axis == "rows":
         r1, r2 = int(m.group(2)), int(m.group(4))
-        span = _shift_span(r1, r2, index, amount, is_delete)
+        span = _shift_reference_span(
+            r1, r2, axis, index, amount, is_delete)
         if span is None:
             return REF_ERROR
         return "{0}{1}:{2}{3}".format(m.group(1), span[0], m.group(3), span[1])
@@ -119,7 +154,8 @@ def shift_ref(ref, axis, index, amount, is_delete):
     if m and axis == "cols":
         i1 = column_index_from_string(m.group(2).upper())
         i2 = column_index_from_string(m.group(4).upper())
-        span = _shift_span(i1, i2, index, amount, is_delete)
+        span = _shift_reference_span(
+            i1, i2, axis, index, amount, is_delete)
         if span is None:
             return REF_ERROR
         return "{0}{1}:{2}{3}".format(
@@ -150,8 +186,16 @@ def shift_formula(formula, context_sheet, target_sheet, axis, index, amount,
         return formula, False
     try:
         tok = Tokenizer(formula)
-    except Exception:
-        return formula, False
+    except Exception as exc:
+        from openpyxl.errors import UnsupportedStructureError
+
+        raise UnsupportedStructureError(
+            "cannot safely rewrite formula {0!r} on sheet {1!r}: the "
+            "formula tokenizer rejected it ({2}). Nothing was changed."
+            .format(formula, context_sheet, exc),
+            kind="unparseable-structural-formula",
+            anchor=context_sheet,
+        ) from exc
 
     changed = False
     for token in tok.items:
@@ -191,6 +235,20 @@ def shift_name_value(value, target_sheet, axis, index, amount, is_delete):
     new_formula, changed = shift_formula(
         "=" + value, None, target_sheet, axis, index, amount, is_delete)
     return (new_formula[1:], True) if changed else (value, False)
+
+
+def shift_formula_fragment(value, context_sheet, target_sheet, axis, index,
+                           amount, is_delete):
+    """Rewrite a CF/DV formula, which may legally omit the leading ``=``."""
+    if not isinstance(value, str) or not value:
+        return value, False
+    explicit = value.startswith("=")
+    formula = value if explicit else "=" + value
+    rewritten, changed = shift_formula(
+        formula, context_sheet, target_sheet, axis, index, amount, is_delete)
+    if not changed:
+        return value, False
+    return rewritten if explicit else rewritten[1:], True
 
 
 def shift_cell_range(cell_range, axis, index, amount, is_delete):
@@ -256,7 +314,8 @@ def rename_sheets_in_formula(formula, mapping):
             token.value = "{0}!{1}".format(quote_sheetname(new_parts[0]),
                                            ref)
         else:
-            token.value = "{0}!{1}".format(":".join(new_parts), ref)
+            token.value = "{0}!{1}".format(
+                quote_sheetname(":".join(new_parts)), ref)
     if not changed:
         return formula, False
     return tok.render(), True
@@ -301,10 +360,26 @@ def rename_sheet_in_formula(formula, old_title, new_title):
         if len(new_parts) == 1:
             token.value = "{0}!{1}".format(quote_sheetname(rebuilt), ref)
         else:
-            token.value = "{0}!{1}".format(rebuilt, ref)
+            token.value = "{0}!{1}".format(quote_sheetname(rebuilt), ref)
     if not changed:
         return formula, False
     return tok.render(), True
+
+
+def rename_sheets_in_formula_fragment(value, mapping):
+    """Rename sheet references in a CF/DV formula with optional ``=``."""
+    if not isinstance(value, str) or not value:
+        return value, False
+    explicit = value.startswith("=")
+    formula = value if explicit else "=" + value
+    rewritten, changed = rename_sheets_in_formula(formula, mapping)
+    if not changed:
+        return value, False
+    return rewritten if explicit else rewritten[1:], True
+
+
+def rename_sheet_in_formula_fragment(value, old_title, new_title):
+    return rename_sheets_in_formula_fragment(value, {old_title: new_title})
 
 
 def title_in_string_literals(formula, title):

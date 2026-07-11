@@ -109,6 +109,7 @@ class StyleArrayDescriptor:
         if instance._style is None:
             instance._style = StyleArray()
         setattr(instance._style, self.key, value)
+        _mark_styleable_dirty(instance)
 
 
     def __get__(self, instance, cls):
@@ -153,4 +154,3 @@ class StyleableObject:
         if self._style is None:
             return False
         return any(self._style)
-

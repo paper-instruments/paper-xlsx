@@ -11,8 +11,10 @@ the model, which under-reports exactly the content that is at risk.
 """
 
 import io
+import posixpath
 import re
 import zipfile
+from xml.etree import ElementTree as ET
 
 from openpyxl.utils.cell import range_boundaries
 
@@ -61,14 +63,19 @@ def build_manifest(wb):
             # part_name went stale/None after a rename)
             part_names = {title: part for part, title
                           in current_titles_by_part(wb, _zin).items()}
+    media_counts = _package_media_counts(source, part_names) if source else {}
     for ws in wb.worksheets:
         formulas = 0
         formula_addresses = []
         for (row, col), cell in sorted(ws._cells.items()):
-            if cell.data_type == "f" and isinstance(cell._value, str):
+            if cell.data_type == "f":
                 formulas += 1
                 formula_addresses.append(cell.coordinate)
-                for match in _VOLATILE_RE.finditer(cell._value):
+                formula_text = (cell._value if isinstance(cell._value, str)
+                                else getattr(cell._value, "text", None))
+                if not isinstance(formula_text, str):
+                    continue
+                for match in _VOLATILE_RE.finditer(formula_text):
                     name = match.group(1).upper()
                     volatile.setdefault(name, []).append(
                         "{0}!{1}".format(_quoted(ws.title), cell.coordinate))
@@ -81,7 +88,8 @@ def build_manifest(wb):
             "merged_ranges": sorted(str(r) for r in ws.merged_cells.ranges),
             "tables": sorted(ws.tables.keys()),
             "charts": len(getattr(ws, "_charts", []) or []),
-            "images": len(getattr(ws, "_images", []) or []),
+            "images": max(len(getattr(ws, "_images", []) or []),
+                          media_counts.get(ws.title, 0)),
             "data_validations": len(ws.data_validations.dataValidation)
             if ws.data_validations else 0,
             "conditional_formatting_blocks":
@@ -149,8 +157,13 @@ def _computation_summary(wb):
             for name in z.namelist():
                 if name.startswith("xl/worksheets/")                         and name.endswith(".xml"):
                     payload = z.read(name)
-                    if re.search(br"</f><v>[^<]", payload) or re.search(
-                            br"/><v>[^<]", payload):
+                    if re.search(
+                            br"</(?:[A-Za-z_][\w.-]*:)?f\s*>\s*"
+                            br"<(?:[A-Za-z_][\w.-]*:)?v\b[^>]*>[^<]",
+                            payload) or re.search(
+                            br"<(?:[A-Za-z_][\w.-]*:)?f\b[^>]*/>\s*"
+                            br"<(?:[A-Za-z_][\w.-]*:)?v\b[^>]*>[^<]",
+                            payload):
                         certifiable = True
                         break
     counts["certifiable"] = certifiable
@@ -161,6 +174,49 @@ def _quoted(title):
     from openpyxl.utils.cell import quote_sheetname
 
     return quote_sheetname(title)
+
+
+def _rels_path(part):
+    directory, filename = posixpath.split(part)
+    return posixpath.join(directory, "_rels", filename + ".rels")
+
+
+def _resolved_part(source_part, target):
+    if target.startswith("/"):
+        return posixpath.normpath(target.lstrip("/"))
+    return posixpath.normpath(posixpath.join(posixpath.dirname(source_part),
+                                            target))
+
+
+def _package_media_counts(source, part_names):
+    """Image relationship counts per sheet, independent of Pillow/model load."""
+    counts = {}
+    rel_tag = "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"
+    try:
+        with zipfile.ZipFile(io.BytesIO(source)) as archive:
+            names = set(archive.namelist())
+            for title, sheet_part in part_names.items():
+                sheet_rels = _rels_path(sheet_part)
+                if sheet_rels not in names:
+                    continue
+                drawings = []
+                for rel in ET.fromstring(archive.read(sheet_rels)).iter(rel_tag):
+                    if rel.get("Type", "").endswith("/drawing"):
+                        drawings.append(_resolved_part(sheet_part,
+                                                       rel.get("Target", "")))
+                count = 0
+                for drawing_part in drawings:
+                    drawing_rels = _rels_path(drawing_part)
+                    if drawing_rels not in names:
+                        continue
+                    for rel in ET.fromstring(archive.read(drawing_rels)).iter(rel_tag):
+                        if rel.get("Type", "").endswith("/image"):
+                            count += 1
+                if count:
+                    counts[title] = count
+    except (ET.ParseError, KeyError, zipfile.BadZipFile):
+        return {}
+    return counts
 
 
 def _confession(wb):
@@ -183,7 +239,7 @@ def _confession(wb):
         conf["chart_parts"] = sum(
             1 for n in names if n.startswith("xl/charts/")
             and n.endswith(".xml") and "/_rels/" not in n
-            and not n.endswith(("colors.xml", "style.xml")))
+            and not re.search(r"/(?:colors|style)\d*\.xml$", n))
         conf["drawing_parts"] = sum(
             1 for n in names
             if n.startswith("xl/drawings/") and n.endswith(".xml"))
@@ -211,11 +267,13 @@ def _confession(wb):
             for loss in inventory.losses
             if loss["kind"] == "worksheet-extension"})
         conf["worksheet_extensions"] = exts
-        conf["at_risk_content"] = [
-            {"kind": loss["kind"], "location": loss["location"],
-             "detail": loss["detail"]}
-            for loss in sorted(inventory.losses,
-                               key=lambda l: (l["kind"], l["location"]))]
+        if not getattr(wb, "_preserve", False):
+            conf["at_risk_content"] = [
+                {"kind": loss["kind"], "location": loss["location"],
+                 "detail": loss["detail"]}
+                for loss in sorted(
+                    inventory.losses,
+                    key=lambda l: (l["kind"], l["location"]))]
     return conf
 
 
@@ -313,10 +371,18 @@ def dependency_sketch(wb):
     token_cache = {}
     for ws in wb.worksheets:
         for (row, col), cell in sorted(ws._cells.items()):
-            if cell.data_type != "f" or not isinstance(cell._value, str):
+            if cell.data_type != "f":
                 continue
-            formula = cell._value
             address = "{0}!{1}".format(_quoted(ws.title), cell.coordinate)
+            formula = cell._value
+            if not isinstance(formula, str):
+                formula = getattr(formula, "text", None)
+            if not isinstance(formula, str):
+                ref = getattr(cell._value, "ref", None)
+                sketch.unresolved.setdefault(address, []).append(
+                    "{0}:{1}".format(
+                        getattr(cell._value, "t", "formula-object"), ref))
+                continue
             cached = token_cache.get(formula)
             if cached is None:
                 try:
@@ -355,6 +421,14 @@ def _classify(sketch, wb, ws, address, raw):
             sheet_title = sheet_title.replace("''", "'")
         ref = m.group(3)
 
+    sheets_by_name = {sheet.title.casefold(): sheet.title
+                      for sheet in wb.worksheets}
+    canonical_title = sheets_by_name.get(sheet_title.casefold())
+    if canonical_title is None:
+        sketch.unresolved.setdefault(address, []).append(raw)
+        return
+    sheet_title = canonical_title
+
     if "[" in raw or "]" in raw:
         # structured/table or external-workbook reference: not resolvable
         sketch.unresolved.setdefault(address, []).append(raw)
@@ -375,7 +449,7 @@ def _classify(sketch, wb, ws, address, raw):
     # taint walk phantom bounds (a defined name shaped like
     # a column letter escaped the input taint)
     if ":" not in plain and not any(ch.isdigit() for ch in plain):
-        name = wb.defined_names.get(raw) or ws.defined_names.get(raw)
+        name = _defined_name(wb, ws, raw)
         if name is None:
             sketch.unresolved.setdefault(address, []).append(raw)
             return
@@ -385,8 +459,11 @@ def _classify(sketch, wb, ws, address, raw):
         try:
             for dest_sheet, dest_ref in name.destinations:
                 dest_bounds = range_boundaries(dest_ref.replace("$", ""))
+                canonical = sheets_by_name.get(dest_sheet.casefold())
+                if canonical is None:
+                    raise ValueError("defined name targets a missing sheet")
                 sketch.references.setdefault(address, []).append(
-                    (dest_sheet, dest_bounds, raw))
+                    (canonical, dest_bounds, raw))
         except Exception:
             sketch.unresolved.setdefault(address, []).append(raw)
         return
@@ -394,7 +471,7 @@ def _classify(sketch, wb, ws, address, raw):
         bounds = range_boundaries(plain)
     except Exception:
         # not A1-shaped: a defined name — expand via its destinations
-        name = wb.defined_names.get(raw) or ws.defined_names.get(raw)
+        name = _defined_name(wb, ws, raw)
         if name is None:
             sketch.unresolved.setdefault(address, []).append(raw)
             return
@@ -406,10 +483,23 @@ def _classify(sketch, wb, ws, address, raw):
         try:
             for dest_sheet, dest_ref in name.destinations:
                 dest_bounds = range_boundaries(dest_ref.replace("$", ""))
+                canonical = sheets_by_name.get(dest_sheet.casefold())
+                if canonical is None:
+                    raise ValueError("defined name targets a missing sheet")
                 sketch.references.setdefault(address, []).append(
-                    (dest_sheet, dest_bounds, raw))
+                    (canonical, dest_bounds, raw))
         except Exception:
             sketch.unresolved.setdefault(address, []).append(raw)
         return
     sketch.references.setdefault(address, []).append(
         (sheet_title, bounds, raw))
+
+
+def _defined_name(wb, ws, raw):
+    """Excel name lookup: case-insensitive and worksheet-local first."""
+    folded = raw.casefold()
+    for names in (ws.defined_names, wb.defined_names):
+        for key, value in names.items():
+            if key.casefold() == folded:
+                return value
+    return None

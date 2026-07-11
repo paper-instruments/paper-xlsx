@@ -12,6 +12,7 @@
 # serve to show the default.
 
 import sys, os
+from pathlib import Path
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -280,36 +281,19 @@ def run_apidoc(_):
     cur_dir = os.path.abspath(os.path.dirname(__file__))
     output_path = os.path.join(cur_dir, 'api')
     shutil.rmtree(output_path, ignore_errors=True)
-    modules = os.path.dirname(openpyxl.__file__)
+    modules = Path(openpyxl.__file__).resolve().parent
     exclusions = [
-        '../openpyxl/cell/tests',
-        '../openpyxl/chart/tests',
-        '../openpyxl/chartsheet/tests',
-        '../openpyxl/comments/tests',
-        '../openpyxl/compat',
-        '../openpyxl/descriptors/tests',
-        '../openpyxl/descriptors/slots.py',
-        '../openpyxl/develop/',
-        '../openpyxl/drawing/tests',
-        '../openpyxl/formula/',
-        '../openpyxl/formatting/tests/',
-        '../openpyxl/worksheet/tests',
-        '../openpyxl/writer/tests/',
-        '../openpyxl/xml/tests',
-        '../openpyxl/conftest.py',
-        '../openpyxl/packaging/tests',
-        '../openpyxl/pivot/tests',
-        '../openpyxl/reader/tests',
-        '../openpyxl/styles/tests',
-        '../openpyxl/tests',
-        '../openpyxl/utils/tests',
-        '../openpyxl/utils/formulas.py',
-        '../openpyxl/workbook/tests',
-        '../openpyxl/workbook/external_link/tests',
-        '../openpyxl/writer/tests',
-        '../openpyxl/xml/tests',
+        modules / 'compat',
+        modules / 'conftest.py',
+        modules / 'descriptors' / 'slots.py',
+        modules / 'develop',
+        modules / 'formula',
+        modules / 'utils' / 'formulas.py',
     ]
-    main(['-f', '-T', '-e', '-M', '-o', output_path, modules] + exclusions)
+    exclusions.extend(path for path in modules.rglob('tests') if path.is_dir())
+    main([
+        '-f', '-T', '-e', '-M', '-o', output_path, str(modules),
+    ] + [str(path) for path in exclusions])
 
 def setup(app):
     app.connect('builder-inited', run_apidoc)

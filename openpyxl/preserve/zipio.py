@@ -9,8 +9,9 @@
   recompression (measured 235x faster and byte-identical); guarded by the
   the raw-copy guards, with transparent fallback to recompression.
 - Atomic targets: path targets are written temp-file-then-``os.replace``
-  (in-place truncation is the measured corruption hazard); file-like targets
-  are built fully in memory and written in one seek/write/truncate pass.
+  (in-place truncation is the measured corruption hazard); in-memory targets
+  must be exact ``io.BytesIO`` instances or verified path-backed
+  ``io.BufferedRandom`` handles (the form pandas uses for append mode).
 """
 
 import io
@@ -42,6 +43,7 @@ def _probe_private_zipfile_api():
 RAW_COPY_AVAILABLE = _probe_private_zipfile_api()
 
 _ZIP64_LIMIT = 0xFFFFFFFF
+_RAW_COPY_ALLOWED_FLAGS = 0x0006 | 0x0800
 
 
 def raw_copy_supported(info):
@@ -50,6 +52,8 @@ def raw_copy_supported(info):
     if not RAW_COPY_AVAILABLE:
         return False
     if info.flag_bits & 0x8:            # data descriptor: sizes live after payload
+        return False
+    if info.flag_bits & ~_RAW_COPY_ALLOWED_FLAGS:
         return False
     # entries not read from an archive may lack size/offset attributes
     compress_size = getattr(info, "compress_size", None)
@@ -77,12 +81,17 @@ def _read_raw_stream(zin, info):
     if header[:4] != b"PK\x03\x04":
         raise zipfile.BadZipFile(
             "bad local file header for {0!r}".format(info.filename))
-    method, = struct.unpack("<H", header[8:10])
+    flags, method = struct.unpack("<HH", header[6:10])
     local_crc, local_csize, local_usize = struct.unpack("<LLL",
                                                         header[14:26])
     name_len, extra_len = struct.unpack("<HH", header[26:30])
     local_name = f.read(name_len)
-    if local_name != info.filename.encode("utf-8") \
+    encoding = "utf-8" if flags & 0x0800 else "cp437"
+    try:
+        expected_name = info.filename.encode(encoding)
+    except UnicodeEncodeError:
+        return None
+    if local_name != expected_name or flags != info.flag_bits \
             or method != info.compress_type:
         return None
     # sizes/CRC of 0 in the local header are legal when a data
@@ -92,7 +101,11 @@ def _read_raw_stream(zin, info):
             info.CRC, info.compress_size, info.file_size):
         return None
     f.seek(info.header_offset + 30 + name_len + extra_len)
-    return f.read(info.compress_size)
+    payload = f.read(info.compress_size)
+    if len(payload) != info.compress_size:
+        raise zipfile.BadZipFile(
+            "truncated compressed stream for {0!r}".format(info.filename))
+    return payload
 
 
 def copy_entry(zin, info, zout):
@@ -106,6 +119,7 @@ def copy_entry(zin, info, zout):
     if payload_stream is not None:
         new = zipfile.ZipInfo(info.filename, date_time=FIXED_DATE_TIME)
         new.compress_type = info.compress_type
+        new.flag_bits = info.flag_bits
         new.external_attr = _EXTERNAL_ATTR
         new.file_size = info.file_size
         new.CRC = info.CRC
@@ -141,23 +155,167 @@ def build_archive_bytes(build):
     return buf.getvalue()
 
 
+def validate_target(target):
+    """Refuse unsupported file-like destinations before archive planning."""
+    if not hasattr(target, "write"):
+        os.fspath(target)
+        return
+    message = (
+        "preserve-mode file-like save destinations must be open, exact "
+        "io.BytesIO instances with no exported buffer views or verified "
+        "path-backed io.BufferedRandom handles; use a filesystem path to "
+        "write to another stream type"
+    )
+    if type(target) is io.BufferedRandom:
+        if _path_backed_target(target) is None:
+            raise TypeError(message)
+        return
+    if type(target) is not io.BytesIO:
+        raise TypeError(message)
+    try:
+        # Even a no-op resize refuses while a buffer view is exported. Probe
+        # that state without changing the bytes or cursor.
+        payload, _position, _attributes = io.BytesIO.__getstate__(target)
+        io.BytesIO.truncate(target, len(payload))
+    except (BufferError, ValueError) as exc:
+        raise TypeError(message) from exc
+
+
+def _path_backed_target(target):
+    """Return the live path owned by an exact ``BufferedRandom`` handle."""
+    if type(target) is not io.BufferedRandom or target.closed:
+        return None
+    writable = getattr(target, "writable", None)
+    if not callable(writable) or not writable():
+        return None
+    try:
+        requested = os.path.abspath(os.fspath(target.name))
+        if not os.path.samestat(os.fstat(target.fileno()),
+                                os.stat(requested)):
+            return None
+        target.tell()
+    except (OSError, TypeError, ValueError):
+        return None
+    return requested
+
+
+def _reopen_buffered_random(target, path, position):
+    """Rebind a closed exact ``BufferedRandom`` to ``path`` in place."""
+    raw = io.FileIO(path, "r+b")
+    try:
+        io.BufferedRandom.__init__(target, raw)
+    except BaseException:
+        raw.close()
+        raise
+    target.seek(position)
+
+
+def _replace_for_open_path_windows(tmp_path, destination, handle,
+                                   reopen_path):
+    """Windows cannot replace a path while its ordinary handle is open."""
+    original_position = handle.tell()
+    handle.close()
+    try:
+        os.replace(tmp_path, destination)
+    except BaseException:
+        _reopen_buffered_random(handle, reopen_path, original_position)
+        raise
+    try:
+        _reopen_buffered_random(
+            handle, reopen_path, os.path.getsize(destination))
+    except BaseException as exc:
+        # The file commit is already complete. Raising here would tell the
+        # caller the save failed even though disk changed, so surface the one
+        # legal post-commit outcome: an explicit warning that the handle is
+        # closed and must be reopened by the caller.
+        import warnings
+
+        from openpyxl.errors import HandleRebindWarning
+
+        warnings.warn(HandleRebindWarning(
+            "the workbook was saved correctly, but the destination handle "
+            "could not be reopened after atomic replacement ({0}); the "
+            "handle is closed".format(exc)), stacklevel=4)
+
+
+def _replace_for_open_path(tmp_path, destination, handle, reopen_path):
+    """Replace a path and keep pandas' exact BufferedRandom usable."""
+    if handle is None:
+        os.replace(tmp_path, destination)
+        return
+    if os.name == "nt":
+        _replace_for_open_path_windows(
+            tmp_path, destination, handle, reopen_path)
+        return
+    original_position = handle.tell()
+    handle.flush()
+    original_fd = os.dup(handle.raw.fileno())
+    try:
+        replacement = io.FileIO(tmp_path, "r+b")
+    except BaseException:
+        os.close(original_fd)
+        raise
+    rebound = False
+    try:
+        # Switch the existing FileIO descriptor before the rename. The
+        # BufferedRandom object stays open and keeps its original .name, while
+        # any failure can still restore the old descriptor before disk changes.
+        os.dup2(replacement.fileno(), handle.raw.fileno())
+        rebound = True
+        handle.seek(0, os.SEEK_END)
+        os.replace(tmp_path, destination)
+    except BaseException:
+        if rebound:
+            os.dup2(original_fd, handle.raw.fileno())
+            handle.seek(0, os.SEEK_END)
+            handle.seek(original_position)
+        raise
+    finally:
+        try:
+            replacement.close()
+        except OSError:
+            pass
+        try:
+            os.close(original_fd)
+        except OSError:
+            pass
+
+
+def _path_destination(target):
+    """Return the atomic replacement path and any existing mode bits."""
+    requested = os.path.abspath(os.fspath(target))
+    destination = os.path.realpath(requested) if os.path.islink(requested) \
+        else requested
+    try:
+        mode = os.stat(destination).st_mode & 0o7777
+    except FileNotFoundError:
+        mode = None
+    return destination, mode
+
+
 def deliver(data, target):
-    """Deliver finished archive bytes to a path or a binary file-like.
+    """Deliver bytes to a path or supported transactional in-memory handle.
 
     Path targets: temp file in the same directory + ``os.replace`` — the
     original survives any mid-write crash (never in-place truncation).
-    File-like targets: single seek(0)/write/truncate choreography (the pandas
-    handle dance); the in-memory build above is the atomicity mechanism.
+    An exact ``io.BytesIO`` receives one built-in state replacement. A verified
+    path-backed ``io.BufferedRandom`` is rebound around the same temp-file
+    replacement used for paths. Arbitrary streams are refused because their
+    write and rollback behavior cannot be proven atomic.
     """
+    path_handle = None
+    reopen_path = None
     if hasattr(target, "write"):
-        if hasattr(target, "seek"):
-            target.seek(0)
-        target.write(data)
-        if hasattr(target, "truncate"):
-            target.truncate()
-        return
+        validate_target(target)
+        if type(target) is io.BytesIO:
+            _payload, _position, attributes = io.BytesIO.__getstate__(target)
+            io.BytesIO.__setstate__(target, (data, len(data), attributes))
+            return
+        path_handle = target
+        reopen_path = _path_backed_target(target)
+        target = reopen_path
 
-    target = os.fspath(target)
+    target, mode = _path_destination(target)
     directory = os.path.dirname(os.path.abspath(target))
     fd, tmp_path = tempfile.mkstemp(prefix=".paper_save_", suffix=".tmp",
                                     dir=directory)
@@ -166,7 +324,10 @@ def deliver(data, target):
             f.write(data)
             f.flush()
             os.fsync(f.fileno())     # durability BEFORE the rename
-        os.replace(tmp_path, target)
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        _replace_for_open_path(
+            tmp_path, target, path_handle, reopen_path)
         _fsync_directory(directory)  # ... and of the rename itself
     except BaseException:
         try:
@@ -194,12 +355,19 @@ def _fsync_directory(directory):
 def build_and_deliver(build_fn, target):
     """Build the archive DIRECTLY into the delivery temp file for path
     targets (~1x file-size peak memory instead of
-    a whole in-memory copy), atomically replaced and fsynced; file-like
-    targets keep the in-memory build."""
+    a whole in-memory copy), atomically replaced and fsynced; exact
+    ``io.BytesIO`` targets keep the in-memory build."""
+    path_handle = None
+    reopen_path = None
     if hasattr(target, "write"):
-        deliver(build_archive_bytes(build_fn), target)
-        return
-    target = os.fspath(target)
+        validate_target(target)
+        if type(target) is io.BytesIO:
+            deliver(build_archive_bytes(build_fn), target)
+            return
+        path_handle = target
+        reopen_path = _path_backed_target(target)
+        target = reopen_path
+    target, mode = _path_destination(target)
     directory = os.path.dirname(os.path.abspath(target))
     fd, tmp_path = tempfile.mkstemp(prefix=".paper_save_", suffix=".tmp",
                                     dir=directory)
@@ -209,7 +377,10 @@ def build_and_deliver(build_fn, target):
                 build_fn(zout)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, target)
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        _replace_for_open_path(
+            tmp_path, target, path_handle, reopen_path)
         _fsync_directory(directory)
     except BaseException:
         try:

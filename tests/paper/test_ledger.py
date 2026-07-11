@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from openpyxl import load_workbook
+import zipfile
+
+from openpyxl import Workbook, load_workbook
 from openpyxl.errors import (
     PaperRefusal,
     TargetNotFoundError,
@@ -228,8 +230,9 @@ class TestMarkDirty:
 
     def test_part_form(self, preserved):
         wb, led = preserved
-        wb.mark_dirty("xl/media/image1.png")
-        assert "xl/media/image1.png" in led.parts
+        with pytest.raises(UnsupportedStructureError, match="replace_part"):
+            wb.mark_dirty("xl/media/image1.png")
+        assert led.parts == set()
 
     def test_unknown_sheet_and_part_raise_target_not_found(self, preserved):
         wb, _ = preserved
@@ -314,6 +317,55 @@ class TestSheetLifecycleCascade:
         assert "Schedule" in wb.sheetnames          # nothing changed
         with open(src, "rb") as f:
             assert f.read() == before
+
+    def test_remove_foreign_sheet_does_not_dirty_ledger(self, tmp_path):
+        first_path = tmp_path / "first.xlsx"
+        second_path = tmp_path / "second.xlsx"
+        Workbook().save(first_path)
+        Workbook().save(second_path)
+        first = load_workbook(first_path, preserve=True)
+        second = load_workbook(second_path, preserve=True)
+
+        with pytest.raises(ValueError, match="not part of this workbook"):
+            first.remove(second.active)
+
+        assert first.sheetnames == ["Sheet"]
+        assert first._paper_ledger.removed_sheets == []
+
+    def test_remove_refuses_surviving_opaque_inbound_relationship(
+            self, tmp_path):
+        source = tmp_path / "source.xlsx"
+        crafted = tmp_path / "opaque-inbound.xlsx"
+        wb = Workbook()
+        wb.active.title = "Keep"
+        wb.create_sheet("Victim")
+        wb.save(source)
+
+        rels = (b'<?xml version="1.0" encoding="UTF-8"?>'
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/'
+                b'package/2006/relationships"><Relationship Id="rId1" '
+                b'Type="urn:paper:test" Target="../xl/worksheets/'
+                b'sheet2.xml"/></Relationships>')
+        with zipfile.ZipFile(source) as zin, \
+                zipfile.ZipFile(crafted, "w") as zout:
+            for name in zin.namelist():
+                payload = zin.read(name)
+                if name == "[Content_Types].xml":
+                    payload = payload.replace(
+                        b"</Types>",
+                        b'<Default Extension="bin" ContentType="application/'
+                        b'octet-stream"/></Types>', 1)
+                zout.writestr(zin.getinfo(name), payload)
+            zout.writestr("custom/opaque.bin", b"opaque")
+            zout.writestr("custom/_rels/opaque.bin.rels", rels)
+
+        wb = load_workbook(crafted, preserve=True)
+        with pytest.raises(UnsupportedStructureError,
+                           match="surviving relationship"):
+            wb.remove(wb["Victim"])
+
+        assert wb.sheetnames == ["Keep", "Victim"]
+        assert wb._paper_ledger.removed_sheets == []
 
     def test_reorder_round_trips_with_scoped_names(self, fixture_copy,
                                                    tmp_path):

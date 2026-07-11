@@ -68,6 +68,7 @@ class Workbook:
     # paper-xlsx preserve mode: set by the reader, never directly
     _preserve = False
     _paper_source = None            # retained source-package bytes
+    _paper_content_type = None      # source workbook type under preserve
     _paper_loss_inventory = None    # content the stock save cannot preserve
     _paper_ledger = None            # the dirty ledger; armed after load
     # protection awareness: True turns writes to locked
@@ -174,9 +175,10 @@ class Workbook:
         preserve mode: declare that ``target`` was
         mutated so the splice save re-emits it from the model.
 
-        ``target`` is either a sheet-qualified A1 range (``"Model!B7"``,
-        ``"'My Sheet'!B2:D10"``) or an exact package part name
-        (``"xl/media/image1.png"``). Raises
+        ``target`` is a sheet-qualified A1 range (``"Model!B7"`` or
+        ``"'My Sheet'!B2:D10"``). Exact package part names are recognized but
+        refuse immediately because there is no model serializer for them; use
+        :meth:`replace_part` for raw unmanaged-part swaps. Raises
         :class:`openpyxl.errors.TargetNotFoundError` for unknown targets and
         ``ValueError`` outside preserve mode.
         """
@@ -217,8 +219,33 @@ class Workbook:
 
         target = None
         dn = self.defined_names.get(name_or_label)
+        local_definitions = []
+        if dn is None:
+            local_definitions = [
+                (ws, ws.defined_names[name_or_label])
+                for ws in self.worksheets
+                if name_or_label in ws.defined_names
+            ]
+            if len(local_definitions) > 1:
+                options = [ws.title for ws, _dn in local_definitions]
+                raise AmbiguousTargetError(
+                    "sheet-scoped defined name {0!r} exists on {1} sheets: "
+                    "{2}. Use a sheet-qualified address.".format(
+                        name_or_label, len(options), ", ".join(options)),
+                    kind="ambiguous-name",
+                    options=options,
+                )
+            if local_definitions:
+                dn = local_definitions[0][1]
         if dn is not None:
-            destinations = list(dn.destinations)
+            try:
+                destinations = list(dn.destinations)
+            except Exception as exc:
+                raise TargetNotFoundError(
+                    "defined name {0!r} cannot be resolved to a worksheet "
+                    "cell: {1}".format(name_or_label, exc),
+                    kind="input-not-found",
+                ) from exc
             if len(destinations) != 1:
                 raise AmbiguousTargetError(
                     "defined name {0!r} resolves to {1} areas; single "
@@ -226,14 +253,33 @@ class Workbook:
                     kind="ambiguous-name", options=[
                         "{0}!{1}".format(t, r) for t, r in destinations])
             title, coord = destinations[0]
-            if ":" in coord:
+            from openpyxl.utils.cell import range_boundaries
+
+            try:
+                min_col, min_row, max_col, max_row = range_boundaries(coord)
+            except ValueError as exc:
+                raise TargetNotFoundError(
+                    "defined name {0!r} has invalid destination {1!r}."
+                    .format(name_or_label, coord),
+                    kind="input-not-found",
+                ) from exc
+            if (min_col, min_row) != (max_col, max_row) \
+                    or min_col is None or min_row is None:
                 raise AmbiguousTargetError(
                     "defined name {0!r} resolves to a RANGE ({1}); "
                     "set_input takes single cells only.".format(
                         name_or_label, coord),
                     kind="ambiguous-name",
                     options=["{0}!{1}".format(title, coord)])
-            target = self[title][coord.replace("$", "")]
+            matches = [ws for ws in self.worksheets
+                       if ws.title.casefold() == title.casefold()]
+            if not matches:
+                raise TargetNotFoundError(
+                    "defined name {0!r} targets missing sheet {1!r}."
+                    .format(name_or_label, title),
+                    kind="input-not-found",
+                )
+            target = matches[0].cell(row=min_row, column=min_col)
         else:
             hits = []
             for ws in self.worksheets:
@@ -283,20 +329,18 @@ class Workbook:
         otherwise ship editable under a "protected" sheet). Each cell's other protection flags (hidden) are preserved.
         Protection is advisory in the file format and REPORTED here —
         returns {"locked_sheets", "unlocked_inputs", "locked_cells"}."""
+        if password is not None and not isinstance(password, str):
+            raise TypeError("password must be a string or None")
+
         from copy import copy as _copy
 
         from openpyxl.styles import Protection
 
         mm = self.model_map()
+        planned = []
         unlocked = []
         locked_count = 0
         locked_sheets = []
-
-        def _set_locked(cell, locked):
-            prot = _copy(cell.protection) if cell.protection is not None \
-                else Protection()
-            prot.locked = locked
-            cell.protection = prot
 
         for ws in self.worksheets:
             inputs = set(mm.sheets.get(ws.title, {}).get("inputs", []))
@@ -305,15 +349,30 @@ class Workbook:
                     continue
                 address = cell.coordinate
                 if address in inputs:
-                    _set_locked(cell, False)
+                    prot = _copy(cell.protection) \
+                        if cell.protection is not None else Protection()
+                    prot.locked = False
+                    planned.append((cell, prot))
                     unlocked.append("{0}!{1}".format(ws.title, address))
                 else:
-                    _set_locked(cell, True)
+                    prot = _copy(cell.protection) \
+                        if cell.protection is not None else Protection()
+                    prot.locked = True
+                    planned.append((cell, prot))
                     locked_count += 1
-            ws.protection.sheet = True
-            if password:
-                ws.protection.password = password
             locked_sheets.append(ws.title)
+        password_hash = None
+        if password:
+            from openpyxl.utils.protection import hash_password
+
+            password_hash = hash_password(password)
+        for cell, protection in planned:
+            cell.protection = protection
+        for ws in self.worksheets:
+            ws.protection.sheet = True
+            if password_hash is not None:
+                ws.protection.set_password(password_hash,
+                                           already_hashed=True)
         return {"locked_sheets": locked_sheets,
                 "unlocked_inputs": unlocked,
                 "locked_cells": locked_count}
@@ -433,7 +492,7 @@ class Workbook:
 
         from openpyxl.preserve import crosspart
 
-        patched = []
+        replacements = {}
         with _zipfile.ZipFile(_io.BytesIO(self._paper_source)) as zin:
             for name in sorted(zin.namelist()):
                 if not (name.startswith("xl/pivotCache/pivotCacheDefinition")
@@ -447,10 +506,10 @@ class Workbook:
                     continue
                 start, end, head = crosspart._patch_attr(
                     payload, root, "refreshOnLoad", "1")
-                self._paper_ledger.replaced_parts[name] = (
+                replacements[name] = (
                     payload[:start] + head + payload[end:])
-                patched.append(name)
-        return patched
+        self._paper_ledger.replaced_parts.update(replacements)
+        return sorted(replacements)
 
     def model_map(self):
         """Role classification of every populated cell on formula-bearing
@@ -673,12 +732,15 @@ class Workbook:
         refuses with the enumeration) and returns a
         :class:`~openpyxl.preserve.ledger.RemovalReport`; the part
         cascade happens at save."""
+        if getattr(worksheet, "parent", None) is not self \
+                or worksheet not in self._sheets:
+            raise ValueError("Worksheet is not part of this workbook.")
+
         report = None
         if not _ledger.allow_sheet_removal(self, worksheet):
             _ledger.audit_sheet_removal(self, worksheet)
             _ledger.record_sheet_removal(self, worksheet)
             report = True
-        idx = self._sheets.index(worksheet)
         self._sheets.remove(worksheet)
         if report:
             from openpyxl.preserve.ledger import RemovalReport
@@ -824,6 +886,9 @@ class Workbook:
         extension to match but openpyxl does not enforce this.
 
         """
+        preserved = getattr(self, "_paper_content_type", None)
+        if self._preserve and preserved in (XLSX, XLSM, XLTX, XLTM):
+            return preserved
         ct = self.template and XLTX or XLSX
         if self.vba_archive:
             ct = self.template and XLTM or XLSM
@@ -858,11 +923,21 @@ class Workbook:
                 "bytes and is only available under preserve mode.")
         if self.write_only and not self.worksheets:
             self.create_sheet()
-        save_workbook(self, filename, allow_formula_loss=allow_formula_loss)
         if receipt:
+            from io import BytesIO
+
+            from openpyxl.preserve import zipio
             from openpyxl.preserve.receipts import receipt as _receipt
 
-            return _receipt(self._paper_source, filename)
+            zipio.validate_target(filename)
+            staged = BytesIO()
+            save_workbook(
+                self, staged, allow_formula_loss=allow_formula_loss)
+            data = staged.getvalue()
+            result = _receipt(self._paper_source, data)
+            zipio.deliver(data, filename)
+            return result
+        save_workbook(self, filename, allow_formula_loss=allow_formula_loss)
         return None
 
 
@@ -918,4 +993,3 @@ class Workbook:
 
         if name in self.defined_names:
             return True
-

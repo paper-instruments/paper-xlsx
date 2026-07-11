@@ -299,6 +299,10 @@ class Cell(StyleableObject):
         but you can modify it afterwards by setting the `value`
         property, and the hyperlink will remain.
         Hyperlink is removed if set to ``None``."""
+        if val is not None and self._value is None:
+            # A link on an empty cell also binds its display value. Run
+            # strict protection before attaching or mutating the link.
+            _check_protection(self)
         if val is None:
             self._hyperlink = None
         else:

@@ -106,7 +106,7 @@ class Translator:
         `rdelta`: the row offset to add to the range
         `cdelta`: the column offset to add to the range
         `range_str`: an A1-style reference to a range. Potentially includes
-                     the worksheet reference. Could also be a named range.
+        the worksheet reference. Could also be a named range.
 
         """
         ws_part, range_str = cls.strip_ws_name(range_str)

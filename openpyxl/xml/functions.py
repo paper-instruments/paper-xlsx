@@ -4,6 +4,8 @@
 XML compatibility functions
 """
 
+# ruff: noqa: F401 - this module intentionally re-exports backend symbols
+
 # Python stdlib imports
 import re
 from functools import partial
@@ -19,10 +21,25 @@ if LXML is True:
     xmlfile,
     XMLParser,
     )
-    from lxml.etree import fromstring, tostring
+    from lxml.etree import fromstring as _fromstring, tostring
     # do not resolve entities
     safe_parser = XMLParser(resolve_entities=False)
-    fromstring = partial(fromstring, parser=safe_parser)
+
+    def fromstring(source):
+        """Parse XML through the entity-disabled lxml parser.
+
+        lxml 6.1 no longer accepts file-like objects in ``fromstring``. Keep
+        the historical compatibility surface while refusing DTDs before the
+        parser can expand or fetch any entity declaration.
+        """
+        if hasattr(source, "read"):
+            source = source.read()
+        if isinstance(source, (bytearray, memoryview)):
+            source = bytes(source)
+        marker = "<!DOCTYPE" if isinstance(source, str) else b"<!DOCTYPE"
+        if marker in source:
+            raise ValueError("DTD declarations are not permitted")
+        return _fromstring(source, parser=safe_parser)
 
 else:
     from xml.etree.ElementTree import (

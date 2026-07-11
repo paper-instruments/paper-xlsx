@@ -8,23 +8,7 @@
   "outputs": 10
  },
  "confession": {
-  "at_risk_content": [
-   {
-    "detail": "Unknown extension will be removed",
-    "kind": "worksheet-extension",
-    "location": "xl/worksheets/sheet1.xml"
-   },
-   {
-    "detail": "Sparkline Group extension will be removed",
-    "kind": "worksheet-extension",
-    "location": "xl/worksheets/sheet1.xml"
-   },
-   {
-    "detail": "Conditional Formatting extension will be removed",
-    "kind": "worksheet-extension",
-    "location": "xl/worksheets/sheet1.xml"
-   }
-  ],
+  "at_risk_content": [],
   "chart_parts": 1,
   "custom_xml": false,
   "drawing_parts": 1,

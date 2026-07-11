@@ -26,6 +26,222 @@ EXCEL_MAX_ROW = 1048576
 EXCEL_MAX_COL = 16384
 
 
+class StructuralEditTransaction:
+    """In-memory rollback boundary for a preserve-mode row/column shift."""
+
+    def __init__(self, ws, operation, warn_protection=False):
+        self.ws = ws
+        self.operation = operation
+        self.warn_protection = warn_protection
+        self._snapshot = _capture_structural_state(ws.parent)
+        self._active = True
+
+    def commit(self):
+        if not self._active:
+            return
+        if not self.warn_protection:
+            self._active = False
+            return
+        led = self.ws.parent._paper_ledger
+        led.protection_warned.add(self.ws)
+        import warnings
+
+        from openpyxl.errors import ProtectedWriteWarning
+
+        warnings.warn(ProtectedWriteWarning(
+            "{0}() on protected sheet {1!r}: the edit proceeds — "
+            "protection is reported, never enforced — but Excel itself "
+            "would block it. Set wb.strict_protection = True to refuse "
+            "instead.".format(self.operation, self.ws.title)), stacklevel=4)
+        self._active = False
+
+    def rollback(self):
+        if not self._active:
+            return
+        _restore_structural_state(self.ws.parent, self._snapshot)
+        self._active = False
+
+
+def _unique_by_identity(values):
+    seen = set()
+    unique = []
+    for value in values:
+        marker = id(value)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(value)
+    return unique
+
+
+def _capture_structural_state(wb):
+    """Capture every model/ledger surface mutated by ``apply_model_shift``.
+
+    Object identities are retained. Rollback restores existing Cell,
+    DefinedName, rule, validation, dimension, and chart-reference objects in
+    place, so callers holding those objects do not observe a half-shift.
+    """
+    sheet_states = []
+    for sheet in wb.worksheets:
+        cells = dict(sheet._cells)
+        cell_states = []
+        for cell in _unique_by_identity(cells.values()):
+            link = getattr(cell, "_hyperlink", None)
+            cell_states.append((
+                cell,
+                getattr(cell, "row", None),
+                getattr(cell, "column", None),
+                getattr(cell, "_value", None),
+                getattr(cell, "_data_type", None),
+                getattr(cell, "_style", None),
+                getattr(link, "ref", None) if link is not None else None,
+            ))
+
+        cf_rules = sheet.conditional_formatting._cf_rules
+        rule_formulas = [
+            (rule, rule.formula)
+            for rules in cf_rules.values()
+            for rule in rules
+        ]
+        validations = sheet.data_validations
+        dv_list = validations.dataValidation if validations is not None else []
+        dv_states = [
+            (dv, dv.formula1, dv.formula2, dv.sqref)
+            for dv in dv_list
+        ]
+        row_items = dict(sheet.row_dimensions)
+        col_items = dict(sheet.column_dimensions)
+        row_dim_states = [(dim, dim.index)
+                          for dim in _unique_by_identity(row_items.values())]
+        col_dim_states = [(dim, dim.index, dim.min, dim.max)
+                          for dim in _unique_by_identity(col_items.values())]
+        sheet_states.append({
+            "sheet": sheet,
+            "cells": cells,
+            "cell_states": cell_states,
+            "current_row": sheet._current_row,
+            "merged_cells": sheet.merged_cells,
+            "cf_rules": cf_rules,
+            "rule_formulas": rule_formulas,
+            "dv_list": dv_list,
+            "dv_states": dv_states,
+            "auto_filter_ref": sheet.auto_filter.ref,
+            "row_items": row_items,
+            "col_items": col_items,
+            "row_dim_states": row_dim_states,
+            "col_dim_states": col_dim_states,
+        })
+
+    name_states = []
+    for names in [wb.defined_names] + [s.defined_names for s in wb.worksheets]:
+        name_states.extend((names[name], names[name].attr_text)
+                           for name in names)
+
+    chart_ref_states = []
+    for sheet in wb.worksheets:
+        for chart in getattr(sheet, "_charts", ()):
+            chart_ref_states.extend(
+                (ref, ref.f) for ref in _chart_source_ref_objects(chart))
+
+    led = wb._paper_ledger
+    registries = []
+    for name in ("_fonts", "_fills", "_borders", "_alignments",
+                 "_protections", "_number_formats", "_cell_styles"):
+        registry = getattr(wb, name)
+        registries.append((registry, list(registry), registry.clean,
+                           dict(registry._dict)))
+    ledger_state = None
+    if led is not None:
+        ledger_state = {
+            "cells": {sheet: set(coords)
+                      for sheet, coords in led.cells.items()},
+            "formulas_changed": led.formulas_changed,
+            "region_snapshots": {
+                sheet: dict(regions)
+                for sheet, regions in led.region_snapshots.items()
+            },
+            "row_attr_snapshots": {
+                sheet: dict(rows)
+                for sheet, rows in led.row_attr_snapshots.items()
+            },
+            "comment_snapshots": {
+                sheet: dict(comments)
+                for sheet, comments in led.comment_snapshots.items()
+            },
+            "value_overwrites": {
+                sheet: set(coords)
+                for sheet, coords in led.value_overwrites.items()
+            },
+            "shifts": {sheet: list(shifts)
+                       for sheet, shifts in led.shifts.items()},
+            "protection_warned": set(led.protection_warned),
+        }
+    return {
+        "sheets": sheet_states,
+        "names": name_states,
+        "chart_refs": chart_ref_states,
+        "registries": registries,
+        "dxfs": list(wb._differential_styles.styles),
+        "ledger": ledger_state,
+    }
+
+
+def _restore_structural_state(wb, snapshot):
+    for state in snapshot["sheets"]:
+        sheet = state["sheet"]
+        for (cell, row, column, value, data_type, style, link_ref) in \
+                state["cell_states"]:
+            cell.row = row
+            cell.column = column
+            if data_type is not None:
+                cell._value = value
+                cell._data_type = data_type
+            cell._style = style
+            link = getattr(cell, "_hyperlink", None)
+            if link is not None:
+                link.ref = link_ref
+        sheet._cells.clear()
+        sheet._cells.update(state["cells"])
+        sheet._current_row = state["current_row"]
+        sheet.merged_cells = state["merged_cells"]
+        sheet.conditional_formatting._cf_rules = state["cf_rules"]
+        for rule, formula in state["rule_formulas"]:
+            rule.formula = formula
+        if sheet.data_validations is not None:
+            sheet.data_validations.dataValidation = state["dv_list"]
+        for dv, formula1, formula2, sqref in state["dv_states"]:
+            dv.formula1 = formula1
+            dv.formula2 = formula2
+            dv.sqref = sqref
+        sheet.auto_filter.ref = state["auto_filter_ref"]
+        for dim, index in state["row_dim_states"]:
+            dim.index = index
+        for dim, index, min_value, max_value in state["col_dim_states"]:
+            dim.index = index
+            dim.min = min_value
+            dim.max = max_value
+        sheet.row_dimensions.clear()
+        sheet.row_dimensions.update(state["row_items"])
+        sheet.column_dimensions.clear()
+        sheet.column_dimensions.update(state["col_items"])
+
+    for name, attr_text in snapshot["names"]:
+        name.attr_text = attr_text
+    for ref, formula in snapshot["chart_refs"]:
+        ref.f = formula
+    for registry, values, clean, index in snapshot["registries"]:
+        registry[:] = values
+        registry.clean = clean
+        registry._dict = index
+    wb._differential_styles.styles[:] = snapshot["dxfs"]
+
+    led_state = snapshot["ledger"]
+    led = wb._paper_ledger
+    if led is not None and led_state is not None:
+        for attr, value in led_state.items():
+            setattr(led, attr, value)
+
+
 class AddressRemap:
     """How one structural edit moved addresses:
     every pre-edit address must be remapped through this, never reused.
@@ -243,14 +459,63 @@ def shift_blockers(ws, operation, index, amount=1):
     refusal (with analyze_shift providing the victim list)."""
     wb = ws.parent
     blockers = []
-    source = getattr(wb, "_paper_source", None)
-    led = getattr(wb, "_paper_ledger", None)
     # multiple shifts per session compose: model fixups and snapshot
     # rebases run at edit time in order, the byte renumber replays the
     # recorded ops in order at save (retired the
     # one-shift-per-session refusal)
     led_ref = getattr(wb, "_paper_ledger", None)
     lookup_title = led_ref.renames.get(ws, ws.title) if led_ref else ws.title
+    numeric_chart_parts = _charts_with_numeric_formula_entities(
+        wb, lookup_title)
+    if numeric_chart_parts:
+        blockers.append(
+            "chart part(s) {0} contain numeric character references in "
+            "formula text; exact reference rewriting cannot be guaranteed"
+            .format(", ".join(numeric_chart_parts)))
+    from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+    from .rewrite import shift_formula, title_in_string_literals
+
+    axis = "rows" if "rows" in operation else "cols"
+    is_delete = operation.startswith("delete")
+    for other in wb.worksheets:
+        for cell in other._cells.values():
+            formula = cell._value
+            formula_text = (formula if isinstance(formula, str)
+                            else getattr(formula, "text", None))
+            if isinstance(formula_text, str) and \
+                    _three_d_formula_references_sheet(
+                        wb, formula_text, ws.title):
+                blockers.append(
+                    "3-D formula {0}!{1} spans the shifted sheet; one "
+                    "3-D reference cannot represent a shift applied to "
+                    "only one member sheet".format(
+                        other.title, cell.coordinate))
+                continue
+            if not isinstance(formula, ArrayFormula) \
+                    or not isinstance(formula_text, str):
+                if isinstance(formula, DataTableFormula):
+                    for ref in (formula.r1, formula.r2):
+                        if not isinstance(ref, str) or "!" not in ref:
+                            continue
+                        _rewritten, changed = shift_formula(
+                            "=" + ref, other.title, ws.title, axis, index,
+                            amount, is_delete)
+                        if changed:
+                            blockers.append(
+                                "what-if data table {0}!{1} references the "
+                                "shifted sheet through {2!r}; rewriting "
+                                "data-table metadata is not supported"
+                                .format(other.title, cell.coordinate, ref))
+                continue
+            _rewritten, changed = shift_formula(
+                formula_text, other.title, ws.title, axis, index, amount,
+                is_delete)
+            if changed or title_in_string_literals(
+                    formula_text, ws.title):
+                blockers.append(
+                    "array formula {0}!{1} references the shifted sheet; "
+                    "rewriting loaded multi-cell formulas is not supported"
+                    .format(other.title, cell.coordinate))
     # in-session charts are model-rendered at save: a delete that removes
     # their charted cells has no honest rewrite — block BEFORE any cell
     # moves
@@ -324,6 +589,88 @@ def shift_blockers(ws, operation, index, amount=1):
                                                    cell.coordinate))
                 break
     return blockers
+
+
+def _three_d_formula_references_sheet(wb, formula, target_title):
+    """Whether a 3-D operand's sheet interval contains ``target_title``."""
+    from openpyxl.formula import Tokenizer
+    from .rewrite import _RENAME_PREFIX_RE
+
+    try:
+        tokens = Tokenizer(formula).items
+    except Exception:
+        return False
+    order = {sheet.title.casefold(): index
+             for index, sheet in enumerate(wb.worksheets)}
+    target = order.get(target_title.casefold())
+    if target is None:
+        return False
+    for token in tokens:
+        if token.type != "OPERAND" or token.subtype != "RANGE" \
+                or "[" in token.value:
+            continue
+        match = _RENAME_PREFIX_RE.match(token.value)
+        if match is None:
+            continue
+        sheet_text = (match.group(1).replace("''", "'")
+                      if match.group(1) else match.group(2))
+        if ":" not in sheet_text:
+            continue
+        first, last = sheet_text.split(":", 1)
+        first_index = order.get(first.casefold())
+        last_index = order.get(last.casefold())
+        if first_index is None or last_index is None:
+            if target_title.casefold() in {
+                    first.casefold(), last.casefold()}:
+                return True
+            continue
+        if min(first_index, last_index) <= target <= max(
+                first_index, last_index):
+            return True
+    return False
+
+
+def _charts_with_numeric_formula_entities(wb, sheet_title=None):
+    """Find relevant chart formulas that use numeric XML entities."""
+    source = getattr(wb, "_paper_source", None)
+    if not source:
+        return []
+    from html import unescape
+
+    from .chartpatch import CHART_NS, _walk_leaf_texts
+    from .rewrite import rename_sheet_in_formula
+
+    hits = []
+    with zipfile.ZipFile(io.BytesIO(source)) as z:
+        for name in z.namelist():
+            if not (name.startswith("xl/charts/") and name.endswith(".xml")
+                    and "/_rels/" not in name):
+                continue
+            payload = z.read(name)
+            try:
+                formulas = [
+                    payload[start:end]
+                    for ns, local, _parent, start, end, _path
+                    in _walk_leaf_texts(payload)
+                    if ns == CHART_NS and local == b"f"
+                ]
+                if not any(b"&#" in formula for formula in formulas):
+                    continue
+                if sheet_title is None:
+                    hits.append(name)
+                    continue
+                for formula in formulas:
+                    decoded = unescape(formula.decode("utf-8"))
+                    _rewritten, changed = rename_sheet_in_formula(
+                        "=" + decoded, sheet_title,
+                        sheet_title + "__paper_probe")
+                    if changed:
+                        hits.append(name)
+                        break
+            except Exception:
+                if b"&#" in payload:
+                    hits.append(name)
+    return sorted(hits)
 
 
 def _pivots_referencing(wb, sheet_title):
@@ -406,6 +753,7 @@ def apply_model_shift(ws, operation, index, amount):
         row_mapping,
         shift_cell_range,
         shift_formula,
+        shift_formula_fragment,
         shift_name_value,
     )
 
@@ -441,6 +789,32 @@ def apply_model_shift(ws, operation, index, amount):
     finally:
         wb.formula_lint = _saved_lint
 
+    # CF and DV formulas are formulas too, but their OOXML permits omission
+    # of the leading '='. They may live on another sheet and reference the
+    # shifted target explicitly.
+    for other in wb.worksheets:
+        for cf in other.conditional_formatting:
+            for rule in cf.rules:
+                rewritten = []
+                changed_any = False
+                for formula in rule.formula or []:
+                    new_formula, changed = shift_formula_fragment(
+                        formula, other.title, ws.title, axis, index, amount,
+                        is_delete)
+                    rewritten.append(new_formula)
+                    changed_any = changed_any or changed
+                if changed_any:
+                    rule.formula = rewritten
+        if other.data_validations:
+            for dv in other.data_validations.dataValidation:
+                for attr in ("formula1", "formula2"):
+                    formula = getattr(dv, attr)
+                    new_formula, changed = shift_formula_fragment(
+                        formula, other.title, ws.title, axis, index, amount,
+                        is_delete)
+                    if changed:
+                        setattr(dv, attr, new_formula)
+
     # 2. defined names (workbook- and sheet-scoped) and print settings
     for names in [wb.defined_names] + [s.defined_names
                                        for s in wb.worksheets]:
@@ -470,25 +844,39 @@ def apply_model_shift(ws, operation, index, amount):
                                         shift_name_value)
 
     # 3. sheet-internal regions (fully modeled; the splice re-renders them)
-    for rng in list(ws.merged_cells.ranges):
-        if shift_cell_range(rng, axis, index, amount, is_delete) == "deleted":
-            ws.merged_cells.ranges.remove(rng)
-    for cf in list(ws.conditional_formatting):
-        for rng in list(getattr(cf.sqref, "ranges", [])):
-            if shift_cell_range(rng, axis, index, amount,
-                                is_delete) == "deleted":
-                cf.sqref.ranges.remove(rng)
+    from collections import OrderedDict
+    from openpyxl.formatting.formatting import ConditionalFormatting
+
+    shifted_merges = _shifted_multi_range(
+        ws.merged_cells, axis, index, amount, is_delete, shift_cell_range)
+    _rebuild_merged_cells(ws, shifted_merges)
+
+    # ConditionalFormatting objects are dict keys and CellRanges are set
+    # members. Mutating either in place corrupts their hash collections.
+    rebuilt_cf = OrderedDict()
+    for cf, rules in ws.conditional_formatting._cf_rules.items():
+        sqref = _shifted_multi_range(
+            cf.sqref, axis, index, amount, is_delete, shift_cell_range)
+        if not sqref:
+            continue
+        new_cf = ConditionalFormatting(sqref=sqref, pivot=cf.pivot)
+        rebuilt_cf.setdefault(new_cf, []).extend(rules)
+    ws.conditional_formatting._cf_rules = rebuilt_cf
+
     if ws.data_validations:
         for dv in list(ws.data_validations.dataValidation):
-            for rng in list(getattr(dv.sqref, "ranges", [])):
-                if shift_cell_range(rng, axis, index, amount,
-                                    is_delete) == "deleted":
-                    dv.sqref.ranges.remove(rng)
+            dv.sqref = _shifted_multi_range(
+                dv.sqref, axis, index, amount, is_delete, shift_cell_range)
+        ws.data_validations.dataValidation = [
+            dv for dv in ws.data_validations.dataValidation if dv.sqref]
     if ws.auto_filter and ws.auto_filter.ref:
         from openpyxl.worksheet.cell_range import CellRange
 
         cr = CellRange(ws.auto_filter.ref)
-        if shift_cell_range(cr, axis, index, amount, is_delete) == "changed":
+        filter_state = shift_cell_range(cr, axis, index, amount, is_delete)
+        if filter_state == "deleted":
+            ws.auto_filter.ref = None
+        elif filter_state == "changed":
             ws.auto_filter.ref = cr.coord
 
     if axis == "rows":
@@ -502,6 +890,24 @@ def apply_model_shift(ws, operation, index, amount):
             new_dims[new_row] = dim
         ws.row_dimensions.clear()
         ws.row_dimensions.update(new_dims)
+    else:
+        from openpyxl.utils import column_index_from_string, get_column_letter
+
+        new_dims = {}
+        dims = sorted(ws.column_dimensions.values(), key=lambda dim:
+                      dim.min or column_index_from_string(dim.index))
+        for dim in dims:
+            start = dim.min or column_index_from_string(dim.index)
+            end = dim.max or start
+            span = _shift_span_for_dimension(
+                start, end, index, amount, is_delete)
+            if span is None:
+                continue
+            dim.min, dim.max = span
+            dim.index = get_column_letter(span[0])
+            new_dims[dim.index] = dim
+        ws.column_dimensions.clear()
+        ws.column_dimensions.update(new_dims)
 
     # 5. hyperlink anchors track their cells (both axes)
     for (_r, _c), cell in ws._cells.items():
@@ -512,6 +918,102 @@ def apply_model_shift(ws, operation, index, amount):
     if led is not None:
         led.shifts.setdefault(ws, []).append((operation, index, amount))
         led.formulas_changed = True
+
+
+def _shifted_multi_range(multi_range, axis, index, amount, is_delete,
+                         shift_cell_range):
+    """Return a fresh MultiCellRange; never mutate hashed CellRanges."""
+    from openpyxl.worksheet.cell_range import CellRange, MultiCellRange
+
+    shifted = []
+    for original in getattr(multi_range, "ranges", []):
+        # MergedCellRange.__copy__ constructs against the live worksheet and
+        # can recreate a stale anchor as a side effect. A plain CellRange is
+        # the side-effect-free value object needed for coordinate planning.
+        rng = CellRange(str(original))
+        if shift_cell_range(rng, axis, index, amount, is_delete) != "deleted":
+            shifted.append(rng)
+    return MultiCellRange(shifted)
+
+
+def _rebuild_merged_cells(ws, shifted_ranges):
+    """Recreate merge anchors and placeholders from shifted coordinates."""
+    from copy import copy
+
+    from openpyxl.cell import Cell, MergedCell
+    from openpyxl.worksheet.cell_range import MultiCellRange
+    from openpyxl.worksheet.merge import MergedCellRange
+
+    placeholder_styles = {}
+    for key, cell in list(ws._cells.items()):
+        if not isinstance(cell, MergedCell):
+            continue
+        placeholder_styles[key] = copy(cell._style)
+        del ws._cells[key]
+
+    rebuilt = []
+    ranges = sorted(
+        shifted_ranges.ranges,
+        key=lambda rng: (rng.min_row, rng.min_col, rng.max_row, rng.max_col),
+    )
+    for rng in ranges:
+        anchor_key = (rng.min_row, rng.min_col)
+        if anchor_key not in ws._cells:
+            anchor = Cell(ws, row=rng.min_row, column=rng.min_col)
+            if anchor_key in placeholder_styles:
+                anchor._style = placeholder_styles[anchor_key]
+            ws._cells[anchor_key] = anchor
+        merged = MergedCellRange(ws, rng.coord)
+        rebuilt.append(merged)
+        ws._clean_merge_range(merged)
+    ws.merged_cells = MultiCellRange(rebuilt)
+
+
+def _shift_span_for_dimension(start, end, index, amount, is_delete):
+    from .rewrite import _shift_span
+
+    return _shift_span(start, end, index, amount, is_delete)
+
+
+def validate_model_shift(ws, operation, index, amount):
+    """Dry-run every modeled formula reference before cells are moved."""
+    from .rewrite import (
+        shift_formula,
+        shift_formula_fragment,
+        shift_name_value,
+    )
+
+    wb = ws.parent
+    axis = "rows" if "rows" in operation else "cols"
+    is_delete = operation.startswith("delete")
+    strict_protection = getattr(wb, "strict_protection", False)
+    if strict_protection:
+        from .ledger import check_protection
+
+    for other in wb.worksheets:
+        for cell in other._cells.values():
+            if cell.data_type == "f" and isinstance(cell._value, str):
+                _rewritten, changed = shift_formula(
+                    cell._value, other.title, ws.title, axis, index,
+                    amount, is_delete)
+                if changed and strict_protection:
+                    check_protection(cell)
+        for cf in other.conditional_formatting:
+            for rule in cf.rules:
+                for formula in rule.formula or []:
+                    shift_formula_fragment(formula, other.title, ws.title,
+                                           axis, index, amount, is_delete)
+        if other.data_validations:
+            for dv in other.data_validations.dataValidation:
+                for formula in (dv.formula1, dv.formula2):
+                    shift_formula_fragment(formula, other.title, ws.title,
+                                           axis, index, amount, is_delete)
+    for names in [wb.defined_names] + [s.defined_names for s in wb.worksheets]:
+        for name in names:
+            value = names[name].value
+            if isinstance(value, str):
+                shift_name_value(value, ws.title, axis, index, amount,
+                                 is_delete)
 
 
 def _rebase_snapshots(led, ws, mapper, axis):
@@ -587,7 +1089,7 @@ def apply_shift_to_bytes(original, operation, index, amount):
                     b'r="%s"' % old_ref, b'r="%s"' % new_ref, 1)
                 edits.append((cell_span.start, cell_head_end, new_cell_head))
     else:
-        from openpyxl.utils import column_index_from_string, get_column_letter
+        from openpyxl.utils import get_column_letter
 
         from .rewrite import _shift_span
         is_delete = operation.startswith("delete")

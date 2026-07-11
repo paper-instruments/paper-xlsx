@@ -5,3 +5,5 @@ prune scratchpad
 prune doc
 
 include *.rst
+include FIXTURE-REQUESTS.md
+include doc/paper.rst

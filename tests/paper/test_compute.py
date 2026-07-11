@@ -2,7 +2,6 @@
 runner, formula pre-flight linter, certification-gated write-back."""
 from __future__ import annotations
 
-import io
 import warnings
 import zipfile
 
@@ -127,7 +126,7 @@ class TestEvaluate:
 
     @needs_soffice
     def test_scenario_run_certified_and_untouched(self, fixture_copy):
-        # battery job 12: one evaluate call, certified
+        # battery job 12: one evaluate call with explicit certification state
         src = fixture_copy("features/schedule_calc.xlsx")
         with open(src, "rb") as f:
             before = f.read()
@@ -139,12 +138,18 @@ class TestEvaluate:
         assert ev.outputs["Summary!B1"] == ev.outputs["Schedule!B12"]
         assert ev.outputs["Summary!B1"] == 6500 - 200 - 300 + 1000
         cert = ev.certification
-        assert cert.status == "CERTIFIED"
+        # Every formula touched by this scenario is input-dependent and is
+        # therefore excluded from independent certification. Zero checked
+        # formulas must never be reported as CERTIFIED.
+        assert cert.status == "BASELINE_UNVERIFIABLE"
+        assert cert.checked == 0
+        assert cert.input_excluded
         assert "Summary!B1" in cert.input_excluded    # downstream of input
         payload = ev.to_dict()
         assert payload["schema"] == "evaluation"
         assert payload["version"] == 1
-        assert payload["certification"]["status"] == "CERTIFIED"
+        assert payload["certification"]["status"] == \
+            "BASELINE_UNVERIFIABLE"
         with open(src, "rb") as f:
             assert f.read() == before                 # original untouched
 
@@ -155,7 +160,10 @@ class TestEvaluate:
         results = oracle.evaluate_many(src, cases, ["Summary!B1"],
                                        pool_size=2)
         assert [e.outputs["Summary!B1"] for e in results] == [6400, 6600]
-        assert all(e.certification.status == "CERTIFIED" for e in results)
+        assert all(e.certification.status == "BASELINE_UNVERIFIABLE"
+                   and e.certification.checked == 0
+                   and e.certification.input_excluded
+                   for e in results)
 
 
 class TestWriteBack:

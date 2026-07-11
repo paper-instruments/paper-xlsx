@@ -13,17 +13,14 @@ paper-xlsx: agent-first editing of Excel files
 .. include:: ../README.rst
 
 
-Support
--------
+Source and support
+------------------
 
-``paper-xlsx`` is an open-source, strict-superset hard fork of openpyxl. Report
-bugs and request features on the `issue tracker
-<https://github.com/The-LLM-Data-Company/paper-xlsx/issues>`_, with a full
-traceback and, where possible, a sample file.
-
-Contributions are welcome: open a pull request against the repository, and
-include tests with any change. For the upstream project ``paper-xlsx``
-builds on, see `openpyxl <https://foss.heptapod.net/openpyxl/openpyxl>`_.
+``paper-xlsx`` is an MIT-licensed, strict-superset hard fork of openpyxl. The
+PyPI package is public; the GitHub repository and its issue tracker are
+currently private. The source distribution contains the fork source and the
+preserve-mode guide. For the upstream project ``paper-xlsx`` builds on, see
+`openpyxl <https://foss.heptapod.net/openpyxl/openpyxl>`_.
 
 
 .. toctree::

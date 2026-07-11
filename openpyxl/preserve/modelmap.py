@@ -57,26 +57,22 @@ def _referenced_coordinates(wb):
 
     sketch = dependency_sketch(wb)
     referenced = set()
-    # cap expansion per reference so whole-column refs do not explode:
-    # clamp to each sheet's populated extent
-    extents = {}
-    for ws in wb.worksheets:
-        extents[ws.title] = (ws.max_row or 1, ws.max_column or 1)
-    by_title = {ws.title: ws for ws in wb.worksheets}
+    # Intersect ranges with populated cells. Bounding-box expansion is unsafe:
+    # two distant cells can make a sparse sheet's rectangle enormous.
+    by_title = {ws.title.casefold(): ws for ws in wb.worksheets}
     for _address, refs in sketch.references.items():
         for (title, bounds, _raw) in refs:
-            ws = by_title.get(title)
+            ws = by_title.get(title.casefold())
             if ws is None:
                 continue
-            max_row, max_col = extents[title]
             min_c, min_r, max_c, max_r = bounds
             min_r = max(1, min_r or 1)
             min_c = max(1, min_c or 1)
-            max_r = min(max_r or max_row, max_row)
-            max_c = min(max_c or max_col, max_col)
-            for r in range(min_r, max_r + 1):
-                for c in range(min_c, max_c + 1):
-                    referenced.add((title, r, c))
+            max_r = max_r or 1048576
+            max_c = max_c or 16384
+            for r, c in ws._cells:
+                if min_r <= r <= max_r and min_c <= c <= max_c:
+                    referenced.add((ws.title, r, c))
     return referenced, bool(sketch.unresolved)
 
 
