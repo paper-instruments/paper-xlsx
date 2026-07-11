@@ -24,7 +24,9 @@ preservation-related works with no LibreOffice installed.
 """
 
 import io
+import hashlib
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -35,10 +37,18 @@ from openpyxl.errors import OracleTimeoutError, OracleUnavailableError
 
 _DARWIN_APP = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
 
-# Excel error tokens (the reference skill's set)
+# Excel error tokens shared by oracle scans and preserve-mode cache write-back.
 ERROR_TOKENS = frozenset((
     "#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!",
+    "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#UNKNOWN!",
+    "#CONNECT!", "#BUSY!", "#PYTHON!", "#GETTING_DATA",
 ))
+
+_MAX_MULTI_CELL_FORMULA_RESULTS = 1000000
+
+
+def _artifact_sha256(data):
+    return hashlib.sha256(data).hexdigest()
 
 # pinned numeric tolerance
 REL_TOL = 1e-9
@@ -70,12 +80,15 @@ def available():
 
 
 def _read_source(source):
-    if isinstance(source, (bytes, bytearray)):
-        return bytes(source)
-    if hasattr(source, "read"):
-        return source.read()
-    with open(source, "rb") as f:
-        return f.read()
+    from openpyxl.preserve.limits import read_bounded
+
+    try:
+        return read_bounded(source, context="oracle workbook")
+    except TypeError as exc:
+        raise ValueError(
+            "file-like oracle sources must be seekable so the complete "
+            "package can be read and the caller's cursor restored"
+        ) from exc
 
 
 def _with_forced_recalc(data):
@@ -130,12 +143,74 @@ def _find_workbook_part_name(zin):
     raise OracleUnavailableError("the package has no workbook part")
 
 
+def _workbook_content_type(data):
+    from openpyxl.packaging.manifest import Manifest
+    from openpyxl.xml.constants import ARC_CONTENT_TYPES, XLSM, XLSX, XLTM, XLTX
+    from openpyxl.xml.functions import fromstring
+
+    with zipfile.ZipFile(io.BytesIO(data)) as zin:
+        package = Manifest.from_tree(fromstring(zin.read(ARC_CONTENT_TYPES)))
+    for content_type in (XLTM, XLTX, XLSM, XLSX):
+        if package.find(content_type):
+            return content_type
+    raise OracleUnavailableError("the package has no workbook part")
+
+
+def _refuse_template_conversion(data):
+    from openpyxl.errors import UnsupportedStructureError
+    from openpyxl.xml.constants import XLTM, XLTX
+
+    if _workbook_content_type(data) in (XLTM, XLTX):
+        raise UnsupportedStructureError(
+            "LibreOffice oracle recalculation does not have a proven "
+            "format-preserving route for Excel templates (.xltx/.xltm); "
+            "conversion would produce plain .xlsx content. Nothing was "
+            "written.")
+
+
+def _profile_uri(profile):
+    return Path(profile).resolve().as_uri()
+
+
+def _popen_session_kwargs():
+    if os.name == "nt":
+        flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": flag} if flag else {}
+    return {"start_new_session": True}
+
+
+def _terminate_process_tree(proc):
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False)
+        except OSError:
+            proc.kill()
+        else:
+            if proc.poll() is None:
+                proc.kill()
+        return
+
+    import signal
+
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()
+
+
 def _recalculate_bytes(data, timeout, suffix=".xlsx", profile_root=None):
     """Round-trip ``data`` through headless LibreOffice; returns the
     recalculated package bytes. Never touches any caller path.
     ``profile_root``: reuse (and lazily seed) a persistent profile
     directory — the evaluate_many warm pool; None keeps the fully
     isolated per-call profile."""
+    from openpyxl.preserve.zipguard import validate_package_bytes
+
+    validate_package_bytes(data, context="oracle workbook")
+    _refuse_template_conversion(data)
     soffice = find_soffice()
     if soffice is None:
         raise OracleUnavailableError(
@@ -170,25 +245,20 @@ def _recalculate_bytes(data, timeout, suffix=".xlsx", profile_root=None):
         cmd = [
             soffice,
             "--headless",
-            "-env:UserInstallation=file://{0}".format(profile),
+            "-env:UserInstallation={0}".format(_profile_uri(profile)),
             "--convert-to", "xlsx",
             "--outdir", outdir,
             tmp_input,
         ]
+        popen_kwargs = _popen_session_kwargs()
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                start_new_session=True)
+                                stderr=subprocess.PIPE, **popen_kwargs)
         try:
             stdout, _stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            # kill the whole process group: soffice spawns children
-            # (oosplash -> soffice.bin) that a child-only kill orphans
-            import signal
-
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.kill()
+            # soffice spawns children (oosplash -> soffice.bin), so terminate
+            # the platform's process tree rather than only the direct child.
+            _terminate_process_tree(proc)
             proc.wait()
             raise OracleTimeoutError(
                 "LibreOffice did not finish within {0:g}s. The process "
@@ -216,10 +286,12 @@ class RecalcResult:
     SCHEMA = "oracle_recalc"
     VERSION = 1
 
-    def __init__(self, cells_scanned, formula_cells, errors):
+    def __init__(self, cells_scanned, formula_cells, errors,
+                 artifact_sha256=None):
         self.cells_scanned = cells_scanned
         self.formula_cells = formula_cells
         self.errors = errors          # [{"sheet", "cell", "value"}]
+        self.artifact_sha256 = artifact_sha256
 
     @property
     def status(self):
@@ -234,6 +306,7 @@ class RecalcResult:
             "formula_cells": self.formula_cells,
             "error_cells": len(self.errors),
             "errors": list(self.errors),
+            "artifact_sha256": self.artifact_sha256,
         }
 
     def __repr__(self):
@@ -256,6 +329,15 @@ def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
         raise ValueError("in_place=True requires a filesystem path source")
 
     data = _read_source(source)
+
+    destination = source if in_place else output_path
+    if destination is not None and os.path.splitext(
+            os.fspath(destination))[1].lower() in (".xltx", ".xltm"):
+        from openpyxl.errors import UnsupportedStructureError
+
+        raise UnsupportedStructureError(
+            "recalc cannot write plain .xlsx content to an Excel template "
+            "(.xltx/.xltm) destination. Nothing was written.")
 
     if output_path is not None or in_place:
         # LibreOffice converts to plain xlsx: writing that output over a
@@ -299,7 +381,8 @@ def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
         from openpyxl.preserve import zipio
         zipio.deliver(recalculated, os.fspath(source))
 
-    return RecalcResult(cells_scanned, formula_cells, errors)
+    return RecalcResult(cells_scanned, formula_cells, errors,
+                        _artifact_sha256(recalculated))
 
 
 class CertificationResult:
@@ -312,7 +395,8 @@ class CertificationResult:
 
     def __init__(self, status, checked, divergences, volatile_excluded,
                  unverifiable, external_excluded=None,
-                 unsupported_excluded=None, input_excluded=None):
+                 unsupported_excluded=None, input_excluded=None,
+                 artifact_sha256=None):
         self.status = status
         self.checked = checked
         self.divergences = divergences          # [{"address", "cached", "computed"}]
@@ -326,6 +410,7 @@ class CertificationResult:
         # scenario-runner inputs and their downstream cells: legitimately different from the file's caches, never a
         # divergence
         self.input_excluded = input_excluded or []
+        self.artifact_sha256 = artifact_sha256
 
     def to_dict(self):
         return {
@@ -339,6 +424,7 @@ class CertificationResult:
             "unsupported_excluded": list(self.unsupported_excluded),
             "input_excluded": list(self.input_excluded),
             "unverifiable": list(self.unverifiable),
+            "artifact_sha256": self.artifact_sha256,
         }
 
     def __repr__(self):
@@ -378,6 +464,59 @@ def _values_match(cached, computed, epoch=None):
     return cached == computed
 
 
+def _formula_result_cells(wb_formulas, wb_cached):
+    """Formula result cells, including every member of an array range.
+
+    Each tuple ends with the formula anchor key used for exclusion reasons.
+    Ordinary formulas are their own anchor.
+    """
+    from openpyxl.utils.cell import get_column_letter, range_boundaries
+    from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+
+    result = []
+    seen = set()
+    for ws in wb_formulas.worksheets:
+        cached_ws = wb_cached[ws.title]
+        for (row, col), cell in sorted(ws._cells.items()):
+            if cell.data_type != "f":
+                continue
+            coordinates = ((row, col),)
+            if isinstance(cell._value, (ArrayFormula, DataTableFormula)) \
+                    and cell._value.ref:
+                min_col, min_row, max_col, max_row = range_boundaries(
+                    cell._value.ref)
+                count = ((max_row - min_row + 1)
+                         * (max_col - min_col + 1))
+                if count > _MAX_MULTI_CELL_FORMULA_RESULTS:
+                    from openpyxl.errors import UnsupportedStructureError
+
+                    raise UnsupportedStructureError(
+                        "multi-cell formula at {0}!{1} declares {2} result "
+                        "cells, past the {3}-cell oracle safety cap. Narrow "
+                        "the formula range before certification. Nothing "
+                        "was written.".format(
+                            ws.title, cell.coordinate, count,
+                            _MAX_MULTI_CELL_FORMULA_RESULTS))
+                coordinates = (
+                    (result_row, result_col)
+                    for result_row in range(min_row, max_row + 1)
+                    for result_col in range(min_col, max_col + 1)
+                )
+            anchor = (ws.title, row, col)
+            for result_row, result_col in coordinates:
+                key = (ws.title, result_row, result_col)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cached_cell = cached_ws._cells.get((result_row, result_col))
+                cached = cached_cell._value if cached_cell is not None else None
+                coordinate = "{0}{1}".format(
+                    get_column_letter(result_col), result_row)
+                result.append((ws.title, result_row, result_col, coordinate,
+                               cached, anchor))
+    return result
+
+
 def certify(source, *, timeout=120.0):
     """The divergence check: does LibreOffice reproduce the file's own
     cached values? Pre-flights on an untouched temp copy; the caller's file
@@ -393,32 +532,38 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
     — the bytes are None when certification early-returned before any
     recalc was needed."""
     from openpyxl.reader.excel import load_workbook
-    from openpyxl.preserve.perception import (
-        VOLATILE_NONDETERMINISTIC,
-        dependency_sketch,
-    )
+    from openpyxl.preserve.perception import dependency_sketch
+    from openpyxl.preserve.zipguard import validate_package_bytes
+
+    validate_package_bytes(data, context="oracle certification input")
 
     wb_formulas = load_workbook(io.BytesIO(data), data_only=False)
     wb_cached = load_workbook(io.BytesIO(data), data_only=True)
+    source_digest = _artifact_sha256(data)
 
     # excluded-with-reason: nondeterministic
-    # volatiles, oracle-unsupported functions, and external-workbook
-    # references are all excluded from certification — so DIVERGED keeps
-    # meaning "genuine disagreement" — with the reason recorded, never a
-    # silent shrink of the check. Downstream cells inherit the taint.
+    # volatiles, oracle-unsupported functions, unresolved dependencies, and
+    # external-workbook references are all excluded from certification — so
+    # DIVERGED keeps meaning "genuine disagreement" — with the reason
+    # recorded, never a silent shrink of the check. Downstream cells inherit
+    # the taint.
     sketch = dependency_sketch(wb_formulas)
     reasons = _exclusion_seeds(wb_formulas)
     for key in (input_seeds or ()):
         reasons[key] = "input"
-    if input_seeds:
-        # unresolved references (INDIRECT/OFFSET, structured refs, 3-D
-        # spans) are always-intersecting: with scenario inputs in play
-        # they may read ANY input, so they and their downstream inherit
-        # the input taint (a cell fed only through
-        # INDIRECT escaped, and the certification falsely DIVERGED)
-        for address in sketch.unresolved:
-            key = _address_key(address, wb_formulas)
-            reasons.setdefault(key, "input")
+    # An unresolved dependency may read any cell. Ordinary certification
+    # cannot prove its value, while scenario certification must assume it may
+    # read an input. Seed it before expanding multi-cell formula results so
+    # every result cell and downstream formula inherits the same reason.
+    unresolved_reason = (
+        "input" if input_seeds else "unsupported:unresolved-reference")
+    for address in sorted(sketch.unresolved):
+        key = _address_key(address, wb_formulas)
+        reasons.setdefault(key, unresolved_reason)
+    formula_cells = _formula_result_cells(wb_formulas, wb_cached)
+    for sheet, row, col, _coord, _cached, anchor in formula_cells:
+        if anchor in reasons:
+            reasons.setdefault((sheet, row, col), reasons[anchor])
     tainted = set(reasons)
     changed = True
     while changed:
@@ -435,20 +580,9 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
                     changed = True
                     break
 
-    formula_cells = []
-    for ws in wb_formulas.worksheets:
-        cached_ws = wb_cached[ws.title]
-        for (row, col), cell in sorted(ws._cells.items()):
-            if cell.data_type != "f":
-                continue
-            ccell = cached_ws._cells.get((row, col))
-            cached = ccell._value if ccell is not None else None
-            formula_cells.append((ws.title, row, col, cell.coordinate,
-                                  cached))
-
     def _bucket_reasons():
         volatile, external, unsupported = [], [], []
-        for (sheet, row, col, coord, _cached) in formula_cells:
+        for (sheet, row, col, coord, _cached, _anchor) in formula_cells:
             reason = reasons.get((sheet, row, col))
             if reason is None:
                 continue
@@ -466,9 +600,9 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
     if not formula_cells:
         return CertificationResult(
             CertificationResult.BASELINE_UNVERIFIABLE, 0, [], [],
-            []), recalculated
+            [], artifact_sha256=source_digest), recalculated
     if all(cached is None or cached == ""
-           for (_s, _r, _c, _coord, cached) in formula_cells):
+           for (_s, _r, _c, _coord, cached, _anchor) in formula_cells):
         # openpyxl-written files carry empty <v></v>: no answer key
         # exists — but the exclusion classes still ride along, so
         # write_back(allow_uncertified=True) never writes volatile/
@@ -477,9 +611,10 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
         return CertificationResult(
             CertificationResult.BASELINE_UNVERIFIABLE, 0, [], vol,
             ["{0}!{1}".format(s, coord)
-             for (s, _r, _c, coord, _v) in formula_cells],
+             for (s, _r, _c, coord, _v, _anchor) in formula_cells],
             external_excluded=ext,
-            unsupported_excluded=uns), recalculated
+            unsupported_excluded=uns,
+            artifact_sha256=source_digest), recalculated
 
     if recalculated is None:
         recalculated = _recalculate_bytes(data, timeout)
@@ -492,7 +627,7 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
     unsupported_excluded = []
     input_excluded = []
     unverifiable = []
-    for (sheet, row, col, coord, cached) in formula_cells:
+    for (sheet, row, col, coord, cached, _anchor) in formula_cells:
         address = "{0}!{1}".format(sheet, coord)
         reason = reasons.get((sheet, row, col))
         if reason is not None:
@@ -518,14 +653,17 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
                                 "computed": computed})
 
     status = (CertificationResult.DIVERGED if divergences
-              else CertificationResult.CERTIFIED)
+              else CertificationResult.CERTIFIED
+              if checked and not unverifiable
+              else CertificationResult.BASELINE_UNVERIFIABLE)
     return CertificationResult(
         status, checked, divergences,
         sorted(volatile_excluded),
         sorted(unverifiable),
         external_excluded=sorted(external_excluded),
         unsupported_excluded=sorted(unsupported_excluded),
-        input_excluded=sorted(input_excluded)), recalculated
+        input_excluded=sorted(input_excluded),
+        artifact_sha256=source_digest), recalculated
 
 
 # functions LibreOffice's recalc cannot be trusted to reproduce (version-
@@ -540,10 +678,20 @@ ORACLE_UNSUPPORTED_FUNCS = frozenset([
     "CUBERANKEDMEMBER", "CUBEMEMBERPROPERTY", "CUBEKPIMEMBER",
 ])
 
-# an operand that opens with a bracketed workbook token is an external-
-# workbook reference ([1]Sheet!A1, '[Budget.xlsx]Sheet One'!A1); table
-# structured refs (Table1[Col]) never START with the bracket
-_EXTERNAL_REF_RE = re.compile(r"^'?\[[^\]]+\]")
+_EXTERNAL_BOOK_RE = re.compile(r"\[[^\]]+\]")
+
+
+def _is_external_reference(value):
+    """True when a range operand's sheet qualifier names a workbook.
+
+    The workbook token may follow a local/UNC/URL path. Structured table
+    references put their brackets after any sheet separator, so they do not
+    match.
+    """
+    if not isinstance(value, str) or "!" not in value:
+        return False
+    qualifier = value.lstrip("=").split("!", 1)[0]
+    return _EXTERNAL_BOOK_RE.search(qualifier) is not None
 
 
 def _exclusion_seeds(wb_formulas):
@@ -557,13 +705,23 @@ def _exclusion_seeds(wb_formulas):
     volatile_funcs = {name + "(" for name in VOLATILE_NONDETERMINISTIC}
     unsupported_funcs = {name + "(" for name in ORACLE_UNSUPPORTED_FUNCS}
     reasons = {}
+    from openpyxl.worksheet.formula import DataTableFormula
+
     for ws in wb_formulas.worksheets:
         for (row, col), cell in ws._cells.items():
-            if cell.data_type != "f" or not isinstance(cell._value, str):
+            if cell.data_type != "f":
+                continue
+            formula = cell._value
+            if isinstance(formula, DataTableFormula):
+                reasons[(ws.title, row, col)] = "unsupported:data-table"
+                continue
+            if not isinstance(formula, str):
+                formula = getattr(formula, "text", None)
+            if not isinstance(formula, str):
                 continue
             key = (ws.title, row, col)
             try:
-                tokens = Tokenizer(cell._value).items
+                tokens = Tokenizer(formula).items
             except Exception:
                 reasons[key] = "unparseable"
                 continue
@@ -583,13 +741,17 @@ def _exclusion_seeds(wb_formulas):
                 elif (token.type == "OPERAND"
                         and token.subtype == "RANGE"
                         and key not in reasons):
-                    if _EXTERNAL_REF_RE.match(token.value):
+                    if _is_external_reference(token.value):
                         reasons[key] = "external-link"
                     else:
                         # an external ref hiding behind a defined name
                         # resolve the name, tag the cell
-                        name = wb_formulas.defined_names.get(token.value)                             or ws.defined_names.get(token.value)
-                        if name is not None and name.value                                 and "[" in name.value:
+                        from openpyxl.preserve.perception import _defined_name
+
+                        name = _defined_name(
+                            wb_formulas, ws, token.value)
+                        if name is not None and name.value \
+                                and _is_external_reference(name.value):
                             reasons[key] = "external-link"
     return reasons
 
@@ -612,7 +774,11 @@ def _bounds_hit_tainted(sheet, bounds, tainted):
     if min_row is None:
         min_row, max_row = 1, 1 << 22
     folded = sheet.casefold()        # Excel: sheet names case-insensitive
-    for (t_sheet, t_row, t_col) in tainted:
+    ordered = sorted(
+        tainted,
+        key=lambda item: (item[0].casefold(), item[1], item[2], item[0]),
+    )
+    for (t_sheet, t_row, t_col) in ordered:
         if t_sheet.casefold() != folded:
             continue
         if min_row <= t_row <= max_row and min_col <= t_col <= max_col:
@@ -630,11 +796,13 @@ class Evaluation:
     SCHEMA = "evaluation"
     VERSION = 1
 
-    def __init__(self, inputs, outputs, errors, certification):
+    def __init__(self, inputs, outputs, errors, certification,
+                 artifact_sha256=None):
         self.inputs = inputs            # {address: value} as given
         self.outputs = outputs          # {address: computed value}
         self.errors = errors            # [{"sheet", "cell", "value"}]
         self.certification = certification
+        self.artifact_sha256 = artifact_sha256
 
     @property
     def status(self):
@@ -655,6 +823,7 @@ class Evaluation:
             "error_cells": list(self.error_cells),
             "certification": self.certification.to_dict()
             if self.certification is not None else None,
+            "artifact_sha256": self.artifact_sha256,
         }
 
     def __repr__(self):
@@ -665,7 +834,7 @@ class Evaluation:
 def _resolve_single_cell(wb, address):
     """(worksheet, row, col) for a sheet-qualified single-cell A1 address
     or a defined name resolving to one cell. Typed refusals otherwise."""
-    from openpyxl.errors import TargetNotFoundError
+    from openpyxl.errors import AmbiguousTargetError, TargetNotFoundError
     from openpyxl.utils.cell import range_boundaries
 
     def _fail(msg):
@@ -676,15 +845,27 @@ def _resolve_single_cell(wb, address):
     if "!" not in ref:
         dn = wb.defined_names.get(ref)
         if dn is None:
-            for ws in wb.worksheets:
-                if ref in ws.defined_names:
-                    dn = ws.defined_names[ref]
-                    break
+            local = [(ws, ws.defined_names[ref]) for ws in wb.worksheets
+                     if ref in ws.defined_names]
+            if len(local) > 1:
+                options = [ws.title for ws, _dn in local]
+                raise AmbiguousTargetError(
+                    "{0!r}: sheet-scoped defined name exists on {1} sheets: "
+                    "{2}. Use a sheet-qualified address.".format(
+                        address, len(options), ", ".join(options)),
+                    kind="ambiguous-name",
+                    options=options,
+                )
+            if local:
+                dn = local[0][1]
         if dn is None:
             _fail("not a sheet-qualified address and no defined name of "
                   "this name exists (defined names and 'Sheet1!B2' "
                   "addresses are accepted)")
-        destinations = list(dn.destinations)
+        try:
+            destinations = list(dn.destinations)
+        except Exception as exc:
+            _fail("the defined name cannot be resolved: {0}".format(exc))
         if len(destinations) != 1:
             _fail("the defined name resolves to {0} areas; single cells "
                   "only".format(len(destinations)))
@@ -692,10 +873,15 @@ def _resolve_single_cell(wb, address):
         ref = "'{0}'!{1}".format(title.replace("'", "''"),
                                  coord.replace("$", ""))
     if ref.startswith("'"):
-        end = ref.index("'!", 1)
+        try:
+            end = ref.index("'!", 1)
+        except ValueError:
+            _fail("has an unterminated quoted sheet name")
         title = ref[1:end].replace("''", "'")
         coord = ref[end + 2:]
     else:
+        if "!" not in ref:
+            _fail("does not resolve to a sheet-qualified address")
         title, coord = ref.split("!", 1)
     matches = [ws for ws in wb.worksheets
                if ws.title.casefold() == title.casefold()]
@@ -716,13 +902,20 @@ def _set_input_cell(ws, row, col, value, address):
     """Assign one scenario input, refusing merged-cell interiors typed
     (a raw AttributeError is not a legal outcome)."""
     from openpyxl.cell.cell import MergedCell
-    from openpyxl.errors import TargetNotFoundError
+    from openpyxl.errors import TargetNotFoundError, UnsupportedStructureError
 
     cell = ws.cell(row=row, column=col)
     if isinstance(cell, MergedCell):
         raise TargetNotFoundError(
             "{0!r} is inside a merged range; write the input to the "
             "merge's anchor cell instead.".format(address))
+    if cell.data_type == "f":
+        raise UnsupportedStructureError(
+            "{0!r} holds a formula; scenario inputs never overwrite "
+            "calculations. Nothing was changed.".format(address),
+            kind="input-is-calculation",
+            anchor=address,
+        )
     cell.value = value
 
 
@@ -771,7 +964,8 @@ def evaluate(source, set, read, *, timeout=120.0):
     certification, _ = _certify_impl(spliced, timeout,
                                      recalculated=recalculated,
                                      input_seeds=input_seeds)
-    return Evaluation(dict(set or {}), outputs, errors, certification)
+    return Evaluation(dict(set or {}), outputs, errors, certification,
+                      _artifact_sha256(spliced))
 
 
 def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
@@ -840,7 +1034,8 @@ def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
         certification, _ = _certify_impl(spliced, timeout,
                                          recalculated=recalculated,
                                          input_seeds=seeds)
-        return Evaluation(dict(case or {}), outputs, errors, certification)
+        return Evaluation(dict(case or {}), outputs, errors, certification,
+                          _artifact_sha256(spliced))
 
     try:
         with ThreadPoolExecutor(max_workers=pool_size) as pool:
@@ -861,7 +1056,7 @@ class WriteBackResult:
 
     def __init__(self, cells_written, written, verified_unchanged,
                  excluded, uncertified, cleared_fullcalc, certification,
-                 package_diff):
+                 package_diff, artifact_sha256=None):
         self.cells_written = cells_written
         self.written = written                    # addresses updated
         self.verified_unchanged = verified_unchanged
@@ -870,6 +1065,7 @@ class WriteBackResult:
         self.cleared_fullcalc = cleared_fullcalc
         self.certification = certification
         self.package_diff = package_diff          # part names that changed
+        self.artifact_sha256 = artifact_sha256
 
     def to_dict(self):
         return {
@@ -884,6 +1080,7 @@ class WriteBackResult:
             "certification": self.certification.to_dict()
             if self.certification is not None else None,
             "package_diff": list(self.package_diff),
+            "artifact_sha256": self.artifact_sha256,
         }
 
     def __repr__(self):
@@ -978,33 +1175,33 @@ def write_back(source, *, timeout=120.0, allow_uncertified=False):
     written = []
     verified_unchanged = []
     covered = True
-    for ws in wb.worksheets:
+    unverifiable = set(certification.unverifiable)
+    for sheet, row, col, coord, _computed, _anchor in \
+            _formula_result_cells(wb, wb_computed):
+        ws = wb[sheet]
         computed_ws = wb_computed[ws.title]
-        for (row, col), cell in sorted(ws._cells.items()):
-            if cell.data_type != "f":
-                continue
-            address = "{0}!{1}".format(ws.title, cell.coordinate)
-            if address in excluded:
-                covered = False
-                continue
-            ccell = computed_ws._cells.get((row, col))
-            computed = ccell._value if ccell is not None else None
-            if computed is None:
-                excluded[address] = "no-computed-value"
-                covered = False
-                continue
-            if address in diverged:
-                # reachable only under allow_uncertified
-                led.cache_writes.setdefault(ws, {})[(row, col)] = computed
-                written.append(address)
-                continue
-            if address in set(certification.unverifiable):
-                # previously cache-less: the whole point
-                led.cache_writes.setdefault(ws, {})[(row, col)] = computed
-                written.append(address)
-                continue
-            # verified: the cache already equals the computed value
-            verified_unchanged.append(address)
+        address = "{0}!{1}".format(ws.title, coord)
+        if address in excluded:
+            covered = False
+            continue
+        ccell = computed_ws._cells.get((row, col))
+        computed = ccell._value if ccell is not None else None
+        if computed is None:
+            excluded[address] = "no-computed-value"
+            covered = False
+            continue
+        if address in diverged:
+            # reachable only under allow_uncertified
+            led.cache_writes.setdefault(ws, {})[(row, col)] = computed
+            written.append(address)
+            continue
+        if address in unverifiable:
+            # previously cache-less: the whole point
+            led.cache_writes.setdefault(ws, {})[(row, col)] = computed
+            written.append(address)
+            continue
+        # verified: the cache already equals the computed value
+        verified_unchanged.append(address)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1028,4 +1225,4 @@ def write_back(source, *, timeout=120.0, allow_uncertified=False):
     zipio.deliver(out, os.fspath(source))
     return WriteBackResult(len(written), written, verified_unchanged,
                            excluded, uncertified, cleared, certification,
-                           package_diff)
+                           package_diff, _artifact_sha256(out))

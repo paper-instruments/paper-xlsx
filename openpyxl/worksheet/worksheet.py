@@ -57,7 +57,6 @@ from openpyxl.preserve.ledger import (
     mark_cell_dirty as _mark_cell_dirty,
     mark_deleted_cell as _mark_deleted_cell,
     refuse_chart_or_image_add as _refuse_chart_or_image_add,
-    refuse_structural_edit as _refuse_structural_edit,
 )
 
 
@@ -265,7 +264,7 @@ class Worksheet(_WorkbookChild):
         :type column: int
 
         :param value: value of the cell (e.g. 5)
-        :type value: numeric or time or string or bool or none
+        :type value: numeric, ``datetime.time``, string, bool, or none
 
         :rtype: openpyxl.cell.cell.Cell
         """
@@ -793,11 +792,17 @@ class Worksheet(_WorkbookChild):
         upstream behaviour — references are NOT updated — and return
         ``None``.
         """
-        fixup = _structural_guard(self, "insert_rows", idx, amount)
-        self._move_cells(min_row=idx, offset=amount, row_or_col="row")
-        self._current_row = self.max_row
-        if fixup:
-            return _finish_structural_edit(self, "insert_rows", idx, amount)
+        transaction = _structural_guard(self, "insert_rows", idx, amount)
+        try:
+            self._move_cells(min_row=idx, offset=amount, row_or_col="row")
+            self._current_row = self.max_row
+            if transaction:
+                return _finish_structural_edit(
+                    self, "insert_rows", idx, amount, transaction)
+        except Exception:
+            if transaction:
+                transaction.rollback()
+            raise
 
 
     def insert_cols(self, idx, amount=1):
@@ -810,10 +815,17 @@ class Worksheet(_WorkbookChild):
         ``UnsupportedStructureError`` and changes nothing. Stock loads and
         added sheets keep upstream behaviour and return ``None``.
         """
-        fixup = _structural_guard(self, "insert_cols", idx, amount)
-        self._move_cells(min_col=idx, offset=amount, row_or_col="column")
-        if fixup:
-            return _finish_structural_edit(self, "insert_cols", idx, amount)
+        transaction = _structural_guard(self, "insert_cols", idx, amount)
+        try:
+            self._move_cells(min_col=idx, offset=amount,
+                             row_or_col="column")
+            if transaction:
+                return _finish_structural_edit(
+                    self, "insert_cols", idx, amount, transaction)
+        except Exception:
+            if transaction:
+                transaction.rollback()
+            raise
 
 
     def delete_rows(self, idx, amount=1):
@@ -827,24 +839,29 @@ class Worksheet(_WorkbookChild):
         and changes nothing. Stock loads and added sheets keep upstream
         behaviour and return ``None``.
         """
-        fixup = _structural_guard(self, "delete_rows", idx, amount)
+        transaction = _structural_guard(self, "delete_rows", idx, amount)
+        try:
+            remainder = _gutter(idx, amount, self.max_row)
+            self._move_cells(min_row=idx+amount, offset=-amount,
+                             row_or_col="row")
 
-        remainder = _gutter(idx, amount, self.max_row)
-
-        self._move_cells(min_row=idx+amount, offset=-amount, row_or_col="row")
-
-        # calculating min and max col is an expensive operation, do it only once
-        min_col = self.min_column
-        max_col = self.max_column + 1
-        for row in remainder:
-            for col in range(min_col, max_col):
-                if (row, col) in self._cells:
-                    del self._cells[row, col]
-        self._current_row = self.max_row
-        if not self._cells:
-            self._current_row = 0
-        if fixup:
-            return _finish_structural_edit(self, "delete_rows", idx, amount)
+            # calculating min and max col is an expensive operation, do it only once
+            min_col = self.min_column
+            max_col = self.max_column + 1
+            for row in remainder:
+                for col in range(min_col, max_col):
+                    if (row, col) in self._cells:
+                        del self._cells[row, col]
+            self._current_row = self.max_row
+            if not self._cells:
+                self._current_row = 0
+            if transaction:
+                return _finish_structural_edit(
+                    self, "delete_rows", idx, amount, transaction)
+        except Exception:
+            if transaction:
+                transaction.rollback()
+            raise
 
 
     def delete_cols(self, idx, amount=1):
@@ -857,22 +874,27 @@ class Worksheet(_WorkbookChild):
         ``UnsupportedStructureError`` and changes nothing. Stock loads and
         added sheets keep upstream behaviour and return ``None``.
         """
-        fixup = _structural_guard(self, "delete_cols", idx, amount)
+        transaction = _structural_guard(self, "delete_cols", idx, amount)
+        try:
+            remainder = _gutter(idx, amount, self.max_column)
+            self._move_cells(min_col=idx+amount, offset=-amount,
+                             row_or_col="column")
 
-        remainder = _gutter(idx, amount, self.max_column)
+            # calculating min and max row is an expensive operation, do it only once
+            min_row = self.min_row
+            max_row = self.max_row + 1
+            for col in remainder:
+                for row in range(min_row, max_row):
+                    if (row, col) in self._cells:
+                        del self._cells[row, col]
 
-        self._move_cells(min_col=idx+amount, offset=-amount, row_or_col="column")
-
-        # calculating min and max row is an expensive operation, do it only once
-        min_row = self.min_row
-        max_row = self.max_row + 1
-        for col in remainder:
-            for row in range(min_row, max_row):
-                if (row, col) in self._cells:
-                    del self._cells[row, col]
-
-        if fixup:
-            return _finish_structural_edit(self, "delete_cols", idx, amount)
+            if transaction:
+                return _finish_structural_edit(
+                    self, "delete_cols", idx, amount, transaction)
+        except Exception:
+            if transaction:
+                transaction.rollback()
+            raise
 
     def move_range(self, cell_range, rows=0, cols=0, translate=False):
         """

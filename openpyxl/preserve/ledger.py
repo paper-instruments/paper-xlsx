@@ -513,6 +513,7 @@ def begin_structural_edit(ws, operation, index, amount):
         EXCEL_MAX_ROW,
         analyze_shift,
         shift_blockers,
+        validate_model_shift,
     )
 
     if operation == "insert_rows":
@@ -536,7 +537,10 @@ def begin_structural_edit(ws, operation, index, amount):
                 "column {2} (XFD), the sheet's hard limit. Nothing was "
                 "changed.".format(index, amount, EXCEL_MAX_COL))
 
-    _check_sheet_protection_for_shift(ws, led, operation)
+    # Formula/name references can overflow even when the referenced edge
+    # cells are empty. This dry run must precede protection warnings and all
+    # model mutation.
+    validate_model_shift(ws, operation, index, amount)
 
     blockers = shift_blockers(ws, operation, index, amount)
     if blockers:
@@ -552,7 +556,11 @@ def begin_structural_edit(ws, operation, index, amount):
                 operation, ws.title, lines,
                 victim_lines or "\n  - (no intersecting references found)")
         )
-    return True
+    warn_protection = _check_sheet_protection_for_shift(ws, led, operation)
+    from .structural import StructuralEditTransaction
+
+    return StructuralEditTransaction(
+        ws, operation, warn_protection=warn_protection)
 
 
 def _max_occupied_row(ws):
@@ -561,6 +569,15 @@ def _max_occupied_row(ws):
         candidates.append(max(ws.row_dimensions))
     for rng in ws.merged_cells.ranges:
         candidates.append(rng.max_row)
+    for cf in ws.conditional_formatting:
+        candidates.extend(rng.max_row for rng in cf.sqref.ranges)
+    if ws.data_validations:
+        for dv in ws.data_validations.dataValidation:
+            candidates.extend(rng.max_row for rng in dv.sqref.ranges)
+    if ws.auto_filter and ws.auto_filter.ref:
+        from openpyxl.utils.cell import range_boundaries
+
+        candidates.append(range_boundaries(ws.auto_filter.ref)[3])
     return max(candidates)
 
 
@@ -574,6 +591,15 @@ def _max_occupied_col(ws):
             for dim in ws.column_dimensions.values()))
     for rng in ws.merged_cells.ranges:
         candidates.append(rng.max_col)
+    for cf in ws.conditional_formatting:
+        candidates.extend(rng.max_col for rng in cf.sqref.ranges)
+    if ws.data_validations:
+        for dv in ws.data_validations.dataValidation:
+            candidates.extend(rng.max_col for rng in dv.sqref.ranges)
+    if ws.auto_filter and ws.auto_filter.ref:
+        from openpyxl.utils.cell import range_boundaries
+
+        candidates.append(range_boundaries(ws.auto_filter.ref)[2])
     return max(candidates)
 
 
@@ -584,29 +610,19 @@ def _check_sheet_protection_for_shift(ws, led, operation):
     try:
         protected = bool(ws.protection.sheet)
     except AttributeError:
-        return
+        return False
     if not protected:
-        return
+        return False
     wb = ws.parent
     if getattr(wb, "strict_protection", False):
         raise UnsupportedStructureError(
             "{0}() on protected sheet {1!r}: this workbook has "
             "strict_protection enabled, so the structural edit is "
             "refused. Nothing was changed.".format(operation, ws.title))
-    if ws not in led.protection_warned:
-        led.protection_warned.add(ws)
-        import warnings
-
-        from openpyxl.errors import ProtectedWriteWarning
-
-        warnings.warn(ProtectedWriteWarning(
-            "{0}() on protected sheet {1!r}: the edit proceeds — "
-            "protection is reported, never enforced — but Excel itself "
-            "would block it. Set wb.strict_protection = True to refuse "
-            "instead.".format(operation, ws.title)), stacklevel=4)
+    return ws not in led.protection_warned
 
 
-def finish_structural_edit(ws, operation, index, amount):
+def finish_structural_edit(ws, operation, index, amount, transaction=None):
     """Model-side reference fixups + snapshot rebasing, after the cells
     moved (see structural.apply_model_shift). Returns the pinned
     AddressRemap: pre-edit addresses must be remapped
@@ -614,6 +630,8 @@ def finish_structural_edit(ws, operation, index, amount):
     from .structural import AddressRemap, apply_model_shift
 
     apply_model_shift(ws, operation, index, amount)
+    if transaction is not None:
+        transaction.commit()
     return AddressRemap(ws.title, operation, index, amount)
 
 
@@ -721,55 +739,143 @@ def record_rename(sheet_child, new_title):
     if old_title not in led.loaded_sheet_titles:
         return
 
-    from .rewrite import rename_sheet_in_formula, title_in_string_literals
-    from .structural import _pivots_referencing
+    from .rewrite import (
+        rename_sheet_in_formula,
+        rename_sheet_in_formula_fragment,
+        title_in_string_literals,
+    )
+    from .structural import (
+        _chart_source_ref_objects,
+        _charts_with_numeric_formula_entities,
+        _pivots_referencing,
+    )
 
     # guards first — the refusal must precede every mutation
     textual = []
+    multi_cell = []
+    data_tables = []
+    from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+
     for ws in wb.worksheets:
         for (row, col), cell in ws._cells.items():
             if cell.data_type == "f" and isinstance(cell._value, str) \
                     and title_in_string_literals(cell._value, old_title):
                 textual.append("{0}!{1}".format(ws.title, cell.coordinate))
+            elif isinstance(cell._value, ArrayFormula) and isinstance(
+                    cell._value.text, str):
+                _rewritten, changed = rename_sheet_in_formula(
+                    cell._value.text, old_title, new_title)
+                if changed or title_in_string_literals(
+                        cell._value.text, old_title):
+                    multi_cell.append(
+                        "{0}!{1}".format(ws.title, cell.coordinate))
+            elif isinstance(cell._value, DataTableFormula):
+                for attr in ("r1", "r2"):
+                    ref = getattr(cell._value, attr)
+                    if not isinstance(ref, str) or not ref:
+                        continue
+                    probe = ref if ref.startswith("=") else "=" + ref
+                    _rewritten, changed = rename_sheet_in_formula(
+                        probe, old_title, new_title)
+                    if changed:
+                        data_tables.append(
+                            "{0}!{1} {2}={3!r}".format(
+                                ws.title, cell.coordinate, attr, ref))
+        for cf in ws.conditional_formatting:
+            for rule in cf.rules:
+                if any(isinstance(formula, str)
+                       and title_in_string_literals(
+                           formula if formula.startswith("=")
+                           else "=" + formula, old_title)
+                       for formula in rule.formula or []):
+                    textual.append("conditional formatting on {0}!{1}".format(
+                        ws.title, cf.sqref))
+        if ws.data_validations:
+            for dv in ws.data_validations.dataValidation:
+                if any(isinstance(formula, str) and formula
+                       and title_in_string_literals(
+                           formula if formula.startswith("=")
+                           else "=" + formula, old_title)
+                       for formula in (dv.formula1, dv.formula2)):
+                    textual.append("data validation on {0}!{1}".format(
+                        ws.title, dv.sqref))
     if textual:
         raise UnsupportedStructureError(
             "renaming sheet {0!r} cannot rewrite textual references to it "
             "inside formula strings (INDIRECT-style) at: {1}. Rewrite "
             "those formulas first. Nothing was changed.".format(
                 old_title, ", ".join(sorted(textual)[:8])))
+    if multi_cell:
+        raise UnsupportedStructureError(
+            "renaming sheet {0!r} would require rewriting loaded array "
+            "formula(s) at {1}; multi-cell formula rewriting is not "
+            "supported. Nothing was changed.".format(
+                old_title, ", ".join(sorted(multi_cell)[:8])))
+    if data_tables:
+        raise UnsupportedStructureError(
+            "renaming sheet {0!r} would require rewriting loaded what-if "
+            "data table metadata at {1}; data table r1/r2 rewriting is "
+            "not supported. Nothing was changed.".format(
+                old_title, ", ".join(sorted(data_tables)[:8])))
+    numeric_charts = _charts_with_numeric_formula_entities(wb, old_title)
+    if numeric_charts:
+        raise UnsupportedStructureError(
+            "renaming sheet {0!r} cannot safely rewrite chart part(s) {1}: "
+            "their formula text uses numeric character references. "
+            "Nothing was changed.".format(
+                old_title, ", ".join(numeric_charts)))
     if _pivots_referencing(wb, old_title):
         raise UnsupportedStructureError(
             "renaming sheet {0!r} is not supported while pivot parts "
             "reference it (pivot cacheSource rewriting is out of scope). "
             "Nothing was changed.".format(old_title))
 
-    # model-side cascade: formulas everywhere + defined names. The
-    # rewrites are DERIVED from already-accepted formulas and reference
-    # the new title before it lands on the sheet object — the lint
-    # chokepoint must not judge them (the cascade tripped
-    # unknown-sheet, and refuse mode would have refused the rename)
-    _saved_lint = getattr(wb, "formula_lint", "warn")
-    wb.formula_lint = "off"
-    try:
-        for ws in wb.worksheets:
-            for (row, col), cell in sorted(ws._cells.items()):
-                if cell.data_type != "f" \
-                        or not isinstance(cell._value, str):
-                    continue
-                new_formula, changed = rename_sheet_in_formula(
-                    cell._value, old_title, new_title)
-                if changed:
-                    cell.value = new_formula    # public setter records it
-    finally:
-        wb.formula_lint = _saved_lint
-    _rename_defined_names(wb, old_title, new_title)
-    for scoped in wb.worksheets:
-        _rename_defined_names(scoped, old_title, new_title)
-    # in-session charts are model-rendered at save: their data-source
-    # references follow the rename like every other model reference
-    # (loaded charts' parts are byte-patched at save instead)
-    # an added chart otherwise keeps the old, now-nonexistent title
-    from .structural import _chart_source_ref_objects
+    # Build the complete cascade before touching the model. In particular,
+    # the public formula setter enforces strict protection, so every changed
+    # formula cell must pass that gate while the old title and ledger are
+    # still intact.
+    cell_rewrites = []
+    cf_rewrites = []
+    dv_rewrites = []
+    name_rewrites = []
+    chart_rewrites = []
+    for ws in wb.worksheets:
+        for (_row, _col), cell in sorted(ws._cells.items()):
+            if cell.data_type != "f" or not isinstance(cell._value, str):
+                continue
+            rewritten, changed = rename_sheet_in_formula(
+                cell._value, old_title, new_title)
+            if changed:
+                cell_rewrites.append((cell, rewritten))
+        for cf in ws.conditional_formatting:
+            for rule in cf.rules:
+                rewritten = []
+                changed_any = False
+                for formula in rule.formula or []:
+                    new_formula, changed = rename_sheet_in_formula_fragment(
+                        formula, old_title, new_title)
+                    rewritten.append(new_formula)
+                    changed_any = changed_any or changed
+                if changed_any:
+                    cf_rewrites.append((rule, rewritten))
+        if ws.data_validations:
+            for dv in ws.data_validations.dataValidation:
+                for attr in ("formula1", "formula2"):
+                    formula = getattr(dv, attr)
+                    rewritten, changed = rename_sheet_in_formula_fragment(
+                        formula, old_title, new_title)
+                    if changed:
+                        dv_rewrites.append((dv, attr, rewritten))
+
+    for holder in [wb] + list(wb.worksheets):
+        for name in list(holder.defined_names):
+            dn = holder.defined_names[name]
+            if not dn.value:
+                continue
+            rewritten, changed = rename_sheet_in_formula(
+                "=" + dn.value, old_title, new_title)
+            if changed:
+                name_rewrites.append((dn, rewritten[1:]))
 
     for sheet in wb.worksheets:
         armed_charts = (led.object_snapshots.get(sheet) or {}).get(
@@ -781,7 +887,30 @@ def record_rename(sheet_child, new_title):
                 rewritten, changed = rename_sheet_in_formula(
                     "=" + ref.f, old_title, new_title)
                 if changed:
-                    ref.f = rewritten[1:]
+                    chart_rewrites.append((ref, rewritten[1:]))
+
+    if getattr(wb, "strict_protection", False):
+        for cell, _rewritten in cell_rewrites:
+            check_protection(cell)
+
+    # These rewrites are derived from already-accepted formulas and refer to
+    # the new title before it lands on the sheet object. Formula lint must not
+    # reject the temporary state.
+    _saved_lint = getattr(wb, "formula_lint", "warn")
+    wb.formula_lint = "off"
+    try:
+        for cell, rewritten in cell_rewrites:
+            cell.value = rewritten       # public setter records the edit
+    finally:
+        wb.formula_lint = _saved_lint
+    for dn, rewritten in name_rewrites:
+        dn.value = rewritten
+    for rule, rewritten in cf_rewrites:
+        rule.formula = rewritten
+    for dv, attr, rewritten in dv_rewrites:
+        setattr(dv, attr, rewritten)
+    for ref, rewritten in chart_rewrites:
+        ref.f = rewritten
 
     # ledger bookkeeping: the sheet keeps counting as LOADED under its
     # new name, state patches re-key, and the save patches the name attr
@@ -793,20 +922,6 @@ def record_rename(sheet_child, new_title):
     if old_title in led.sheet_states:
         led.sheet_states[new_title] = led.sheet_states.pop(old_title)
     led.formulas_changed = True
-
-
-def _rename_defined_names(holder, old_title, new_title):
-    from .rewrite import rename_sheet_in_formula
-
-    for name in list(holder.defined_names):
-        dn = holder.defined_names[name]
-        if not dn.value:
-            continue
-        rewritten, changed = rename_sheet_in_formula(
-            "=" + dn.value, old_title, new_title)
-        if changed:
-            dn.value = rewritten[1:]
-
 
 # ---------------------------------------------------------------------
 # Workbook.mark_dirty
@@ -860,7 +975,14 @@ def mark_dirty_target(wb, target):
         raise TargetNotFoundError(
             "mark_dirty: no part named {0!r} in the retained package "
             "(part names are exact, e.g. 'xl/media/image1.png')".format(target))
-    led.parts.add(target)
+    raise UnsupportedStructureError(
+        "mark_dirty({0!r}): part-level re-serialization is not supported "
+        "because the part has no faithful model source. For a raw byte swap "
+        "of an unmanaged part, use wb.replace_part(name, payload). Nothing "
+        "was changed.".format(target),
+        kind="unsupported-part-dirty",
+        anchor=target,
+    )
 
 
 def _parse_sheet_range(target):
@@ -910,6 +1032,44 @@ def _victim_exclusive_parts(wb, original_title):
         if part is None:
             return frozenset()
         return frozenset(_exclusive_closure(zin, names, part))
+
+
+def _victim_inbound_relationships(wb, original_title, exclusive_parts):
+    """Surviving relationship owners that point at a removed worksheet."""
+    source = getattr(wb, "_paper_source", None)
+    if not source:
+        return []
+    import io
+    import zipfile
+
+    from . import crosspart, lifecycle
+    from .saver import _package_info
+
+    hits = []
+    with zipfile.ZipFile(io.BytesIO(source)) as zin:
+        names = set(zin.namelist())
+        wb_part, mapping = _package_info(zin)
+        victim_part = mapping.get(original_title)
+        if victim_part is None:
+            return []
+        dying = set(exclusive_parts) | {victim_part}
+        for rels_part in sorted(name for name in names
+                                if name.endswith(".rels")):
+            owner = lifecycle._owner_of_rels(rels_part)
+            if owner == wb_part or owner in dying:
+                continue
+            root = crosspart.scan_small(
+                zin.read(rels_part), "Relationships", max_depth=1)
+            for child in root.children:
+                if child.local() != "Relationship" \
+                        or child.attrs.get("TargetMode") == "External":
+                    continue
+                target = lifecycle._resolve_target(
+                    owner, child.attrs.get("Target", ""))
+                if target == victim_part:
+                    hits.append("{0} ({1})".format(
+                        rels_part, child.attrs.get("Id", "unnamed")))
+    return hits
 
 
 def audit_sheet_removal(wb, ws):
@@ -982,6 +1142,9 @@ def audit_sheet_removal(wb, ws):
             victims.append("chart part {0}".format(part))
     if _pivots_referencing(wb, original_title):
         victims.append("pivot parts")
+    for relationship in _victim_inbound_relationships(
+            wb, original_title, own_parts):
+        victims.append("surviving relationship {0}".format(relationship))
     if victims:
         raise UnsupportedStructureError(
             "removing sheet {0!r} would strand references to it:\n  - "

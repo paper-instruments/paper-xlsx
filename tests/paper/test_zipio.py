@@ -69,6 +69,9 @@ class TestRawCopy:
         eocd = (b"PK\x05\x06" + struct.pack("<HHHHLLH", 0, 0, 1, 1,
                 len(central), len(local), 0))
         raw = local + central + eocd
+        from openpyxl.preserve.zipguard import validate_package_bytes
+
+        assert validate_package_bytes(raw) == ["dd.xml"]
         zin = zipfile.ZipFile(io.BytesIO(raw))
         info = zin.getinfo("dd.xml")
         assert info.flag_bits & 0x8

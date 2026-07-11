@@ -19,6 +19,12 @@ give the full tour.
 
 DEBUG = False
 
+from openpyxl._distribution import assert_single_openpyxl_distribution
+from openpyxl._paper_version import __paper_version__
+
+assert_single_openpyxl_distribution()
+del assert_single_openpyxl_distribution
+
 from openpyxl.compat.numbers import NUMPY
 from openpyxl.xml import DEFUSEDXML, LXML
 from openpyxl.workbook import Workbook
@@ -34,4 +40,3 @@ __license__ = constants.__license__
 __maintainer_email__ = constants.__maintainer_email__
 __url__ = constants.__url__
 __version__ = constants.__version__
-__paper_version__ = "0.1.0"

@@ -100,3 +100,8 @@ class ProtectedWriteWarning(UserWarning):
     the human who protected the sheet expected the cell to be read-only.
     Set ``wb.strict_protection = True`` to turn these writes into typed
     refusals."""
+
+
+class HandleRebindWarning(UserWarning):
+    """A path-backed save committed correctly, but the caller's open file
+    handle could not be rebound to the replacement file."""

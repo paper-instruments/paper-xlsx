@@ -11,6 +11,35 @@ to see styling churn."""
 from openpyxl.utils.cell import quote_sheetname
 
 
+def _formula_payload(value):
+    """Deterministic public value for ordinary and multi-cell formulas."""
+    if isinstance(value, str):
+        return value
+    from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+
+    if isinstance(value, ArrayFormula):
+        return {"kind": "array", "ref": value.ref, "text": value.text}
+    if isinstance(value, DataTableFormula):
+        return {
+            "kind": "dataTable",
+            "ref": value.ref,
+            "ca": value.ca,
+            "dt2D": value.dt2D,
+            "dtr": value.dtr,
+            "r1": value.r1,
+            "r2": value.r2,
+            "del1": value.del1,
+            "del2": value.del2,
+        }
+    return {"kind": type(value).__name__}
+
+
+def _source_bytes(source):
+    from openpyxl.preserve.limits import read_bounded
+
+    return read_bounded(source, context="cell diff input")
+
+
 class CellsDiff:
 
     SCHEMA = "cells_diff"
@@ -48,18 +77,24 @@ def _snapshot(source):
     """
     import warnings
 
+    from io import BytesIO
+
     from openpyxl.reader.excel import load_workbook
+
+    payload = _source_bytes(source)
+    from openpyxl.preserve.zipguard import validate_package_bytes
+
+    validate_package_bytes(payload, context="cell diff input")
 
     # a READ-ONLY diagnostic must not announce losses it will never cause:
     # the stock loader's "will be removed" warnings describe saves, and
     # nothing here saves
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        wb_formulas = load_workbook(source, data_only=False,
+        wb_formulas = load_workbook(BytesIO(payload), data_only=False,
                                     preserve=False)
-        if hasattr(source, "seek"):
-            source.seek(0)
-        wb_values = load_workbook(source, data_only=True, preserve=False)
+        wb_values = load_workbook(BytesIO(payload), data_only=True,
+                                  preserve=False)
 
     out = {}
     for ws in wb_formulas.worksheets:
@@ -69,7 +104,7 @@ def _snapshot(source):
             formula = None
             value = cell._value
             if cell.data_type == "f":
-                formula = value if isinstance(value, str) else str(value)
+                formula = _formula_payload(value)
                 vcell = ws_values._cells.get((row, col))
                 value = vcell._value if vcell is not None else None
             if value is None and formula is None:
@@ -77,7 +112,7 @@ def _snapshot(source):
                 # including them one-sidedly made a style-only cell compare
                 # equal to an absent one anyway
                 continue
-            cells[(row, col)] = (value, formula)
+            cells[(row, col)] = (value, formula, cell.data_type)
         out[ws.title] = cells
     return out
 
@@ -95,9 +130,12 @@ def diff_cells(a, b):
         cells_a = snap_a[title]
         cells_b = snap_b[title]
         for (row, col) in sorted(set(cells_a) | set(cells_b)):
-            old_value, old_formula = cells_a.get((row, col), (None, None))
-            new_value, new_formula = cells_b.get((row, col), (None, None))
-            if old_value == new_value and old_formula == new_formula:
+            old_value, old_formula, old_type = cells_a.get(
+                (row, col), (None, None, None))
+            new_value, new_formula, new_type = cells_b.get(
+                (row, col), (None, None, None))
+            if (old_value, old_formula, old_type) == \
+                    (new_value, new_formula, new_type):
                 continue
             from openpyxl.utils import get_column_letter
 
@@ -108,5 +146,7 @@ def diff_cells(a, b):
                 "new_value": new_value,
                 "old_formula": old_formula,
                 "new_formula": new_formula,
+                "old_type": old_type,
+                "new_type": new_type,
             })
     return CellsDiff(changes, sheets_added, sheets_removed)

@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_call:
 
 permissions:
   contents: read
@@ -18,16 +19,18 @@ jobs:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-          python -m pip install pytest "lxml<6" pillow pandas
+          python -m pip install pytest "lxml>=6.1,<7" pillow pandas
       - name: Run pytest
         run: python -m pytest -q
 
@@ -37,9 +40,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
       - name: Install LibreOffice (headless calc)
@@ -51,8 +56,190 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-          python -m pip install pytest "lxml<6" pillow pandas
+          python -m pip install pytest "lxml>=6.1,<7" pillow pandas
       - name: Run pytest (LibreOffice required)
         env:
           PAPER_REQUIRE_LO: "1"
         run: python -m pytest -q
+
+  test-default-runtime:
+    name: Test default dependency set
+    runs-on: ubuntu-latest
+    env:
+      OPENPYXL_LXML: "False"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest
+      - name: Prove lxml backend is disabled
+        run: python -c "import openpyxl; assert not openpyxl.LXML"
+      - name: Run major regressions without optional dependencies
+        run: python -m pytest -q tests/paper/test_major_*.py
+
+  test-stdlib-xml:
+    name: Test stdlib XML backend with optional integrations
+    runs-on: ubuntu-latest
+    env:
+      OPENPYXL_LXML: "False"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest pillow pandas
+      - name: Prove lxml backend is disabled
+        run: python -c "import openpyxl; assert not openpyxl.LXML"
+      - name: Run pytest
+        run: python -m pytest -q
+
+  test-windows:
+    name: Test Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest "lxml>=6.1,<7" pillow pandas
+      - name: Run pytest
+        run: python -m pytest -q
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . -r doc/requirements.txt "lxml>=6.1,<7"
+      - name: Build documentation without warnings
+        run: sphinx-build -W --keep-going -b html doc doc/.build/html
+
+  build-artifacts:
+    name: Build and install distributions
+    needs:
+      - test
+      - test-libreoffice
+      - test-default-runtime
+      - test-stdlib-xml
+      - test-windows
+      - docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Build and check metadata
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build==1.2.2.post1 twine==6.1.0
+          python -m build
+          python -m twine check --strict dist/*
+          test -n "$(find dist -name 'paper_xlsx-*-py3-none-any.whl' -print -quit)"
+          tar -tf dist/*.tar.gz | grep '/doc/paper.rst$'
+      - name: Test wheel and source distribution outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD"
+          for artifact in "$ROOT"/dist/*.whl "$ROOT"/dist/*.tar.gz; do
+            envdir="$(mktemp -d)"
+            python -m venv "$envdir/venv"
+            "$envdir/venv/bin/python" -m pip install "$artifact"
+            cd "$envdir"
+            "$envdir/venv/bin/python" -c "import openpyxl; from importlib.metadata import version; assert openpyxl.__paper_version__ == version('paper-xlsx')"
+            cd "$ROOT"
+            rm -rf "$envdir"
+          done
+      - name: Verify distribution ownership in real environments
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/paper_xlsx-*.whl)
+          test "${#wheels[@]}" -eq 1
+          wheel="$(pwd)/${wheels[0]}"
+          matrix_root="$RUNNER_TEMP/paper-xlsx-install-matrix"
+          rm -rf "$matrix_root"
+
+          expect_failure() {
+            if "$@"; then
+              echo "expected command to refuse: $*" >&2
+              exit 1
+            fi
+          }
+
+          python -m venv "$matrix_root/paper-only"
+          "$matrix_root/paper-only/bin/python" -m pip install "$wheel"
+          "$matrix_root/paper-only/bin/paper-xlsx-doctor"
+
+          python -m venv "$matrix_root/paper-then-upstream"
+          "$matrix_root/paper-then-upstream/bin/python" -m pip install "$wheel"
+          "$matrix_root/paper-then-upstream/bin/python" -m pip install \
+            --no-deps openpyxl==3.1.5
+          expect_failure \
+            "$matrix_root/paper-then-upstream/bin/paper-xlsx-doctor"
+
+          python -m venv "$matrix_root/upstream-then-paper"
+          "$matrix_root/upstream-then-paper/bin/python" -m pip install \
+            openpyxl==3.1.5
+          "$matrix_root/upstream-then-paper/bin/python" -m pip install \
+            --no-deps "$wheel"
+          expect_failure \
+            "$matrix_root/upstream-then-paper/bin/paper-xlsx-doctor"
+          expect_failure "$matrix_root/upstream-then-paper/bin/python" \
+            -c "import openpyxl"
+
+          python -m venv "$matrix_root/unsafe-uninstall"
+          "$matrix_root/unsafe-uninstall/bin/python" -m pip install "$wheel"
+          "$matrix_root/unsafe-uninstall/bin/python" -m pip install \
+            --no-deps openpyxl==3.1.5
+          "$matrix_root/unsafe-uninstall/bin/python" -m pip uninstall \
+            --yes openpyxl
+          expect_failure \
+            "$matrix_root/unsafe-uninstall/bin/paper-xlsx-doctor"
+      - name: Upload checked distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-distributions-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error

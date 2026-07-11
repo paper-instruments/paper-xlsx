@@ -1,4 +1,4 @@
 pip
-lxml
+lxml>=6.1,<7
 pandas
 sphinx_rtd_theme

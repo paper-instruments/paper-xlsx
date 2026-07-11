@@ -63,6 +63,21 @@ class TestProtectAndScrub:
         assert wb2["Schedule"]["B2"].protection.locked is False
         assert wb2["Schedule"]["B12"].protection.locked is True
 
+    def test_invalid_delivery_password_is_atomic(self, fixture_copy):
+        wb = load_workbook(fixture_copy("features/schedule_calc.xlsx"),
+                           preserve=True)
+        ws = wb["Schedule"]
+        before = (ws["B2"].protection.locked,
+                  ws.protection.sheet,
+                  ws.protection.password)
+
+        with pytest.raises(TypeError, match="password must be a string"):
+            wb.protect_for_delivery(123)
+
+        assert (ws["B2"].protection.locked,
+                ws.protection.sheet,
+                ws.protection.password) == before
+
     def test_scrub_reports_everything(self, fixture_copy, tmp_path):
         from openpyxl.comments import Comment
 
@@ -189,6 +204,26 @@ class TestPivotRefresh:
         wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"))
         with pytest.raises(ValueError, match="preserve"):
             wb.set_pivot_refresh_on_load()
+
+    def test_malformed_later_pivot_does_not_commit_earlier_patch(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        crafted = tmp_path / "two-pivots.xlsx"
+        valid = (b'<pivotCacheDefinition xmlns="http://schemas.openxmlformats.'
+                 b'org/spreadsheetml/2006/main"><cacheSource type="worksheet"/>'
+                 b'</pivotCacheDefinition>')
+        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(crafted, "w") as zout:
+            for name in zin.namelist():
+                zout.writestr(zin.getinfo(name), zin.read(name))
+            zout.writestr("xl/pivotCache/pivotCacheDefinition1.xml", valid)
+            zout.writestr("xl/pivotCache/pivotCacheDefinition2.xml",
+                          b"<pivotCacheDefinition")
+
+        wb = load_workbook(crafted, preserve=True)
+        before = dict(wb._paper_ledger.replaced_parts)
+        with pytest.raises(UnsupportedStructureError):
+            wb.set_pivot_refresh_on_load()
+        assert wb._paper_ledger.replaced_parts == before
 
 
 class TestHardening:

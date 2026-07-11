@@ -87,24 +87,42 @@ def _check_extension(filename):
             raise InvalidFileException(msg)
 
 
-# decompression caps: a part is refused
-# when it inflates past BOTH triggers — absolute size AND, for large
-# parts, a compression ratio no real spreadsheet content reaches
+# Stock loads retain the fork-point safeguards. Preserve mode keeps the full
+# package in memory, so it applies tighter package-wide limits before reading
+# any member data.
 _DECOMPRESSION_MAX_PART = 2 * 1024 * 1024 * 1024      # 2 GiB per part
 _DECOMPRESSION_RATIO_CAP = 500                        # zip bombs: >>1000x
 _DECOMPRESSION_RATIO_FLOOR = 64 * 1024 * 1024         # ratio checked >64MB
+_PRESERVE_DECOMPRESSION_MAX_PART = 256 * 1024 * 1024  # 256 MiB per part
+_DECOMPRESSION_MAX_ENTRIES = 10000
+_DECOMPRESSION_MAX_TOTAL = 512 * 1024 * 1024           # 512 MiB aggregate
 
 
-def _check_decompression_caps(archive):
+def _check_decompression_caps(archive, *, preserve=False):
     from openpyxl.errors import UnsupportedStructureError
 
-    for info in archive.infolist():
-        if info.file_size > _DECOMPRESSION_MAX_PART:
+    infos = archive.infolist()
+    if preserve:
+        if len(infos) > _DECOMPRESSION_MAX_ENTRIES:
+            raise UnsupportedStructureError(
+                "archive declares {0} entries, past the {1}-entry cap; "
+                "refusing before inflation. Nothing was loaded.".format(
+                    len(infos), _DECOMPRESSION_MAX_ENTRIES))
+        total = sum(info.file_size for info in infos)
+        if total > _DECOMPRESSION_MAX_TOTAL:
+            raise UnsupportedStructureError(
+                "archive declares {0} aggregate uncompressed bytes, past "
+                "the {1}-byte cap; refusing before inflation. Nothing was "
+                "loaded.".format(total, _DECOMPRESSION_MAX_TOTAL))
+    max_part = (_PRESERVE_DECOMPRESSION_MAX_PART if preserve
+                else _DECOMPRESSION_MAX_PART)
+    for info in infos:
+        if info.file_size > max_part:
             raise UnsupportedStructureError(
                 "part {0!r} declares {1} bytes uncompressed, past the "
                 "{2}-byte cap; refusing to inflate it. Nothing was "
                 "loaded.".format(info.filename, info.file_size,
-                                 _DECOMPRESSION_MAX_PART))
+                                 max_part))
         if (info.file_size > _DECOMPRESSION_RATIO_FLOOR
                 and info.compress_size > 0
                 and info.file_size / info.compress_size
@@ -118,7 +136,7 @@ def _check_decompression_caps(archive):
                     info.compress_size, info.file_size))
 
 
-def _validate_archive(filename):
+def _validate_archive(filename, *, preserve=False):
     """
     Does a first check whether filename is a string or a file-like
     object. If it is a string representing a filename, a check is done
@@ -132,9 +150,37 @@ def _validate_archive(filename):
         _check_extension(filename)
 
     _refuse_cfb(filename)
-    archive = ZipFile(filename, 'r')
-    _check_decompression_caps(archive)
-    return archive
+    archive = None
+    try:
+        archive = ZipFile(filename, 'r')
+        if preserve:
+            from openpyxl.preserve.zipguard import validate_archive
+
+            _check_decompression_caps(archive, preserve=True)
+            validate_archive(archive, context="preserve-mode workbook")
+        else:
+            _check_decompression_caps(archive, preserve=False)
+        return archive
+    except Exception as exc:
+        if archive is not None:
+            close = getattr(archive, "close", None)
+            if callable(close):
+                close()
+        if preserve:
+            from openpyxl.errors import PaperRefusal, UnsupportedStructureError
+
+            if isinstance(exc, PaperRefusal):
+                raise
+            import zipfile
+
+            if isinstance(exc, (zipfile.BadZipFile, zipfile.LargeZipFile,
+                                RuntimeError, NotImplementedError)):
+                raise UnsupportedStructureError(
+                    "preserve-mode workbook has invalid ZIP structure "
+                    "({0}). Nothing was loaded.".format(exc),
+                    kind="invalid-zip-package",
+                ) from exc
+        raise
 
 
 # OLE2/CFB magic: what an ENCRYPTED xlsx actually is on disk (the zip is
@@ -177,12 +223,9 @@ def _read_source_bytes(fn):
     that will later be overwritten in place, so retention must be eager —
     a retained path or lazy re-read would see partially overwritten bytes).
     """
-    if hasattr(fn, "read"):
-        if hasattr(fn, "seek"):
-            fn.seek(0)
-        return fn.read()
-    with open(fn, "rb") as f:
-        return f.read()
+    from openpyxl.preserve.limits import read_bounded
+
+    return read_bounded(fn, context="preserve-mode workbook")
 
 
 def _find_workbook_part(package):
@@ -242,7 +285,7 @@ class ExcelReader:
                     raise
             self._source_blob = _read_source_bytes(fn)
             fn = BytesIO(self._source_blob)
-        self.archive = _validate_archive(fn)
+        self.archive = _validate_archive(fn, preserve=preserve)
         self.valid_files = self.archive.namelist()
         if preserve and len(self.valid_files) != len(set(self.valid_files)):
             # a parser differential: the reader takes the
@@ -287,6 +330,8 @@ class ExcelReader:
         wb_part = _find_workbook_part(self.package)
         self.parser = WorkbookParser(self.archive, wb_part.PartName[1:], keep_links=self.keep_links)
         self.parser.parse()
+        if self.preserve:
+            self._validate_sheet_relationships()
         wb = self.parser.wb
         wb._sheets = []
         wb._data_only = self.data_only
@@ -306,8 +351,49 @@ class ExcelReader:
         if self.preserve:
             wb._preserve = True
             wb._paper_source = self._source_blob
+            wb._paper_content_type = wb_part.ContentType
 
         self.wb = wb
+
+
+    def _validate_sheet_relationships(self):
+        """Every workbook sheet must resolve to one present internal part."""
+        from openpyxl.errors import UnsupportedStructureError
+
+        rels = self.parser.rels
+        names = set(self.valid_files)
+        for sheet in self.parser.sheets:
+            if not sheet.id:
+                raise UnsupportedStructureError(
+                    "sheet {0!r} has no workbook relationship id. Nothing "
+                    "was loaded.".format(sheet.name),
+                    kind="missing-sheet-relationship",
+                    anchor=sheet.name,
+                )
+            rel = rels.get(sheet.id)
+            if rel is None:
+                raise UnsupportedStructureError(
+                    "sheet {0!r} refers to missing relationship {1!r}. "
+                    "Nothing was loaded.".format(sheet.name, sheet.id),
+                    kind="missing-sheet-relationship",
+                    anchor=sheet.name,
+                )
+            if rel.TargetMode == "External":
+                raise UnsupportedStructureError(
+                    "sheet {0!r} uses an external workbook relationship; "
+                    "worksheet parts must be internal. Nothing was loaded."
+                    .format(sheet.name),
+                    kind="invalid-sheet-relationship",
+                    anchor=sheet.name,
+                )
+            if rel.target not in names:
+                raise UnsupportedStructureError(
+                    "sheet {0!r} relationship {1!r} targets missing part "
+                    "{2!r}. Nothing was loaded.".format(
+                        sheet.name, sheet.id, rel.target),
+                    kind="missing-sheet-part",
+                    anchor=sheet.name,
+                )
 
 
     def read_properties(self):

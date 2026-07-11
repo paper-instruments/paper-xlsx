@@ -3,17 +3,23 @@
 import hashlib
 import io
 import zipfile
+from collections import Counter
 from xml.etree import ElementTree as ET
+
+from openpyxl.errors import UnsupportedStructureError
+
+
+_MAX_ZIP_ENTRIES = 10000
+_MAX_ZIP_PART = 256 * 1024 * 1024
+_MAX_ZIP_UNCOMPRESSED = 512 * 1024 * 1024
+_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
 
 def _read_payload_source(source):
     """Accept a filesystem path, bytes, or a binary file-like; return bytes."""
-    if isinstance(source, (bytes, bytearray)):
-        return bytes(source)
-    if hasattr(source, "read"):
-        return source.read()
-    with open(source, "rb") as f:
-        return f.read()
+    from openpyxl.preserve.limits import read_bounded
+
+    return read_bounded(source, context="package diff input")
 
 
 def _looks_like_xml(payload):
@@ -21,17 +27,18 @@ def _looks_like_xml(payload):
     return head.startswith(b"<")
 
 
-def _significant_text(text):
+def _significant_text(text, *, preserve=False, leaf=False):
     """Inter-element whitespace is insignificant; any non-whitespace text is
     compared exactly — cell text content is never normalized."""
     if text is None:
         return ""
-    if text.strip() == "":
+    if text.strip() == "" and not preserve and not leaf:
         return ""
     return text
 
 
-def _walk(a, b, path, diffs, max_diffs):
+def _walk(a, b, path, diffs, max_diffs, parent_preserve_a=False,
+          parent_preserve_b=False):
     if len(diffs) >= max_diffs:
         return
     if a.tag != b.tag:
@@ -40,9 +47,15 @@ def _walk(a, b, path, diffs, max_diffs):
     if dict(a.attrib) != dict(b.attrib):
         diffs.append("{0}: attrib {1!r} != {2!r}".format(
             path, dict(a.attrib), dict(b.attrib)))
-    if _significant_text(a.text) != _significant_text(b.text):
+    preserve_a = a.attrib.get(_XML_SPACE) == "preserve" or (
+        parent_preserve_a and a.attrib.get(_XML_SPACE) != "default")
+    preserve_b = b.attrib.get(_XML_SPACE) == "preserve" or (
+        parent_preserve_b and b.attrib.get(_XML_SPACE) != "default")
+    if _significant_text(a.text, preserve=preserve_a, leaf=not list(a)) != \
+            _significant_text(b.text, preserve=preserve_b, leaf=not list(b)):
         diffs.append("{0}: text {1!r} != {2!r}".format(path, a.text, b.text))
-    if _significant_text(a.tail) != _significant_text(b.tail):
+    if _significant_text(a.tail, preserve=parent_preserve_a) != \
+            _significant_text(b.tail, preserve=parent_preserve_b):
         diffs.append("{0}: tail {1!r} != {2!r}".format(path, a.tail, b.tail))
     a_children = list(a)
     b_children = list(b)
@@ -52,7 +65,7 @@ def _walk(a, b, path, diffs, max_diffs):
         return
     for i, (ca, cb) in enumerate(zip(a_children, b_children)):
         _walk(ca, cb, "{0}/{1}[{2}]".format(path, ca.tag.split('}')[-1], i),
-              diffs, max_diffs)
+              diffs, max_diffs, preserve_a, preserve_b)
 
 
 def xml_semantic_diff(a, b, max_diffs=25):
@@ -63,8 +76,18 @@ def xml_semantic_diff(a, b, max_diffs=25):
     which is never normalized. Returns a list of human-readable differences,
     empty when equivalent.
     """
-    ta = ET.fromstring(_read_payload_source(a))
-    tb = ET.fromstring(_read_payload_source(b))
+    payload_a = _read_payload_source(a)
+    payload_b = _read_payload_source(b)
+    for payload in (payload_a, payload_b):
+        if b"<!DOCTYPE" in payload:
+            raise UnsupportedStructureError(
+                "semantic XML comparison refuses DTD-bearing input because "
+                "entity expansion can make distinct source documents compare "
+                "equal",
+                kind="xml-dtd-refused",
+            )
+    ta = ET.fromstring(payload_a)
+    tb = ET.fromstring(payload_b)
     diffs = []
     _walk(ta, tb, "/" + ta.tag.split("}")[-1], diffs, max_diffs)
     return diffs
@@ -139,8 +162,38 @@ class PackageDiff:
 
 def _payloads(source):
     data = _read_payload_source(source)
+    from openpyxl.preserve.zipguard import validate_package_bytes
+
+    validate_package_bytes(data, context="package diff input")
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        return {info.filename: zf.read(info.filename) for info in zf.infolist()}
+        infos = zf.infolist()
+        names = [info.filename for info in infos]
+        duplicates = sorted(name for name, count in Counter(names).items()
+                            if count > 1)
+        if duplicates:
+            raise UnsupportedStructureError(
+                "archive contains duplicate ZIP entry names ({0}); package "
+                "diff refuses because choosing one copy could produce a "
+                "false-clean result.".format(", ".join(duplicates)))
+        if len(infos) > _MAX_ZIP_ENTRIES:
+            raise UnsupportedStructureError(
+                "archive declares {0} entries, past the {1}-entry cap; "
+                "refusing before inflation.".format(len(infos),
+                                                     _MAX_ZIP_ENTRIES))
+        oversized = next(
+            (info for info in infos if info.file_size > _MAX_ZIP_PART), None)
+        if oversized is not None:
+            raise UnsupportedStructureError(
+                "archive part {0!r} declares {1} uncompressed bytes, past "
+                "the {2}-byte diff cap; refusing before inflation.".format(
+                    oversized.filename, oversized.file_size, _MAX_ZIP_PART))
+        total = sum(info.file_size for info in infos)
+        if total > _MAX_ZIP_UNCOMPRESSED:
+            raise UnsupportedStructureError(
+                "archive declares {0} aggregate uncompressed bytes, past "
+                "the {1}-byte cap; refusing before inflation.".format(
+                    total, _MAX_ZIP_UNCOMPRESSED))
+        return {info.filename: zf.read(info) for info in infos}
 
 
 def diff_package(a, b, max_detail=25):
