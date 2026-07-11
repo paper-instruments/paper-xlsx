@@ -6,20 +6,31 @@ import re
 from importlib import metadata
 
 
+_GUARDED_DISTRIBUTIONS = ("openpyxl", "paper-xlsx")
+
+
 def _canonical_name(name):
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _installed_distribution_names():
+    """The guarded distribution names that are actually installed.
+
+    Two targeted lookups keep ``import openpyxl`` overhead independent of
+    the environment's size; enumerating every installed distribution's
+    metadata costs time linear in the number of packages, on every import.
+    A lookup that fails for any reason other than a clean hit counts the
+    distribution as absent — this guard must never be the thing that
+    breaks ``import openpyxl``, and ``paper-xlsx-doctor`` performs the
+    deep verification.
+    """
     names = set()
-    try:
-        distributions = metadata.distributions()
-    except Exception:
-        return names
-    for distribution in distributions:
-        name = distribution.metadata.get("Name")
-        if name:
-            names.add(_canonical_name(name))
+    for requested in _GUARDED_DISTRIBUTIONS:
+        try:
+            metadata.distribution(requested)
+        except Exception:
+            continue
+        names.add(requested)
     return names
 
 

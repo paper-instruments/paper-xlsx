@@ -7,11 +7,13 @@ from collections import Counter
 from xml.etree import ElementTree as ET
 
 from openpyxl.errors import UnsupportedStructureError
+from openpyxl.preserve.zipguard import (
+    MAX_ENTRIES as _MAX_ZIP_ENTRIES,
+    MAX_PART_BYTES as _MAX_ZIP_PART,
+    MAX_TOTAL_BYTES as _MAX_ZIP_UNCOMPRESSED,
+)
 
 
-_MAX_ZIP_ENTRIES = 10000
-_MAX_ZIP_PART = 256 * 1024 * 1024
-_MAX_ZIP_UNCOMPRESSED = 512 * 1024 * 1024
 _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
 

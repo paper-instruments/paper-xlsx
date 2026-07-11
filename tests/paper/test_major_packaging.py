@@ -47,8 +47,48 @@ def test_runtime_version_comes_from_packaging_source():
     assert openpyxl.__paper_version__ == __paper_version__
 
 
-def test_release_candidate_version_is_newer_than_published_release():
+def test_release_candidate_version_pin():
+    # Deliberate pin: bump alongside openpyxl/_paper_version.py at release.
     assert openpyxl.__paper_version__ == "0.1.1"
+
+
+class _StubDistribution:
+    """Just enough of importlib.metadata.Distribution for record checks."""
+
+    def __init__(self, files):
+        self._files = files
+
+    def read_text(self, name):
+        return self._files.get(name)
+
+    def locate_file(self, path):
+        return Path(str(path))
+
+
+def test_doctor_accepts_editable_install_without_hashed_files():
+    from paper_xlsx_doctor import _verify_openpyxl_record
+
+    record = "__editable__.paper_xlsx_finder.py,sha256=abc,1\n"
+    editable = _StubDistribution({
+        "RECORD": record,
+        "direct_url.json":
+            '{"url": "file:///src", "dir_info": {"editable": true}}',
+    })
+    _verify_openpyxl_record(editable)
+
+    wheel_like = _StubDistribution({"RECORD": record})
+    with pytest.raises(DoctorError, match="no hashed openpyxl"):
+        _verify_openpyxl_record(wheel_like)
+
+
+def test_preserve_reader_caps_match_zipguard():
+    # reader/excel.py cannot import the preserve package at module scope,
+    # so its preserve-mode literals must track zipguard's source of truth.
+    from openpyxl.preserve import zipguard
+
+    assert excel._PRESERVE_DECOMPRESSION_MAX_PART == zipguard.MAX_PART_BYTES
+    assert excel._DECOMPRESSION_MAX_ENTRIES == zipguard.MAX_ENTRIES
+    assert excel._DECOMPRESSION_MAX_TOTAL == zipguard.MAX_TOTAL_BYTES
 
 
 def test_doctor_record_filter_only_accepts_safe_openpyxl_paths():

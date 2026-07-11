@@ -163,7 +163,7 @@ def _check_display_name(wb, ws, tbl, original_names):
             if other_name.casefold() == folded:
                 _refuse("table {0!r} collides with table {1!r} on sheet "
                         "{2!r}; displayNames are workbook-"
-                    "unique.".format(name, other_name, sheet.title))
+                        "unique.".format(name, other_name, sheet.title))
 
 
 def _validate_formula_grid(formula, table_name):

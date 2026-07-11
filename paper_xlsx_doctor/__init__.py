@@ -7,6 +7,7 @@ import csv
 import hashlib
 import hmac
 import importlib
+import json
 import sys
 from importlib.metadata import Distribution, PackageNotFoundError, distribution
 from io import StringIO
@@ -74,16 +75,39 @@ def _installed_distribution(name: str) -> Optional[Distribution]:
         return None
 
 
+def _is_editable_install(dist: Distribution) -> bool:
+    """PEP 660 editable installs record their state in direct_url.json."""
+    payload = dist.read_text("direct_url.json")
+    if payload is None:
+        return False
+    try:
+        direct_url = json.loads(payload)
+    except ValueError:
+        return False
+    dir_info = direct_url.get("dir_info")
+    return isinstance(dir_info, dict) and dir_info.get("editable") is True
+
+
 def _verify_openpyxl_record(dist: Distribution) -> None:
     record = dist.read_text("RECORD")
     if record is None:
-        raise DoctorError("paper-xlsx RECORD is missing")
+        raise DoctorError(
+            "paper-xlsx has no RECORD to verify against. Wheel installs "
+            "always carry one; legacy setup.py/egg installs cannot be "
+            "verified — reinstall from a wheel (or, for development, use a "
+            "modern editable install: pip install -e .)")
     entries = tuple(
         (relative_path, hash_spec)
         for relative_path, hash_spec in _openpyxl_record_entries(record)
         if hash_spec
     )
     if not entries:
+        if _is_editable_install(dist):
+            # An editable install materializes import shims, not hashed
+            # openpyxl files; the source tree is the live code, so there is
+            # nothing meaningful for file hashes to attest. The
+            # dual-distribution and sentinel checks still apply.
+            return
         raise DoctorError(
             "paper-xlsx RECORD has no hashed openpyxl package files")
     for relative_path, hash_spec in entries:

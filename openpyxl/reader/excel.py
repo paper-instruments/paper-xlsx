@@ -89,7 +89,10 @@ def _check_extension(filename):
 
 # Stock loads retain the fork-point safeguards. Preserve mode keeps the full
 # package in memory, so it applies tighter package-wide limits before reading
-# any member data.
+# any member data. The preserve-mode values must stay equal to
+# openpyxl.preserve.zipguard's MAX_ENTRIES / MAX_PART_BYTES /
+# MAX_TOTAL_BYTES (kept as literals here because this module must not
+# import the preserve package at module scope).
 _DECOMPRESSION_MAX_PART = 2 * 1024 * 1024 * 1024      # 2 GiB per part
 _DECOMPRESSION_RATIO_CAP = 500                        # zip bombs: >>1000x
 _DECOMPRESSION_RATIO_FLOOR = 64 * 1024 * 1024         # ratio checked >64MB

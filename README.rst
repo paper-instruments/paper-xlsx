@@ -118,8 +118,8 @@ the current openpyxl fork point.
 Installation
 ------------
 
-``paper-xlsx`` 0.1.0 is published on PyPI. This source tree is the 0.1.1
-release candidate::
+``paper-xlsx`` is published on PyPI (this source tree carries the version in
+``openpyxl/_paper_version.py``)::
 
     python -m pip install paper-xlsx
 
