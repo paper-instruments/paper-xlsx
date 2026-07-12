@@ -237,6 +237,8 @@ def scan_sheet(data):
             if end == -1:
                 raise ScanRefusal("cannot splice: unterminated processing "
                                   "instruction at byte {0}".format(lt))
+            if current_cell is not None:
+                current_cell.has_unowned_children = True
             if data[lt:lt + 5] == b"<?xml":
                 m = _ENCODING_RE.search(data[lt:end])
                 if m and m.group(1).lower().replace(b"_", b"-") not in (
@@ -251,6 +253,8 @@ def scan_sheet(data):
                 end = data.find(b"-->", lt)
                 if end == -1:
                     raise ScanRefusal("cannot splice: unterminated comment")
+                if current_cell is not None:
+                    current_cell.has_unowned_children = True
                 pos = end + 3
                 continue
             if data.startswith(b"<![CDATA[", lt):

@@ -144,7 +144,7 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
                      or zipio._same_occupant(
                          expected_identity, source_identity)):
             workbook._paper_source_identity = committed_identity
-        return committed_identity
+        return True
     finally:
         state.restore()
 

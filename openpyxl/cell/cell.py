@@ -224,6 +224,7 @@ class Cell(StyleableObject):
         transaction = _CellBindTransaction(self)
         try:
             ws = self.parent
+            old = self._data_type
             ledger = getattr(getattr(ws, "parent", None),
                              "_paper_ledger", None)
             if ledger is not None and ledger.armed \
@@ -233,7 +234,9 @@ class Cell(StyleableObject):
 
                 _guard_data_only_cell_mutation(
                     ws.parent, self, "data_type assignment")
-            old = self._data_type
+            if old == value:
+                return
+            _check_protection(self)
             self._data_type = value
             _mark_cell_dirty(
                 self, formula_involved='f' in (old, value),

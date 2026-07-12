@@ -1,4 +1,5 @@
 import io
+import hashlib
 import os
 
 import pytest
@@ -49,6 +50,52 @@ def test_validation_race_preserves_racing_occupant(tmp_path):
 
     assert refusal.value.kind == "destination-identity-changed"
     assert destination.read_bytes() == b"intruder"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX exchange hook")
+def test_unavailable_atomic_exchange_is_a_typed_refusal(
+        tmp_path, monkeypatch):
+    destination = tmp_path / "destination.xlsx"
+    destination.write_bytes(b"original")
+
+    def unavailable(*_args):
+        raise OSError("exchange unsupported")
+
+    monkeypatch.setattr(zipio, "_posix_exchange", unavailable)
+    with pytest.raises(UnsupportedStructureError) as refusal:
+        zipio.deliver(b"candidate", destination)
+
+    assert refusal.value.kind == "atomic-replace-unavailable"
+    assert destination.read_bytes() == b"original"
+
+
+def test_delivery_returns_verified_candidate_identity(tmp_path, monkeypatch):
+    destination = tmp_path / "destination.xlsx"
+    destination.write_bytes(b"original")
+
+    def replace_after_commit(_directory):
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(b"intruder")
+        os.replace(replacement, destination)
+
+    monkeypatch.setattr(zipio, "_fsync_directory", replace_after_commit)
+    committed = zipio.deliver(b"candidate", destination)
+
+    assert committed.digest == hashlib.sha256(b"candidate").hexdigest()
+    assert destination.read_bytes() == b"intruder"
+
+
+def test_new_destination_postcommit_failure_does_not_unlink(tmp_path):
+    destination = tmp_path / "destination.xlsx"
+
+    def fail_postcommit():
+        raise RuntimeError("source changed")
+
+    with pytest.raises(RuntimeError, match="source changed"):
+        zipio.deliver(
+            b"candidate", destination, postcommit=fail_postcommit)
+
+    assert destination.read_bytes() == b"candidate"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX exchange hook")
@@ -141,6 +188,16 @@ def test_repeated_same_path_saves_advance_custody(tmp_path):
     assert reopened.active["B2"].value == "first"
     assert reopened.active["C3"].value == "second"
     assert workbook._paper_source_identity != first
+
+
+def test_preserve_save_workbook_keeps_boolean_success_contract(tmp_path):
+    from openpyxl.writer.excel import save_workbook
+
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(_workbook_bytes("original"))
+    workbook = load_workbook(source, preserve=True)
+
+    assert save_workbook(workbook, io.BytesIO()) is True
 
 
 def test_source_handle_save_works_without_ledger_crosscheck(

@@ -482,6 +482,8 @@ def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
                value_overwrites=frozenset()):
     """Edits inside one existing row: replace/insert/delete cells, sync the
     row start tag's attributes when they changed."""
+    from openpyxl.cell.rich_text import CellRichText
+
     edits = []
 
     if new_attrs is not None:
@@ -543,7 +545,8 @@ def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
         preserve_cell_content = (
             cell is not None and original_cell is not None
             and coordinate not in value_overwrites
-            and cell_span.shared_si is None)
+            and cell_span.shared_si is None
+            and not isinstance(cell._value, CellRichText))
         if preserve_cell_content:
             rendered = emit.patch_cell_style(original_cell, resolve(cell))
         else:

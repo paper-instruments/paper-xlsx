@@ -89,7 +89,8 @@ def formula_surfaces(wb):
             if isinstance(getattr(sheet, attribute), str):
                 yield FormulaSurface(
                     sheet, sheet, attribute,
-                    "{0} on {1!r}".format(attribute, sheet.title))
+                    "{0} on {1!r}".format(attribute, sheet.title),
+                    range_ref=(attribute == "print_area"))
         for cell in sheet._cells.values():
             if cell.data_type == "f" and isinstance(cell._value, str):
                 yield FormulaSurface(
@@ -272,6 +273,12 @@ def _validate_table_shift(sheet, operation, axis, index, amount, is_delete):
             too_short = overlap and max_row - min_row + 1 - overlap < \
                 minimum_rows
             unsafe = header_hit or totals_hit or too_short
+        else:
+            inside_table = min_row < index <= max_row
+            calculated = any(
+                column.calculatedColumnFormula is not None
+                for column in table.tableColumns)
+            unsafe = inside_table and calculated
         if unsafe:
             raise UnsupportedStructureError(
                 "{0}() intersects table {1!r} where table column, header, "
@@ -303,6 +310,10 @@ def _has_unqualified_cell_reference(value):
 
 def apply_rewrites(rewrites):
     for surface, value in rewrites:
+        if surface.cell:
+            cell = surface.owner
+            if cell.parent._cells.get((cell.row, cell.column)) is not cell:
+                continue
         surface.replace(value)
 
 

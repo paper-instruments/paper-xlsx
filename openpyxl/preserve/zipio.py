@@ -258,19 +258,29 @@ def _conditional_replace(tmp_path, destination, expected, precommit=None,
             try:
                 postcommit()
             except BaseException:
-                current = path_identity(expected.requested)
-                if _same_occupant(current, candidate):
-                    os.unlink(destination)
+                # There is no portable compare-and-unlink operation. Leaving
+                # our validated candidate is safer than racing an unlink that
+                # could remove a concurrent writer's replacement.
                 raise
-        return
+        return installed
 
-    if os.name == "nt":
-        backup = tmp_path + ".previous"
-        _windows_replace(destination, tmp_path, backup)
-        displaced = backup
-    else:
-        _posix_exchange(tmp_path, destination)
-        displaced = tmp_path
+    try:
+        if os.name == "nt":
+            backup = tmp_path + ".previous"
+            _windows_replace(destination, tmp_path, backup)
+            displaced = backup
+        else:
+            _posix_exchange(tmp_path, destination)
+            displaced = tmp_path
+    except OSError as exc:
+        from openpyxl.errors import UnsupportedStructureError
+
+        raise UnsupportedStructureError(
+            "destination {0!r} cannot be replaced with the required atomic "
+            "exchange on this filesystem. Nothing was written.".format(
+                expected.requested),
+            kind="atomic-replace-unavailable",
+            anchor=expected.requested) from exc
     try:
         previous = path_identity(displaced)
         binding_ok = (
@@ -318,6 +328,7 @@ def _conditional_replace(tmp_path, destination, expected, precommit=None,
                 "the workbook was saved correctly, but the displaced "
                 "destination could not be removed ({0})".format(exc),
                 RuntimeWarning, stacklevel=4)
+        return installed
     except BaseException:
         raise
 
@@ -495,7 +506,7 @@ def _replace_for_open_path_windows(tmp_path, destination, handle,
     original_position = handle.tell()
     handle.close()
     try:
-        _conditional_replace(
+        committed = _conditional_replace(
             tmp_path, destination, expected, precommit=precommit,
             postcommit=postcommit)
     except BaseException:
@@ -517,21 +528,20 @@ def _replace_for_open_path_windows(tmp_path, destination, handle,
             "the workbook was saved correctly, but the destination handle "
             "could not be reopened after atomic replacement ({0}); the "
             "handle is closed".format(exc)), stacklevel=4)
+    return committed
 
 
 def _replace_for_open_path(tmp_path, destination, handle, reopen_path,
                            expected, precommit=None, postcommit=None):
     """Replace a path and keep pandas' exact BufferedRandom usable."""
     if handle is None:
-        _conditional_replace(
+        return _conditional_replace(
             tmp_path, destination, expected, precommit=precommit,
             postcommit=postcommit)
-        return
     if os.name == "nt":
-        _replace_for_open_path_windows(
+        return _replace_for_open_path_windows(
             tmp_path, destination, handle, reopen_path, expected,
             precommit=precommit, postcommit=postcommit)
-        return
     original_position = handle.tell()
     handle.flush()
     original_fd = os.dup(handle.raw.fileno())
@@ -548,7 +558,7 @@ def _replace_for_open_path(tmp_path, destination, handle, reopen_path,
         os.dup2(replacement.fileno(), handle.raw.fileno())
         rebound = True
         handle.seek(0, os.SEEK_END)
-        _conditional_replace(
+        committed = _conditional_replace(
             tmp_path, destination, expected, precommit=precommit,
             postcommit=postcommit)
     except BaseException:
@@ -566,6 +576,7 @@ def _replace_for_open_path(tmp_path, destination, handle, reopen_path,
             os.close(original_fd)
         except OSError:
             pass
+    return committed
 
 
 def _path_destination(target, expected_identity=None):
@@ -655,11 +666,11 @@ def deliver(data, target, *, expected_identity=None, validator=None,
             os.chmod(tmp_path, mode)
         else:
             _apply_creation_mode(tmp_path)
-        _replace_for_open_path(
+        committed = _replace_for_open_path(
             tmp_path, target, path_handle, reopen_path, identity,
             precommit=precommit, postcommit=postcommit)
         _fsync_directory(directory)  # ... and of the rename itself
-        return path_identity(requested)
+        return committed
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -718,11 +729,11 @@ def build_and_deliver(build_fn, target, *, expected_identity=None,
             os.chmod(tmp_path, mode)
         else:
             _apply_creation_mode(tmp_path)
-        _replace_for_open_path(
+        committed = _replace_for_open_path(
             tmp_path, target, path_handle, reopen_path, identity,
             precommit=precommit, postcommit=postcommit)
         _fsync_directory(directory)
-        return path_identity(requested)
+        return committed
     except BaseException:
         try:
             os.unlink(tmp_path)

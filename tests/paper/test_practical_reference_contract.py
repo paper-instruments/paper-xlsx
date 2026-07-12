@@ -291,7 +291,10 @@ def test_table_extent_rewrites_and_destructive_delete_refuses(tmp_path):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Data"
-    _table_with_formulas(sheet)
+    sheet.append(["Amount"])
+    sheet.append([1])
+    sheet.append([2])
+    sheet.add_table(Table(displayName="Calculations", ref="A1:A3"))
     workbook = _preserved(tmp_path, workbook, "table-range.xlsx")
 
     workbook["Data"].insert_rows(2)
@@ -299,6 +302,21 @@ def test_table_extent_rewrites_and_destructive_delete_refuses(tmp_path):
     before = dict(workbook["Data"]._cells)
     with pytest.raises(PaperRefusal):
         workbook["Data"].delete_rows(1, 4)
+    assert workbook["Data"]._cells == before
+
+
+def test_insert_inside_calculated_table_refuses_before_mutation(tmp_path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Data"
+    _table_with_formulas(sheet)
+    workbook = _preserved(tmp_path, workbook, "calculated-table.xlsx")
+    before = dict(workbook["Data"]._cells)
+
+    with pytest.raises(PaperRefusal) as refusal:
+        workbook["Data"].insert_rows(2)
+
+    assert refusal.value.kind == "table-structure-edit-unsupported"
     assert workbook["Data"]._cells == before
 
 
@@ -397,6 +415,37 @@ def test_print_area_follows_structural_shift(tmp_path):
     workbook.active.insert_rows(2)
 
     assert workbook.active.print_area.endswith("$A$1:$A$4")
+
+
+def test_delete_entire_print_area_refuses_before_mutation(tmp_path):
+    workbook = Workbook()
+    workbook.active["A1"] = 1
+    workbook.active.print_area = "A1:A1"
+    workbook = _preserved(tmp_path, workbook, "print-area-delete.xlsx")
+
+    with pytest.raises(PaperRefusal) as refusal:
+        workbook.active.delete_rows(1)
+
+    assert refusal.value.kind == "structural-reference-deleted"
+    assert workbook.active.print_area.endswith("$A$1")
+    assert workbook.active["A1"].value == 1
+
+
+def test_deleted_formula_is_not_reintroduced_as_dirty_orphan(tmp_path):
+    workbook = Workbook()
+    workbook.active["A1"] = "=B1"
+    workbook.active["B1"] = 1
+    workbook = _preserved(tmp_path, workbook, "deleted-formula.xlsx")
+
+    workbook.active.delete_rows(1)
+
+    assert workbook.active._cells == {}
+    assert workbook._paper_ledger.cells.get(workbook.active, set()) == set()
+    assert workbook._paper_ledger.value_overwrites.get(
+        workbook.active, set()) == set()
+    output = io.BytesIO()
+    workbook.save(output)
+    assert load_workbook(output).active._cells == {}
 
 
 def test_workbook_name_without_sheet_context_refuses(tmp_path):

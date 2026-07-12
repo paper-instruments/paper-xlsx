@@ -2,7 +2,11 @@ import io
 import re
 import zipfile
 
+import pytest
+
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
 from openpyxl.preserve import emit, splice
 
 
@@ -67,6 +71,50 @@ def test_cache_patch_preserves_boundary_whitespace_in_string_value():
     assert patched == (
         b'<c r="A1" t="str"><f>1</f>'
         b'<v xml:space="preserve"> updated </v></c>')
+
+
+def test_in_place_rich_text_edit_reemits_modeled_value():
+    workbook = Workbook()
+    workbook.active["A1"] = CellRichText(
+        "old", TextBlock(InlineFont(b=True), " bold"))
+    source = io.BytesIO()
+    workbook.save(source)
+    workbook = load_workbook(source, preserve=True, rich_text=True)
+
+    workbook.active["A1"].value[0] = "new"
+    output = io.BytesIO()
+    workbook.save(output)
+
+    value = load_workbook(output, rich_text=True).active["A1"].value
+    assert value[0] == "new"
+    assert value[1].text == " bold"
+    assert value[1].font.b is True
+
+
+@pytest.mark.parametrize("markup", [b"<!--keep-->", b"<?vendor keep?>"])
+def test_value_edit_refuses_unowned_non_element_markup(markup):
+    workbook = Workbook()
+    workbook.active["A1"] = 1
+    source = io.BytesIO()
+    workbook.save(source)
+    package = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source.getvalue())) as zin, \
+            zipfile.ZipFile(package, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                payload, count = re.subn(
+                    br'(<c r="A1"[^>]*>.*?<v>1</v>)(</c>)',
+                    lambda match: match.group(1) + markup + match.group(2),
+                    payload, flags=re.S)
+                assert count == 1
+            zout.writestr(info, payload)
+    workbook = load_workbook(
+        io.BytesIO(package.getvalue()), preserve=True)
+    workbook.active["A1"] = 2
+
+    with pytest.raises(splice.SpliceRefusal, match="unowned direct-child"):
+        workbook.save(io.BytesIO())
 
 
 def test_style_only_formula_edit_preserves_formula_cache_and_foreign_xml():

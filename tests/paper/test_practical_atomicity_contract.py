@@ -4,6 +4,7 @@ import warnings
 import pytest
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.errors import UnsupportedStructureError
 
 
 def _preserved_workbook():
@@ -74,6 +75,32 @@ def test_interrupt_during_cell_metadata_mark_rolls_back(
 
     assert (cell.data_type, cell.hyperlink, cell.comment,
             _ledger_cells(workbook)) == before
+
+
+def test_noop_data_type_assignment_does_not_mark_value_overwrite():
+    workbook = _preserved_workbook()
+    cell = workbook["Data"]["A1"]
+
+    cell.data_type = cell.data_type
+
+    assert workbook._paper_ledger.cells.get(cell.parent, set()) == set()
+    assert workbook._paper_ledger.value_overwrites.get(
+        cell.parent, set()) == set()
+
+
+def test_strict_protection_refuses_data_type_change_atomically():
+    workbook = _preserved_workbook()
+    sheet = workbook["Data"]
+    sheet["A1"] = "=1+1"
+    sheet.protection.sheet = True
+    workbook.strict_protection = True
+    cell = sheet["A1"]
+    before = (cell.value, cell.data_type, _ledger_state(workbook))
+
+    with pytest.raises(UnsupportedStructureError):
+        cell.data_type = "s"
+
+    assert (cell.value, cell.data_type, _ledger_state(workbook)) == before
 
 
 def test_append_failure_restores_partial_row_and_ledger():
