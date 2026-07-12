@@ -124,10 +124,10 @@ class TestDeliver:
         target = tmp_path / "out.xlsx"
         target.write_bytes(b"ORIGINAL")
 
-        def boom(src, dst):
+        def boom(*args, **kwargs):
             raise OSError("simulated crash mid-rename")
 
-        monkeypatch.setattr(zipio, "_posix_exchange", boom)
+        monkeypatch.setattr(zipio, "_conditional_replace", boom)
         with pytest.raises(OSError, match="simulated crash"):
             zipio.deliver(b"NEW", str(target))
         assert target.read_bytes() == b"ORIGINAL"          # original survives
