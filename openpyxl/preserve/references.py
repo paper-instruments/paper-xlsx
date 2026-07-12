@@ -5,6 +5,23 @@ import re
 
 _DYNAMIC_REFERENCE = re.compile(
     r"(?i)(?<![A-Z0-9_.])(?:INDIRECT|EVALUATE|OFFSET|INDEX)\s*\(")
+_DYNAMIC_FUNCTIONS = {"INDIRECT(", "EVALUATE(", "OFFSET(", "INDEX("}
+
+
+def _has_dynamic_reference(value):
+    """Return whether ``value`` calls a dynamic-reference function."""
+    from openpyxl.formula import Tokenizer
+
+    probe = value[1:] if value.startswith("#") else value
+    formula = probe if probe.startswith("=") else "=" + probe
+    try:
+        tokens = Tokenizer(formula).items
+    except Exception:
+        return bool(_DYNAMIC_REFERENCE.search(probe))
+    return any(
+        token.type == "FUNC" and token.subtype == "OPEN"
+        and token.value.upper() in _DYNAMIC_FUNCTIONS
+        for token in tokens)
 
 
 class FormulaSurface:
@@ -187,7 +204,7 @@ def plan_shift(wb, target_sheet, operation, index, amount):
                 "Nothing was changed.".format(operation, surface.label),
                 kind="three-dimensional-structural-reference",
                 anchor=surface.label)
-        if _DYNAMIC_REFERENCE.search(value):
+        if _has_dynamic_reference(value):
             from openpyxl.errors import UnsupportedStructureError
 
             raise UnsupportedStructureError(
@@ -296,7 +313,7 @@ def plan_rename(wb, old_title, new_title):
     rewrites = []
     for surface in formula_surfaces(wb):
         value = surface.value
-        if _DYNAMIC_REFERENCE.search(value):
+        if _has_dynamic_reference(value):
             from openpyxl.errors import UnsupportedStructureError
 
             raise UnsupportedStructureError(

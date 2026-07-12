@@ -58,6 +58,17 @@ def test_cache_patch_changes_only_type_and_direct_value_span():
         b"<f t='shared' si='2'>A2</f>\r\n<v>2</v>\n</c>")
 
 
+def test_cache_patch_preserves_boundary_whitespace_in_string_value():
+    original = b'<c r="A1"><f>1</f><v>old</v></c>'
+
+    patched = splice._patch_cached_value(
+        original, " updated ", None, "Sheet!A1")
+
+    assert patched == (
+        b'<c r="A1" t="str"><f>1</f>'
+        b'<v xml:space="preserve"> updated </v></c>')
+
+
 def test_style_only_formula_edit_preserves_formula_cache_and_foreign_xml():
     source = _formula_package()
     workbook = load_workbook(io.BytesIO(source), preserve=True)

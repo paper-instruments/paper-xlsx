@@ -159,6 +159,33 @@ def test_dynamic_structural_reference_refuses_before_mutation(
     assert workbook["Data"]["A2"].value == 10
 
 
+def test_dynamic_function_name_inside_text_does_not_block_shift(tmp_path):
+    workbook = Workbook()
+    workbook.active.title = "Data"
+    workbook.active["A2"] = 10
+    workbook.create_sheet("Other")["A1"] = (
+        '=IF(Data!A2="INDEX(",Data!A2,Data!A3)')
+    workbook = _preserved(tmp_path, workbook, "quoted-function-shift.xlsx")
+
+    workbook["Data"].insert_rows(2)
+
+    assert workbook["Other"]["A1"].value == (
+        '=IF(Data!A3="INDEX(",Data!A3,Data!A4)')
+
+
+def test_dynamic_function_name_inside_text_does_not_block_rename(tmp_path):
+    workbook = Workbook()
+    workbook.active.title = "Data"
+    workbook.create_sheet("Other")["A1"] = (
+        '=IF(Data!A1="INDIRECT(",Data!A2,Data!A3)')
+    workbook = _preserved(tmp_path, workbook, "quoted-function-rename.xlsx")
+
+    workbook["Data"].title = "Inputs"
+
+    assert workbook["Other"]["A1"].value == (
+        '=IF(\'Inputs\'!A1="INDIRECT(",\'Inputs\'!A2,\'Inputs\'!A3)')
+
+
 def test_chart_reference_walker_includes_titles_axes_and_multilevel():
     workbook = Workbook()
     sheet = workbook.active

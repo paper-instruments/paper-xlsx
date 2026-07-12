@@ -669,7 +669,10 @@ def _patch_cached_value(cell_bytes, value, epoch, label,
             "written.".format(label))
     t_attr, v_text = _serialize_cached_value(value, epoch)
     head = emit.patch_start_tag_attribute(head, b"t", t_attr)
-    rendered = b"<v>" + v_text + b"</v>"
+    v_open = b"<v>"
+    if isinstance(value, str) and value != value.strip():
+        v_open = b'<v xml:space="preserve">'
+    rendered = v_open + v_text + b"</v>"
     body_start = tag_end + 1
     if cached is not None:
         start = cached.start - body_start
