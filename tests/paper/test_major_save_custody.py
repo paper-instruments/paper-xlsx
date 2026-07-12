@@ -258,7 +258,7 @@ def test_path_backed_replace_failure_reopens_original(
     def fail_replace(_source, _target):
         raise OSError("injected replace failure")
 
-    monkeypatch.setattr(zipio.os, "replace", fail_replace)
+    monkeypatch.setattr(zipio, "_posix_exchange", fail_replace)
     with open(source, "r+b") as target:
         target.seek(7)
         with pytest.raises(OSError, match="injected replace failure"):

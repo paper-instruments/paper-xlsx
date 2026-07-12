@@ -415,14 +415,14 @@ class TestStyleTranslation:
         # out-of-range s index; the translator must map back to file xf 0
         src = fixture_copy("features/schedule_calc.xlsx")
         wb = load_workbook(src, preserve=True, data_only=True)
-        wb["Schedule"]["B12"] = 9999
+        wb["Schedule"]["B2"] = 9999
         out = str(tmp_path / "o.xlsx")
         wb.save(out, allow_formula_loss=True)
         parts = part_payloads(out)
         # no styles.xml change: the edited cell reuses an existing file xf
         assert parts["xl/styles.xml"] == part_payloads(src)["xl/styles.xml"]
         wb2 = load_workbook(out)
-        assert wb2["Schedule"]["B12"].value == 9999
+        assert wb2["Schedule"]["B2"].value == 9999
 
     @pytest.mark.lo_smoke
     def test_lo_authored_style_edit_loads_in_libreoffice(

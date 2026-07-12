@@ -29,10 +29,12 @@ EXCEL_MAX_COL = 16384
 class StructuralEditTransaction:
     """In-memory rollback boundary for a preserve-mode row/column shift."""
 
-    def __init__(self, ws, operation, warn_protection=False):
+    def __init__(self, ws, operation, warn_protection=False,
+                 reference_rewrites=()):
         self.ws = ws
         self.operation = operation
         self.warn_protection = warn_protection
+        self.reference_rewrites = tuple(reference_rewrites)
         self._snapshot = _capture_structural_state(ws.parent)
         self._active = True
 
@@ -95,6 +97,7 @@ def _capture_structural_state(wb):
                 getattr(cell, "_data_type", None),
                 getattr(cell, "_style", None),
                 getattr(link, "ref", None) if link is not None else None,
+                getattr(link, "location", None) if link is not None else None,
             ))
 
         cf_rules = sheet.conditional_formatting._cf_rules
@@ -108,6 +111,18 @@ def _capture_structural_state(wb):
         dv_states = [
             (dv, dv.formula1, dv.formula2, dv.sqref)
             for dv in dv_list
+        ]
+        filter_columns = list(sheet.auto_filter.filterColumn)
+        filter_column_states = [
+            (column, column.colId) for column in filter_columns]
+        sort_state = sheet.auto_filter.sortState
+        sort_conditions = list(sort_state.sortCondition) \
+            if sort_state is not None else []
+        scenario_list = getattr(sheet, "scenarios", None)
+        scenario_inputs = [
+            input_cell
+            for scenario in getattr(scenario_list, "scenario", ()) or ()
+            for input_cell in scenario.inputCells
         ]
         row_items = dict(sheet.row_dimensions)
         col_items = dict(sheet.column_dimensions)
@@ -126,6 +141,17 @@ def _capture_structural_state(wb):
             "dv_list": dv_list,
             "dv_states": dv_states,
             "auto_filter_ref": sheet.auto_filter.ref,
+            "filter_columns": filter_columns,
+            "filter_column_states": filter_column_states,
+            "sort_state": sort_state,
+            "sort_state_ref": getattr(sort_state, "ref", None),
+            "sort_conditions": sort_conditions,
+            "sort_condition_refs": [
+                condition.ref for condition in sort_conditions],
+            "scenario_list": scenario_list,
+            "scenario_sqref": getattr(scenario_list, "sqref", None),
+            "scenario_inputs": scenario_inputs,
+            "scenario_input_refs": [item.r for item in scenario_inputs],
             "row_items": row_items,
             "col_items": col_items,
             "row_dim_states": row_dim_states,
@@ -143,6 +169,13 @@ def _capture_structural_state(wb):
             chart_ref_states.extend(
                 (ref, ref.f) for ref in _chart_source_ref_objects(chart))
 
+    from .references import formula_surfaces
+
+    formula_surface_states = [
+        (surface, surface.value) for surface in formula_surfaces(wb)
+        if not surface.cell
+    ]
+
     led = wb._paper_ledger
     registries = []
     for name in ("_fonts", "_fills", "_borders", "_alignments",
@@ -152,34 +185,33 @@ def _capture_structural_state(wb):
                            dict(registry._dict)))
     ledger_state = None
     if led is not None:
+        def clone(value):
+            if isinstance(value, dict):
+                return {key: clone(item) for key, item in value.items()}
+            if isinstance(value, set):
+                return set(value)
+            if isinstance(value, list):
+                return list(value)
+            return value
+
+        mutable = tuple(
+            name for name in led.__slots__
+            if isinstance(getattr(led, name), (dict, list, set)))
         ledger_state = {
-            "cells": {sheet: set(coords)
-                      for sheet, coords in led.cells.items()},
-            "formulas_changed": led.formulas_changed,
-            "region_snapshots": {
-                sheet: dict(regions)
-                for sheet, regions in led.region_snapshots.items()
+            "mutable": {
+                name: (getattr(led, name), clone(getattr(led, name)))
+                for name in mutable
             },
-            "row_attr_snapshots": {
-                sheet: dict(rows)
-                for sheet, rows in led.row_attr_snapshots.items()
+            "scalars": {
+                name: clone(getattr(led, name)) for name in led.__slots__
+                if name not in mutable
             },
-            "comment_snapshots": {
-                sheet: dict(comments)
-                for sheet, comments in led.comment_snapshots.items()
-            },
-            "value_overwrites": {
-                sheet: set(coords)
-                for sheet, coords in led.value_overwrites.items()
-            },
-            "shifts": {sheet: list(shifts)
-                       for sheet, shifts in led.shifts.items()},
-            "protection_warned": set(led.protection_warned),
         }
     return {
         "sheets": sheet_states,
         "names": name_states,
         "chart_refs": chart_ref_states,
+        "formula_surfaces": formula_surface_states,
         "registries": registries,
         "dxfs": list(wb._differential_styles.styles),
         "ledger": ledger_state,
@@ -189,7 +221,8 @@ def _capture_structural_state(wb):
 def _restore_structural_state(wb, snapshot):
     for state in snapshot["sheets"]:
         sheet = state["sheet"]
-        for (cell, row, column, value, data_type, style, link_ref) in \
+        for (cell, row, column, value, data_type, style, link_ref,
+             link_location) in \
                 state["cell_states"]:
             cell.row = row
             cell.column = column
@@ -200,6 +233,7 @@ def _restore_structural_state(wb, snapshot):
             link = getattr(cell, "_hyperlink", None)
             if link is not None:
                 link.ref = link_ref
+                link.location = link_location
         sheet._cells.clear()
         sheet._cells.update(state["cells"])
         sheet._current_row = state["current_row"]
@@ -214,6 +248,22 @@ def _restore_structural_state(wb, snapshot):
             dv.formula2 = formula2
             dv.sqref = sqref
         sheet.auto_filter.ref = state["auto_filter_ref"]
+        sheet.auto_filter.filterColumn = state["filter_columns"]
+        for column, col_id in state["filter_column_states"]:
+            column.colId = col_id
+        sheet.auto_filter.sortState = state["sort_state"]
+        if state["sort_state"] is not None:
+            state["sort_state"].ref = state["sort_state_ref"]
+            state["sort_state"].sortCondition = state["sort_conditions"]
+        for condition, ref in zip(
+                state["sort_conditions"], state["sort_condition_refs"]):
+            condition.ref = ref
+        sheet.scenarios = state["scenario_list"]
+        if state["scenario_list"] is not None:
+            state["scenario_list"].sqref = state["scenario_sqref"]
+        for item, ref in zip(
+                state["scenario_inputs"], state["scenario_input_refs"]):
+            item.r = ref
         for dim, index in state["row_dim_states"]:
             dim.index = index
         for dim, index, min_value, max_value in state["col_dim_states"]:
@@ -229,6 +279,8 @@ def _restore_structural_state(wb, snapshot):
         name.attr_text = attr_text
     for ref, formula in snapshot["chart_refs"]:
         ref.f = formula
+    for surface, value in snapshot["formula_surfaces"]:
+        surface.replace(value)
     for registry, values, clean, index in snapshot["registries"]:
         registry[:] = values
         registry.clean = clean
@@ -238,8 +290,18 @@ def _restore_structural_state(wb, snapshot):
     led_state = snapshot["ledger"]
     led = wb._paper_ledger
     if led is not None and led_state is not None:
-        for attr, value in led_state.items():
-            setattr(led, attr, value)
+        for name, (container, value) in led_state["mutable"].items():
+            if isinstance(container, dict):
+                container.clear()
+                container.update(value)
+            elif isinstance(container, set):
+                container.clear()
+                container.update(value)
+            elif isinstance(container, list):
+                container[:] = value
+            setattr(led, name, container)
+        for name, value in led_state["scalars"].items():
+            setattr(led, name, value)
 
 
 class AddressRemap:
@@ -557,25 +619,31 @@ def shift_blockers(ws, operation, index, amount=1):
                         "comment/VML parts the shift cannot rewrite")
     if b"<legacyDrawing" in part_payload:
         blockers.append("the sheet references a legacy (VML) drawing")
-    charts = _charts_referencing(wb, ws.title)
+    charts = _charts_referencing(wb, lookup_title)
     if charts:
         # chart series references and drawing anchors are
         # patchable in place — dry-run the planner; only its blockers
         # (extension machinery, would-be #REF!) refuse now
         from .chartpatch import plan_chart_updates
 
+        overrides = {}
+        if led_ref is not None:
+            for prior_operation, prior_index, prior_amount in \
+                    led_ref.shifts.get(ws, ()):
+                prior_plans, prior_blockers = plan_chart_updates(
+                    wb, lookup_title, prior_operation, prior_index,
+                    prior_amount, overrides=overrides)
+                blockers.extend(prior_blockers)
+                overrides.update(prior_plans)
         _plans, chart_blockers = plan_chart_updates(
-            wb, ws.title, operation, index, amount)
+            wb, lookup_title, operation, index, amount,
+            overrides=overrides)
         blockers.extend(chart_blockers)
-    pivots = _pivots_referencing(wb, ws.title)
+    pivots = _pivots_referencing(wb, lookup_title)
     if pivots:
         blockers.append(
             "preserved pivot part(s) {0} reference this sheet".format(
                 ", ".join(sorted(pivots))))
-    if ws.tables:
-        blockers.append("the sheet carries table(s) {0}; table-part "
-                        "rewriting is not supported in v0".format(
-                            ", ".join(sorted(ws.tables))))
     if ws.row_breaks or ws.col_breaks:
         blockers.append("the sheet carries manual page breaks, which "
                         "anchor to row/column numbers (not rewritten in v0)")
@@ -708,16 +776,9 @@ def _sheet_payload(wb, title):
 def _chart_source_ref_objects(chart):
     """The live reference OBJECTS of a model chart's data sources (each
     carries a string ``.f``)."""
-    for ser in getattr(chart, "series", []) or []:
-        for src_name in ("val", "yVal", "xVal", "bubbleSize", "cat", "tx"):
-            src = getattr(ser, src_name, None)
-            if src is None:
-                continue
-            for ref_name in ("numRef", "strRef", "multiLvlStrRef"):
-                ref = getattr(src, ref_name, None)
-                if ref is not None and isinstance(getattr(ref, "f", None),
-                                                  str):
-                    yield ref
+    from .references import chart_source_ref_objects
+
+    yield from chart_source_ref_objects(chart)
 
 
 def _chart_source_refs(chart):
@@ -743,19 +804,13 @@ def _shift_added_chart_refs(chart, target_title, axis, index, amount,
         ref.f = new_f
 
 
-def apply_model_shift(ws, operation, index, amount):
+def apply_model_shift(ws, operation, index, amount, reference_rewrites=None):
     """All the reference updates stock openpyxl skips, applied to the MODEL
     after the cells moved (Excel insert/delete semantics via rewrite.py).
     Also rebases the positional arm snapshots so pure moves are not
     mis-detected as user changes."""
     from .ledger import _armed_ledger_for_ws
-    from .rewrite import (
-        row_mapping,
-        shift_cell_range,
-        shift_formula,
-        shift_formula_fragment,
-        shift_name_value,
-    )
+    from .rewrite import row_mapping, shift_cell_range
 
     wb = ws.parent
     led = _armed_ledger_for_ws(ws)
@@ -769,79 +824,17 @@ def apply_model_shift(ws, operation, index, amount):
     if led is not None:
         _rebase_snapshots(led, ws, mapper, axis)
 
-    # 1. formulas everywhere in the workbook that reference this sheet
-    # (machinery-derived rewrites of accepted formulas: the lint
-    # chokepoint must not judge them — same class as the
-    # rename cascade)
+    # 1. every modeled formula-like surface, planned before cell mutation.
+    from .references import apply_rewrites, plan_shift
+
+    rewrites = (plan_shift(wb, ws, operation, index, amount)
+                if reference_rewrites is None else reference_rewrites)
     _saved_lint = getattr(wb, "formula_lint", "warn")
     wb.formula_lint = "off"
     try:
-        for other in wb.worksheets:
-            for (row, col), cell in list(other._cells.items()):
-                if cell.data_type != "f" \
-                        or not isinstance(cell._value, str):
-                    continue
-                new_formula, changed = shift_formula(
-                    cell._value, other.title, ws.title, axis, index,
-                    amount, is_delete)
-                if changed:
-                    cell.value = new_formula  # via the chokepoint: dirty
+        apply_rewrites(rewrites)
     finally:
         wb.formula_lint = _saved_lint
-
-    # CF and DV formulas are formulas too, but their OOXML permits omission
-    # of the leading '='. They may live on another sheet and reference the
-    # shifted target explicitly.
-    for other in wb.worksheets:
-        for cf in other.conditional_formatting:
-            for rule in cf.rules:
-                rewritten = []
-                changed_any = False
-                for formula in rule.formula or []:
-                    new_formula, changed = shift_formula_fragment(
-                        formula, other.title, ws.title, axis, index, amount,
-                        is_delete)
-                    rewritten.append(new_formula)
-                    changed_any = changed_any or changed
-                if changed_any:
-                    rule.formula = rewritten
-        if other.data_validations:
-            for dv in other.data_validations.dataValidation:
-                for attr in ("formula1", "formula2"):
-                    formula = getattr(dv, attr)
-                    new_formula, changed = shift_formula_fragment(
-                        formula, other.title, ws.title, axis, index, amount,
-                        is_delete)
-                    if changed:
-                        setattr(dv, attr, new_formula)
-
-    # 2. defined names (workbook- and sheet-scoped) and print settings
-    for names in [wb.defined_names] + [s.defined_names
-                                       for s in wb.worksheets]:
-        for name in list(names):
-            dn = names[name]
-            if not isinstance(dn.value, str):
-                continue
-            new_value, changed = shift_name_value(
-                dn.value, ws.title, axis, index, amount, is_delete)
-            if changed:
-                dn.attr_text = new_value
-
-    # 2b. charts ADDED this session are model-rendered at save, so their
-    # data-source references must follow the shift like every other model
-    # reference (loaded charts' parts are byte-patched by
-    # plan_chart_updates instead) — an added chart's range
-    # silently pointed at the pre-shift cells
-    if led is not None:
-        for sheet in wb.worksheets:
-            armed_charts = (led.object_snapshots.get(sheet) or {}).get(
-                "chart", {})
-            for i, chart in enumerate(getattr(sheet, "_charts", []) or []):
-                if i in armed_charts:
-                    continue
-                _shift_added_chart_refs(chart, ws.title, axis, index,
-                                        amount, is_delete,
-                                        shift_name_value)
 
     # 3. sheet-internal regions (fully modeled; the splice re-renders them)
     from collections import OrderedDict
@@ -872,12 +865,76 @@ def apply_model_shift(ws, operation, index, amount):
     if ws.auto_filter and ws.auto_filter.ref:
         from openpyxl.worksheet.cell_range import CellRange
 
+        original_filter = CellRange(ws.auto_filter.ref)
+        mapped_filter_columns = None
+        if axis == "cols":
+            from .rewrite import row_mapping
+
+            map_column = row_mapping(operation, index, amount)
+            mapped_filter_columns = [
+                (column, map_column(original_filter.min_col + column.colId))
+                for column in ws.auto_filter.filterColumn
+            ]
         cr = CellRange(ws.auto_filter.ref)
         filter_state = shift_cell_range(cr, axis, index, amount, is_delete)
         if filter_state == "deleted":
             ws.auto_filter.ref = None
+            ws.auto_filter.filterColumn = []
+            ws.auto_filter.sortState = None
         elif filter_state == "changed":
             ws.auto_filter.ref = cr.coord
+        if mapped_filter_columns is not None and ws.auto_filter.ref:
+            shifted_filter = CellRange(ws.auto_filter.ref)
+            ws.auto_filter.filterColumn = [
+                column for column, absolute in mapped_filter_columns
+                if absolute is not None
+                and shifted_filter.min_col <= absolute <=
+                shifted_filter.max_col
+            ]
+            for column, absolute in mapped_filter_columns:
+                if column in ws.auto_filter.filterColumn:
+                    column.colId = absolute - shifted_filter.min_col
+        sort_state = ws.auto_filter.sortState
+        if sort_state is not None:
+            if sort_state.ref:
+                sort_range = CellRange(sort_state.ref)
+                if shift_cell_range(
+                        sort_range, axis, index, amount, is_delete) == \
+                        "deleted":
+                    sort_state.ref = None
+                else:
+                    sort_state.ref = sort_range.coord
+            for condition in sort_state.sortCondition:
+                if not condition.ref:
+                    continue
+                condition_range = CellRange(condition.ref)
+                if shift_cell_range(
+                        condition_range, axis, index, amount, is_delete) == \
+                        "deleted":
+                    condition.ref = None
+                else:
+                    condition.ref = condition_range.coord
+
+    scenarios = getattr(ws, "scenarios", None)
+    if scenarios is not None:
+        if scenarios.sqref:
+            scenarios.sqref = _shifted_multi_range(
+                scenarios.sqref, axis, index, amount, is_delete,
+                shift_cell_range)
+        from openpyxl.worksheet.cell_range import CellRange
+
+        for scenario in scenarios.scenario:
+            for input_cell in scenario.inputCells:
+                if not input_cell.r:
+                    continue
+                input_range = CellRange(input_cell.r)
+                state = shift_cell_range(
+                    input_range, axis, index, amount, is_delete)
+                if state == "deleted":
+                    raise UnsupportedStructureError(
+                        "the structural edit would delete scenario input "
+                        "{0}. Nothing was changed.".format(input_cell.r))
+                input_cell.r = input_range.coord
 
     if axis == "rows":
         # 4. row display attributes move with their rows
@@ -916,7 +973,8 @@ def apply_model_shift(ws, operation, index, amount):
             link.ref = cell.coordinate
 
     if led is not None:
-        led.shifts.setdefault(ws, []).append((operation, index, amount))
+        if ws not in led.added_sheets:
+            led.shifts.setdefault(ws, []).append((operation, index, amount))
         led.formulas_changed = True
 
 
@@ -977,43 +1035,18 @@ def _shift_span_for_dimension(start, end, index, amount, is_delete):
 
 def validate_model_shift(ws, operation, index, amount):
     """Dry-run every modeled formula reference before cells are moved."""
-    from .rewrite import (
-        shift_formula,
-        shift_formula_fragment,
-        shift_name_value,
-    )
-
     wb = ws.parent
-    axis = "rows" if "rows" in operation else "cols"
-    is_delete = operation.startswith("delete")
+    from .references import plan_shift
+
+    rewrites = plan_shift(wb, ws, operation, index, amount)
     strict_protection = getattr(wb, "strict_protection", False)
     if strict_protection:
         from .ledger import check_protection
-
-    for other in wb.worksheets:
-        for cell in other._cells.values():
-            if cell.data_type == "f" and isinstance(cell._value, str):
-                _rewritten, changed = shift_formula(
-                    cell._value, other.title, ws.title, axis, index,
-                    amount, is_delete)
-                if changed and strict_protection:
-                    check_protection(cell)
-        for cf in other.conditional_formatting:
-            for rule in cf.rules:
-                for formula in rule.formula or []:
-                    shift_formula_fragment(formula, other.title, ws.title,
-                                           axis, index, amount, is_delete)
-        if other.data_validations:
-            for dv in other.data_validations.dataValidation:
-                for formula in (dv.formula1, dv.formula2):
-                    shift_formula_fragment(formula, other.title, ws.title,
-                                           axis, index, amount, is_delete)
-    for names in [wb.defined_names] + [s.defined_names for s in wb.worksheets]:
-        for name in names:
-            value = names[name].value
-            if isinstance(value, str):
-                shift_name_value(value, ws.title, axis, index, amount,
-                                 is_delete)
+    if strict_protection:
+        for surface, _rewritten in rewrites:
+            if surface.cell:
+                check_protection(surface.owner)
+    return rewrites
 
 
 def _rebase_snapshots(led, ws, mapper, axis):
@@ -1033,6 +1066,11 @@ def _rebase_snapshots(led, ws, mapper, axis):
     if dirty:
         led.cells[ws] = {mapped for (r, c) in dirty
                          for mapped in (map_key(r, c),) if mapped is not None}
+    overwrites = led.value_overwrites.get(ws)
+    if overwrites:
+        led.value_overwrites[ws] = {
+            mapped for (r, c) in overwrites
+            for mapped in (map_key(r, c),) if mapped is not None}
     links = led.region_snapshots.get(ws, {}).get("hyperlinks")
     if links:
         led.region_snapshots[ws]["hyperlinks"] = {

@@ -204,26 +204,30 @@ def shift_formula(formula, context_sheet, target_sheet, axis, index, amount,
         raw = token.value
         if "[" in raw:
             continue           # structured/external: refused upstream
+        leading_implicit = "@" if raw.startswith("@") else ""
+        core = raw[1:] if leading_implicit else raw
         sheet = context_sheet
-        ref = raw
+        ref = core
         prefix = ""
-        m = _SHEET_PREFIX_RE.match(raw)
+        m = _SHEET_PREFIX_RE.match(core)
         if m:
             sheet = m.group(1).replace("''", "'") if m.group(1) else m.group(2)
             ref = m.group(3)
-            prefix = raw[:len(raw) - len(ref)]
+            prefix = core[:len(core) - len(ref)]
+        ref_implicit = "@" if ref.startswith("@") else ""
+        bare_ref = ref[1:] if ref_implicit else ref
         if sheet is None or sheet.casefold() != target_sheet.casefold():
             # Excel resolves sheet names case-insensitively; an unprefixed
             # operand with no context sheet (name values) is never ours
             continue
-        new_ref = shift_ref(ref, axis, index, amount, is_delete)
-        if new_ref == ref:
+        new_ref = shift_ref(bare_ref, axis, index, amount, is_delete)
+        if new_ref == bare_ref:
             continue
         changed = True
         if new_ref == REF_ERROR:
             token.value = REF_ERROR   # Excel drops the sheet prefix too
         else:
-            token.value = prefix + new_ref
+            token.value = leading_implicit + prefix + ref_implicit + new_ref
     if not changed:
         return formula, False
     return tok.render(), True
@@ -300,7 +304,9 @@ def rename_sheets_in_formula(formula, mapping):
         raw = token.value
         if "[" in raw:
             continue
-        m = _RENAME_PREFIX_RE.match(raw)
+        leading_implicit = "@" if raw.startswith("@") else ""
+        core = raw[1:] if leading_implicit else raw
+        m = _RENAME_PREFIX_RE.match(core)
         if not m:
             continue
         sheet = m.group(1).replace("''", "'") if m.group(1) else m.group(2)
@@ -311,10 +317,10 @@ def rename_sheets_in_formula(formula, mapping):
             continue
         changed = True
         if len(new_parts) == 1:
-            token.value = "{0}!{1}".format(quote_sheetname(new_parts[0]),
-                                           ref)
+            token.value = leading_implicit + "{0}!{1}".format(
+                quote_sheetname(new_parts[0]), ref)
         else:
-            token.value = "{0}!{1}".format(
+            token.value = leading_implicit + "{0}!{1}".format(
                 quote_sheetname(":".join(new_parts)), ref)
     if not changed:
         return formula, False
@@ -343,7 +349,9 @@ def rename_sheet_in_formula(formula, old_title, new_title):
         raw = token.value
         if "[" in raw:
             continue
-        m = _RENAME_PREFIX_RE.match(raw)
+        leading_implicit = "@" if raw.startswith("@") else ""
+        core = raw[1:] if leading_implicit else raw
+        m = _RENAME_PREFIX_RE.match(core)
         if not m:
             continue
         sheet = m.group(1).replace("''", "'") if m.group(1) else m.group(2)
@@ -358,9 +366,11 @@ def rename_sheet_in_formula(formula, old_title, new_title):
         changed = True
         rebuilt = ":".join(new_parts)
         if len(new_parts) == 1:
-            token.value = "{0}!{1}".format(quote_sheetname(rebuilt), ref)
+            token.value = leading_implicit + "{0}!{1}".format(
+                quote_sheetname(rebuilt), ref)
         else:
-            token.value = "{0}!{1}".format(quote_sheetname(rebuilt), ref)
+            token.value = leading_implicit + "{0}!{1}".format(
+                quote_sheetname(rebuilt), ref)
     if not changed:
         return formula, False
     return tok.render(), True

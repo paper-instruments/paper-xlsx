@@ -169,7 +169,7 @@ class TestCertify:
         excluded = set(result.volatile_excluded)
         assert any("A1" in a for a in excluded)
         assert any("A2" in a for a in excluded)    # downstream taint
-        assert result.status == "CERTIFIED"        # B2 checked and matching
+        assert result.status == "BASELINE_UNVERIFIABLE"
         assert result.checked >= 1
 
 
@@ -212,7 +212,7 @@ class TestCertificationNoiseClasses:
         recalced = str(tmp_path / "noise_calc.xlsx")
         oracle.recalc(raw, output_path=recalced)
         result = oracle.certify(recalced)
-        assert result.status == "CERTIFIED"          # B2 checked, matching
+        assert result.status == "BASELINE_UNVERIFIABLE"
         assert result.checked >= 1
         assert any("A1" in a for a in result.unsupported_excluded)
         excluded_everywhere = (result.unsupported_excluded

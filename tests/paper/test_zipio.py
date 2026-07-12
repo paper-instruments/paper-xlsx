@@ -127,7 +127,7 @@ class TestDeliver:
         def boom(src, dst):
             raise OSError("simulated crash mid-rename")
 
-        monkeypatch.setattr(zipio.os, "replace", boom)
+        monkeypatch.setattr(zipio, "_posix_exchange", boom)
         with pytest.raises(OSError, match="simulated crash"):
             zipio.deliver(b"NEW", str(target))
         assert target.read_bytes() == b"ORIGINAL"          # original survives

@@ -37,7 +37,8 @@ class ScanRefusal(UnsupportedStructureError):
 
 class CellSpan:
     __slots__ = ("row", "column", "start", "end", "_attr_blob", "_attrs",
-                 "shared_si", "shared_ref", "array_ref", "has_extlst")
+                 "shared_si", "shared_ref", "array_ref", "has_extlst",
+                 "has_formula", "has_unowned_children")
 
     def __init__(self, row, column, start):
         self.row = row
@@ -50,6 +51,8 @@ class CellSpan:
         self.shared_ref = None
         self.array_ref = None
         self.has_extlst = False
+        self.has_formula = False
+        self.has_unowned_children = False
 
     @property
     def attrs(self):
@@ -303,7 +306,7 @@ def scan_sheet(data):
             depth_now <= 1
             or (depth_now == 2 and raw_name == b"row")
             or (depth_now == 3 and raw_name == b"c")
-            or (depth_now == 4 and raw_name in (b"f", b"extLst"))
+            or depth_now == 4
             or b"xmlns" in attr_blob
         )
         if not needs_attrs:
@@ -421,8 +424,11 @@ def scan_sheet(data):
             if not self_closing:
                 current_cell = cell
             obj = cell
-        elif current_cell is not None and depth == 4 and ns == main:
-            if local == b"f":
+        elif current_cell is not None and depth == 4:
+            if ns != main or local not in (b"f", b"v", b"is", b"extLst"):
+                current_cell.has_unowned_children = True
+            elif local == b"f":
+                current_cell.has_formula = True
                 t = attrs.get(b"t")
                 si = attrs.get(b"si")
                 ref = attrs.get(b"ref")

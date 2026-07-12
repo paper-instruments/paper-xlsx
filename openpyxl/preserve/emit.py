@@ -95,46 +95,129 @@ def emit_cell(ws, cell, style_index):
     return tostring(el)
 
 
-_ENTITIES = (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
-             ("&quot;", '"'), ("&apos;", "'"))
+_XML_WHITESPACE = b" \t\r\n"
+_ATTRIBUTE_NAME_END = b" \t\r\n=/>"
 
 
-def _unescape_value(value):
-    """Scanner attribute values keep their raw entity escapes; expand them
-    before re-escaping so carried values stay verbatim."""
-    for entity, char in _ENTITIES:
-        value = value.replace(entity, char)
-    return value
+class _AttributeSpan:
+    __slots__ = ("name", "start", "end", "value_start", "value_end")
+
+    def __init__(self, name, start, end, value_start, value_end):
+        self.name = name
+        self.start = start
+        self.end = end
+        self.value_start = value_start
+        self.value_end = value_end
 
 
-def carry_attributes(new_cell_bytes, original_attrs, drop_metadata=False):
+def _start_tag_end(fragment):
+    quote = None
+    for index, byte in enumerate(fragment):
+        if quote is not None:
+            if byte == quote:
+                quote = None
+            continue
+        if byte in (34, 39):
+            quote = byte
+        elif byte == 62:
+            return index
+    raise ValueError("fragment has no complete start tag")
+
+
+def _start_tag_attributes(fragment):
+    """Scan one start tag without confusing quoted text for markup."""
+    tag_end = _start_tag_end(fragment)
+    if not fragment.startswith(b"<") or fragment.startswith(b"</"):
+        raise ValueError("fragment does not begin with a start tag")
+    index = 1
+    while index < tag_end and fragment[index] not in _XML_WHITESPACE + b"/":
+        index += 1
+    spans = []
+    while index < tag_end:
+        attribute_start = index
+        while index < tag_end and fragment[index] in _XML_WHITESPACE:
+            index += 1
+        if index >= tag_end:
+            break
+        if fragment[index] == 47:
+            break
+        name_start = index
+        while index < tag_end and fragment[index] not in _ATTRIBUTE_NAME_END:
+            index += 1
+        name = fragment[name_start:index]
+        while index < tag_end and fragment[index] in _XML_WHITESPACE:
+            index += 1
+        if not name or index >= tag_end or fragment[index] != 61:
+            raise ValueError("malformed start-tag attribute")
+        index += 1
+        while index < tag_end and fragment[index] in _XML_WHITESPACE:
+            index += 1
+        if index >= tag_end or fragment[index] not in (34, 39):
+            raise ValueError("attribute value is not quoted")
+        quote = fragment[index]
+        index += 1
+        value_start = index
+        while index < tag_end and fragment[index] != quote:
+            index += 1
+        if index >= tag_end:
+            raise ValueError("unterminated attribute value")
+        value_end = index
+        index += 1
+        spans.append(_AttributeSpan(
+            name, attribute_start, index, value_start, value_end))
+    return tag_end, fragment[tag_end - 1:tag_end] == b"/", spans
+
+
+def patch_start_tag_attribute(fragment, name, value):
+    tag_end, self_closing, spans = _start_tag_attributes(fragment)
+    matches = [span for span in spans if span.name == name]
+    if len(matches) > 1:
+        raise ValueError("duplicate attribute {0!r}".format(name))
+    if matches:
+        span = matches[0]
+        if value is None:
+            return fragment[:span.start] + fragment[span.end:]
+        return fragment[:span.value_start] + value + fragment[span.value_end:]
+    if value is None:
+        return fragment
+    insert_at = tag_end - 1 if self_closing else tag_end
+    return (fragment[:insert_at] + b" " + name + b'="' + value + b'"'
+            + fragment[insert_at:])
+
+
+def carry_start_tag_attributes(new_fragment, original_fragment, skip=()):
+    _old_end, _old_closing, old_spans = _start_tag_attributes(
+        original_fragment)
+    new_end, new_closing, new_spans = _start_tag_attributes(new_fragment)
+    present = {span.name for span in new_spans}
+    skipped = set(skip)
+    carried = [
+        original_fragment[span.start:span.end] for span in old_spans
+        if span.name not in skipped and span.name not in present]
+    if not carried:
+        return new_fragment
+    insert_at = new_end - 1 if new_closing else new_end
+    return (new_fragment[:insert_at] + b"".join(carried)
+            + new_fragment[insert_at:])
+
+
+def patch_cell_style(original_cell_bytes, style_index):
+    normalized = int(style_index or 0)
+    value = None if normalized == 0 else str(normalized).encode("ascii")
+    return patch_start_tag_attribute(original_cell_bytes, b"s", value)
+
+
+def carry_attributes(new_cell_bytes, original_cell_bytes,
+                     drop_metadata=False):
     """Attribute-carry rule: re-attach every original cell attribute
     the replacement does not intentionally rewrite (everything except r, s,
     t). cm/vm rich-value metadata drops ONLY when the cell's VALUE was
     overwritten (the cell stops being a rich value) — style-only edits,
     move re-emissions and dissolution re-emits must carry it."""
-    skip = ("r", "s", "t", "cm", "vm") if drop_metadata else ("r", "s", "t")
-    carried = {}
-    for k, v in original_attrs.items():
-        if k in skip:
-            continue
-        if "&#" in v:
-            from openpyxl.errors import UnsupportedStructureError
-
-            raise UnsupportedStructureError(
-                "cannot carry cell attribute {0!r}: it uses numeric "
-                "character references the splice cannot round-trip. "
-                "Nothing was written.".format(k))
-        carried[k] = _unescape_value(v)
-    if not carried:
-        return new_cell_bytes
-    head_end = new_cell_bytes.index(b">")
-    self_closing = new_cell_bytes[head_end - 1:head_end] == b"/"
-    insert_at = head_end - 1 if self_closing else head_end
-    blob = b"".join(
-        b' %s="%s"' % (k.encode("latin-1"), _escape_attr(v))
-        for k, v in sorted(carried.items()))
-    return (new_cell_bytes[:insert_at] + blob + new_cell_bytes[insert_at:])
+    skip = ((b"r", b"s", b"t", b"cm", b"vm") if drop_metadata
+            else (b"r", b"s", b"t"))
+    return carry_start_tag_attributes(
+        new_cell_bytes, original_cell_bytes, skip=skip)
 
 
 def _escape_attr(value):

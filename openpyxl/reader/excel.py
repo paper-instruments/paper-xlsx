@@ -266,6 +266,7 @@ class ExcelReader:
             )
         self.preserve = preserve
         self._source_blob = None
+        self._source_identity = None
         if preserve:
             # retain bytes, not a path or handle: the source may be replaced,
             # truncated in place, or overwritten through the same handle
@@ -286,7 +287,17 @@ class ExcelReader:
                             "is done by LibreOffice, not by this "
                             "library.".format(file_format)) from exc
                     raise
-            self._source_blob = _read_source_bytes(fn)
+            from openpyxl.preserve import zipio
+
+            if hasattr(fn, "read"):
+                snapshot = zipio.read_path_handle_snapshot(fn)
+                if snapshot is None:
+                    self._source_blob = _read_source_bytes(fn)
+                else:
+                    self._source_blob, self._source_identity = snapshot
+            else:
+                self._source_blob, self._source_identity = \
+                    zipio.read_path_snapshot(fn)
             fn = BytesIO(self._source_blob)
         self.archive = _validate_archive(fn, preserve=preserve)
         self.valid_files = self.archive.namelist()
@@ -354,6 +365,7 @@ class ExcelReader:
         if self.preserve:
             wb._preserve = True
             wb._paper_source = self._source_blob
+            wb._paper_source_identity = self._source_identity
             wb._paper_content_type = wb_part.ContentType
 
         self.wb = wb

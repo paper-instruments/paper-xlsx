@@ -345,6 +345,14 @@ class Worksheet(_WorkbookChild):
 
 
     def __setitem__(self, key, value):
+        if getattr(self.parent, "data_only", False):
+            row, column = coordinate_to_tuple(key)
+            from openpyxl.workbook.workbook import \
+                _guard_data_only_range_mutation
+
+            _guard_data_only_range_mutation(
+                self.parent, self, (column, row, column, row),
+                "cell write", anchor="{0}!{1}".format(self.title, key))
         self[key].value = value
 
 
@@ -354,6 +362,14 @@ class Worksheet(_WorkbookChild):
 
     def __delitem__(self, key):
         row, column = coordinate_to_tuple(key)
+        wb = getattr(self, "parent", None)
+        if wb is not None and getattr(wb, "data_only", False):
+            from openpyxl.workbook.workbook import \
+                _guard_data_only_range_mutation
+
+            _guard_data_only_range_mutation(
+                wb, self, (column, row, column, row), "cell deletion",
+                anchor="{0}!{1}".format(self.title, key))
         if (row, column) in self._cells:
             # deleting a locked cell is a value-level change: the same
             # protection check as a write, BEFORE the deletion
@@ -659,6 +675,17 @@ class Worksheet(_WorkbookChild):
             cr = CellRange(range_string=range_string, min_col=start_column, min_row=start_row,
                       max_col=end_column, max_row=end_row)
             range_string = cr.coord
+        else:
+            cr = CellRange(range_string)
+        if getattr(self.parent, "data_only", False):
+            from openpyxl.workbook.workbook import \
+                _guard_data_only_range_mutation
+
+            _guard_data_only_range_mutation(
+                self.parent, self,
+                (cr.min_col, cr.min_row, cr.max_col, cr.max_row),
+                "merge_cells", anchor="{0}!{1}".format(
+                    self.title, cr.coord))
         mcr = MergedCellRange(self, range_string)
         self.merged_cells.add(mcr)
         self._clean_merge_range(mcr)
@@ -701,6 +728,35 @@ class Worksheet(_WorkbookChild):
 
 
     def append(self, iterable):
+        cells = self._cells
+        before_cells = dict(cells)
+        before_row = self._current_row
+        ledger = getattr(self.parent, "_paper_ledger", None)
+        transaction = None
+        bindings = []
+        if ledger is not None and ledger.armed:
+            from openpyxl.preserve.structural import _capture_structural_state
+
+            transaction = _capture_structural_state(self.parent)
+        try:
+            return self._append_impl(iterable, bindings)
+        except BaseException:
+            if transaction is not None:
+                from openpyxl.preserve.structural import \
+                    _restore_structural_state
+
+                _restore_structural_state(self.parent, transaction)
+            else:
+                cells.clear()
+                cells.update(before_cells)
+                self._current_row = before_row
+            for cell, parent, row, column in bindings:
+                cell.parent = parent
+                cell.row = row
+                cell.column = column
+            raise
+
+    def _append_impl(self, iterable, bindings=None):
         """Appends a group of values at the bottom of the current sheet.
 
         * If it's a list: all values are added in order, starting from the first column
@@ -728,6 +784,9 @@ class Worksheet(_WorkbookChild):
                     cell = content
                     if cell.parent and cell.parent != self:
                         raise ValueError("Cells cannot be copied from other worksheets")
+                    if bindings is not None:
+                        bindings.append(
+                            (cell, cell.parent, cell.row, cell.column))
                     cell.parent = self
                     cell.column = col_idx
                     cell.row = row_idx
@@ -799,7 +858,7 @@ class Worksheet(_WorkbookChild):
             if transaction:
                 return _finish_structural_edit(
                     self, "insert_rows", idx, amount, transaction)
-        except Exception:
+        except BaseException:
             if transaction:
                 transaction.rollback()
             raise
@@ -822,7 +881,7 @@ class Worksheet(_WorkbookChild):
             if transaction:
                 return _finish_structural_edit(
                     self, "insert_cols", idx, amount, transaction)
-        except Exception:
+        except BaseException:
             if transaction:
                 transaction.rollback()
             raise
@@ -858,7 +917,7 @@ class Worksheet(_WorkbookChild):
             if transaction:
                 return _finish_structural_edit(
                     self, "delete_rows", idx, amount, transaction)
-        except Exception:
+        except BaseException:
             if transaction:
                 transaction.rollback()
             raise
@@ -891,7 +950,7 @@ class Worksheet(_WorkbookChild):
             if transaction:
                 return _finish_structural_edit(
                     self, "delete_cols", idx, amount, transaction)
-        except Exception:
+        except BaseException:
             if transaction:
                 transaction.rollback()
             raise
@@ -916,22 +975,36 @@ class Worksheet(_WorkbookChild):
             raise ValueError("Only CellRange objects can be moved")
         if not rows and not cols:
             return
-        _structural_guard(self, "move_range",
-                          (cell_range, rows, cols, translate))
+        ledger = getattr(self.parent, "_paper_ledger", None)
+        snapshot = None
+        if ledger is not None and ledger.armed:
+            from openpyxl.preserve.structural import _capture_structural_state
 
-        down = rows > 0
-        right = cols > 0
+            snapshot = _capture_structural_state(self.parent)
+        try:
+            _structural_guard(self, "move_range",
+                              (cell_range, rows, cols, translate))
 
-        if rows:
-            cells = sorted(cell_range.rows, reverse=down)
-        else:
-            cells = sorted(cell_range.cols, reverse=right)
+            down = rows > 0
+            right = cols > 0
 
-        for row, col in chain.from_iterable(cells):
-            self._move_cell(row, col, rows, cols, translate)
+            if rows:
+                cells = sorted(cell_range.rows, reverse=down)
+            else:
+                cells = sorted(cell_range.cols, reverse=right)
 
-        # rebase moved range
-        cell_range.shift(row_shift=rows, col_shift=cols)
+            for row, col in chain.from_iterable(cells):
+                self._move_cell(row, col, rows, cols, translate)
+
+            # rebase moved range
+            cell_range.shift(row_shift=rows, col_shift=cols)
+        except BaseException:
+            if snapshot is not None:
+                from openpyxl.preserve.structural import \
+                    _restore_structural_state
+
+                _restore_structural_state(self.parent, snapshot)
+            raise
 
 
     def _move_cell(self, row, column, row_offset, col_offset, translate=False):
