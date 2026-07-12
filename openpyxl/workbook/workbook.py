@@ -60,6 +60,106 @@ def _require_materialized_cells(wb, api):
             "workbooks do not hold them. Load normally (or with "
             "preserve=True) instead.".format(api))
 
+
+def _guard_data_only_cell_mutation(workbook, target, operation="cell write"):
+    """Prove a data-only mutation target was not a source formula."""
+    _guard_data_only_range_mutation(
+        workbook, target.parent,
+        (target.column, target.row, target.column, target.row), operation,
+        anchor="{0}!{1}".format(target.parent.title, target.coordinate))
+
+
+def _guard_data_only_range_mutation(workbook, worksheet, bounds, operation,
+                                    anchor=None):
+    """Prove a data-only mutation range does not intersect a formula."""
+    if not workbook.data_only:
+        return
+    from openpyxl.errors import UnsupportedStructureError
+
+    ledger = getattr(workbook, "_paper_ledger", None)
+    anchor = anchor or "{0}!{1}".format(worksheet.title, bounds)
+    if ledger is None or not ledger.armed:
+        raise UnsupportedStructureError(
+            "{0} cannot prove whether {1} was a formula because this "
+            "workbook was loaded with data_only=True without retained "
+            "source custody. Reload with data_only=False or preserve=True. "
+            "Nothing was changed.".format(operation, anchor),
+            kind="data-only-input-model-unavailable",
+            anchor=anchor,
+        )
+    if worksheet in ledger.added_sheets:
+        return
+
+    import io
+    import zipfile
+
+    from openpyxl.preserve.saver import _package_info
+    from openpyxl.xml.functions import fromstring
+
+    original_title = ledger.renames.get(worksheet, worksheet.title)
+    source = getattr(workbook, "_paper_source", None)
+    try:
+        with zipfile.ZipFile(io.BytesIO(source)) as archive:
+            _workbook_part, sheet_parts = _package_info(archive)
+            sheet_part = sheet_parts.get(original_title)
+            payload = archive.read(sheet_part) if sheet_part else None
+    except (KeyError, TypeError, ValueError, zipfile.BadZipFile):
+        payload = None
+    if payload is None:
+        raise UnsupportedStructureError(
+            "{0} cannot prove whether {1} was a formula because its "
+            "retained worksheet structure is unavailable. Nothing was "
+            "changed.".format(operation, anchor),
+            kind="data-only-input-model-unavailable",
+            anchor=anchor,
+        )
+    root = fromstring(payload)
+    from openpyxl.utils.cell import coordinate_to_tuple, range_boundaries
+
+    min_col, min_row, max_col, max_row = bounds
+    formula_hit = False
+    for source_cell in root.iter():
+        if source_cell.tag.rsplit("}", 1)[-1] != "c":
+            continue
+        formulas = [child for child in source_cell
+                    if child.tag.rsplit("}", 1)[-1] == "f"]
+        if not formulas:
+            continue
+        coordinate = source_cell.get("r")
+        if coordinate:
+            row, column = coordinate_to_tuple(coordinate)
+            if min_row <= row <= max_row and min_col <= column <= max_col:
+                formula_hit = True
+                break
+        for formula in formulas:
+            ref = formula.get("ref")
+            if not ref:
+                continue
+            try:
+                f_min_col, f_min_row, f_max_col, f_max_row = \
+                    range_boundaries(ref)
+            except (TypeError, ValueError):
+                formula_hit = True
+                break
+            if not (f_max_col < min_col or f_min_col > max_col
+                    or f_max_row < min_row or f_min_row > max_row):
+                formula_hit = True
+                break
+        if formula_hit:
+            break
+    if formula_hit:
+        raise UnsupportedStructureError(
+            "{0} cannot replace {1}: the retained source range contains "
+            "a formula. Nothing was changed.".format(operation, anchor),
+            kind="input-is-calculation",
+            anchor=anchor,
+        )
+
+
+def _guard_data_only_input(workbook, target):
+    _guard_data_only_cell_mutation(workbook, target, "set_input")
+
+
 class Workbook:
     """Workbook is the container for all other parts of the document."""
 
@@ -68,6 +168,7 @@ class Workbook:
     # paper-xlsx preserve mode: set by the reader, never directly
     _preserve = False
     _paper_source = None            # retained source-package bytes
+    _paper_source_identity = None   # content-bound source path identity
     _paper_content_type = None      # source workbook type under preserve
     _paper_loss_inventory = None    # content the stock save cannot preserve
     _paper_ledger = None            # the dirty ledger; armed after load
@@ -311,6 +412,7 @@ class Workbook:
                 kind="input-is-merged-interior",
                 anchor="{0}!{1}".format(target.parent.title,
                                         target.coordinate))
+        _guard_data_only_input(self, target)
         if target.data_type == "f":
             raise UnsupportedStructureError(
                 "{0}!{1} holds a formula; set_input never overwrites "
@@ -684,14 +786,30 @@ class Workbook:
         if self.read_only:
             raise ReadOnlyWorkbookException('Cannot create new sheet in a read-only workbook')
 
-        if self.write_only :
-            new_ws = WriteOnlyWorksheet(parent=self, title=title)
-        else:
-            new_ws = Worksheet(parent=self, title=title)
+        ledger = getattr(self, "_paper_ledger", None)
+        snapshot = None
+        sheets = self._sheets
+        sheet_values = list(sheets)
+        if ledger is not None and ledger.armed:
+            from openpyxl.preserve.structural import _capture_structural_state
+            snapshot = _capture_structural_state(self)
+        try:
+            if self.write_only:
+                new_ws = WriteOnlyWorksheet(parent=self, title=title)
+            else:
+                new_ws = Worksheet(parent=self, title=title)
 
-        self._add_sheet(sheet=new_ws, index=index)
-        _ledger.mark_sheet_added(self, new_ws)
-        return new_ws
+            self._add_sheet(sheet=new_ws, index=index)
+            _ledger.mark_sheet_added(self, new_ws)
+            return new_ws
+        except BaseException:
+            if snapshot is not None:
+                from openpyxl.preserve.structural import \
+                    _restore_structural_state
+                _restore_structural_state(self, snapshot)
+                self._sheets = sheets
+                sheets[:] = sheet_values
+            raise
 
 
     def _add_sheet(self, sheet, index=None):
@@ -736,12 +854,28 @@ class Workbook:
                 or worksheet not in self._sheets:
             raise ValueError("Worksheet is not part of this workbook.")
 
+        ledger = getattr(self, "_paper_ledger", None)
+        snapshot = None
+        sheets = self._sheets
+        sheet_values = list(sheets)
+        if ledger is not None and ledger.armed:
+            from openpyxl.preserve.structural import _capture_structural_state
+            snapshot = _capture_structural_state(self)
         report = None
-        if not _ledger.allow_sheet_removal(self, worksheet):
-            _ledger.audit_sheet_removal(self, worksheet)
-            _ledger.record_sheet_removal(self, worksheet)
-            report = True
-        self._sheets.remove(worksheet)
+        try:
+            if not _ledger.allow_sheet_removal(self, worksheet):
+                _ledger.audit_sheet_removal(self, worksheet)
+                _ledger.record_sheet_removal(self, worksheet)
+                report = True
+            self._sheets.remove(worksheet)
+        except BaseException:
+            if snapshot is not None:
+                from openpyxl.preserve.structural import \
+                    _restore_structural_state
+                _restore_structural_state(self, snapshot)
+                self._sheets = sheets
+                sheets[:] = sheet_values
+            raise
         if report:
             from openpyxl.preserve.ledger import RemovalReport
 
@@ -928,14 +1062,40 @@ class Workbook:
 
             from openpyxl.preserve import zipio
             from openpyxl.preserve.receipts import receipt as _receipt
+            from openpyxl.preserve.saver import _expected_delivery_identity
 
             zipio.validate_target(filename)
+            expected_identity = _expected_delivery_identity(self, filename)
             staged = BytesIO()
             save_workbook(
                 self, staged, allow_formula_loss=allow_formula_loss)
             data = staged.getvalue()
             result = _receipt(self._paper_source, data)
-            zipio.deliver(data, filename)
+
+            def validate_source():
+                if self._paper_source_identity is not None:
+                    zipio._assert_path_identity(
+                        self._paper_source_identity)
+
+            committed_identity = zipio.deliver(
+                data, filename, expected_identity=expected_identity,
+                precommit=validate_source,
+                postcommit=(None if self._paper_source_identity is not None
+                            and expected_identity is not None
+                            and (expected_identity.requested ==
+                                 self._paper_source_identity.requested
+                                 or zipio._same_occupant(
+                                     expected_identity,
+                                     self._paper_source_identity))
+                            else validate_source))
+            if self._paper_source_identity is not None \
+                    and expected_identity is not None \
+                    and (expected_identity.requested ==
+                         self._paper_source_identity.requested
+                         or zipio._same_occupant(
+                             expected_identity,
+                             self._paper_source_identity)):
+                self._paper_source_identity = committed_identity
             return result
         save_workbook(self, filename, allow_formula_loss=allow_formula_loss)
         return None
@@ -961,6 +1121,22 @@ class Workbook:
         """
         if self.__write_only or self._read_only:
             raise ValueError("Cannot copy worksheets in read-only or write-only mode")
+        ledger = getattr(self, "_paper_ledger", None)
+        if ledger is not None and ledger.armed \
+                and self.data_only \
+                and getattr(from_worksheet, "parent", None) is self \
+                and from_worksheet in self.worksheets \
+                and from_worksheet not in ledger.added_sheets:
+            from openpyxl.errors import UnsupportedStructureError
+
+            raise UnsupportedStructureError(
+                "copy_worksheet() cannot faithfully copy loaded sheet {0!r} "
+                "after loading with data_only=True. The live model contains "
+                "cached values, not the source formulas the copy would need. "
+                "Nothing was changed.".format(from_worksheet.title),
+                kind="data-only-reference-model-unavailable",
+                anchor=from_worksheet.title,
+            )
         # the copy registers as an ADDED sheet (create_sheet
         # below is ledger-hooked) and is generated whole at save; charts/
         # images do not copy (upstream's copier skips them), comments and

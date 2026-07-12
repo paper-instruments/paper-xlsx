@@ -484,12 +484,29 @@ def mark_sheet_added(wb, ws):
     led.added_sheets.add(ws)
 
 
+def _guard_data_only_loaded_sheet(wb, ws, operation):
+    """Refuse edits whose reference graph is absent from a data-only model."""
+    led = _armed_ledger_for_wb(wb)
+    if (led is None or not wb.data_only or ws in led.added_sheets
+            or ws not in wb._sheets):
+        return
+    raise UnsupportedStructureError(
+        "{0} cannot safely edit loaded sheet {1!r} after loading with "
+        "data_only=True. The live model contains cached values, not the "
+        "source formulas whose references would need updating. Reload with "
+        "data_only=False. Nothing was changed.".format(operation, ws.title),
+        kind="data-only-reference-model-unavailable",
+        anchor=ws.title,
+    )
+
+
 def allow_sheet_removal(wb, ws):
     """Removing a sheet ADDED in this session is a net no-op and allowed;
     removing a loaded sheet is refused (returns False)."""
     led = _armed_ledger_for_wb(wb)
     if led is None:
         return True
+    _guard_data_only_loaded_sheet(wb, ws, "remove")
     if ws in led.added_sheets:
         led.added_sheets.discard(ws)
         led.cells.pop(ws, None)
@@ -506,8 +523,8 @@ def begin_structural_edit(ws, operation, index, amount):
     led = _armed_ledger_for_ws(ws)
     if led is None:
         return False
-    if ws in led.added_sheets:
-        return False
+    _guard_data_only_loaded_sheet(ws.parent, ws, operation)
+    added_sheet = ws in led.added_sheets
     from .structural import (
         EXCEL_MAX_COL,
         EXCEL_MAX_ROW,
@@ -540,9 +557,11 @@ def begin_structural_edit(ws, operation, index, amount):
     # Formula/name references can overflow even when the referenced edge
     # cells are empty. This dry run must precede protection warnings and all
     # model mutation.
-    validate_model_shift(ws, operation, index, amount)
+    reference_rewrites = validate_model_shift(
+        ws, operation, index, amount)
 
-    blockers = shift_blockers(ws, operation, index, amount)
+    blockers = [] if added_sheet else shift_blockers(
+        ws, operation, index, amount)
     if blockers:
         impacts = analyze_shift(ws, operation, index)
         lines = "".join("\n  - " + b for b in blockers)
@@ -560,7 +579,8 @@ def begin_structural_edit(ws, operation, index, amount):
     from .structural import StructuralEditTransaction
 
     return StructuralEditTransaction(
-        ws, operation, warn_protection=warn_protection)
+        ws, operation, warn_protection=warn_protection,
+        reference_rewrites=reference_rewrites)
 
 
 def _max_occupied_row(ws):
@@ -629,7 +649,10 @@ def finish_structural_edit(ws, operation, index, amount, transaction=None):
     through it, never reused."""
     from .structural import AddressRemap, apply_model_shift
 
-    apply_model_shift(ws, operation, index, amount)
+    rewrites = transaction.reference_rewrites \
+        if transaction is not None else None
+    apply_model_shift(
+        ws, operation, index, amount, reference_rewrites=rewrites)
     if transaction is not None:
         transaction.commit()
     return AddressRemap(ws.title, operation, index, amount)
@@ -733,6 +756,7 @@ def record_rename(sheet_child, new_title):
     led = _armed_ledger_for_wb(wb)
     if led is None:
         return
+    _guard_data_only_loaded_sheet(wb, sheet_child, "rename")
     if sheet_child in led.added_sheets:
         return
     old_title = sheet_child.title
@@ -741,11 +765,9 @@ def record_rename(sheet_child, new_title):
 
     from .rewrite import (
         rename_sheet_in_formula,
-        rename_sheet_in_formula_fragment,
         title_in_string_literals,
     )
     from .structural import (
-        _chart_source_ref_objects,
         _charts_with_numeric_formula_entities,
         _pivots_referencing,
     )
@@ -830,68 +852,14 @@ def record_rename(sheet_child, new_title):
             "reference it (pivot cacheSource rewriting is out of scope). "
             "Nothing was changed.".format(old_title))
 
-    # Build the complete cascade before touching the model. In particular,
-    # the public formula setter enforces strict protection, so every changed
-    # formula cell must pass that gate while the old title and ledger are
-    # still intact.
-    cell_rewrites = []
-    cf_rewrites = []
-    dv_rewrites = []
-    name_rewrites = []
-    chart_rewrites = []
-    for ws in wb.worksheets:
-        for (_row, _col), cell in sorted(ws._cells.items()):
-            if cell.data_type != "f" or not isinstance(cell._value, str):
-                continue
-            rewritten, changed = rename_sheet_in_formula(
-                cell._value, old_title, new_title)
-            if changed:
-                cell_rewrites.append((cell, rewritten))
-        for cf in ws.conditional_formatting:
-            for rule in cf.rules:
-                rewritten = []
-                changed_any = False
-                for formula in rule.formula or []:
-                    new_formula, changed = rename_sheet_in_formula_fragment(
-                        formula, old_title, new_title)
-                    rewritten.append(new_formula)
-                    changed_any = changed_any or changed
-                if changed_any:
-                    cf_rewrites.append((rule, rewritten))
-        if ws.data_validations:
-            for dv in ws.data_validations.dataValidation:
-                for attr in ("formula1", "formula2"):
-                    formula = getattr(dv, attr)
-                    rewritten, changed = rename_sheet_in_formula_fragment(
-                        formula, old_title, new_title)
-                    if changed:
-                        dv_rewrites.append((dv, attr, rewritten))
+    # Build the complete modeled cascade before touching the model.
+    from .references import apply_rewrites, plan_rename
 
-    for holder in [wb] + list(wb.worksheets):
-        for name in list(holder.defined_names):
-            dn = holder.defined_names[name]
-            if not dn.value:
-                continue
-            rewritten, changed = rename_sheet_in_formula(
-                "=" + dn.value, old_title, new_title)
-            if changed:
-                name_rewrites.append((dn, rewritten[1:]))
-
-    for sheet in wb.worksheets:
-        armed_charts = (led.object_snapshots.get(sheet) or {}).get(
-            "chart", {})
-        for i, chart in enumerate(getattr(sheet, "_charts", []) or []):
-            if i in armed_charts:
-                continue
-            for ref in _chart_source_ref_objects(chart):
-                rewritten, changed = rename_sheet_in_formula(
-                    "=" + ref.f, old_title, new_title)
-                if changed:
-                    chart_rewrites.append((ref, rewritten[1:]))
-
+    graph_rewrites = plan_rename(wb, old_title, new_title)
     if getattr(wb, "strict_protection", False):
-        for cell, _rewritten in cell_rewrites:
-            check_protection(cell)
+        for surface, _rewritten in graph_rewrites:
+            if surface.cell:
+                check_protection(surface.owner)
 
     # These rewrites are derived from already-accepted formulas and refer to
     # the new title before it lands on the sheet object. Formula lint must not
@@ -899,18 +867,9 @@ def record_rename(sheet_child, new_title):
     _saved_lint = getattr(wb, "formula_lint", "warn")
     wb.formula_lint = "off"
     try:
-        for cell, rewritten in cell_rewrites:
-            cell.value = rewritten       # public setter records the edit
+        apply_rewrites(graph_rewrites)
     finally:
         wb.formula_lint = _saved_lint
-    for dn, rewritten in name_rewrites:
-        dn.value = rewritten
-    for rule, rewritten in cf_rewrites:
-        rule.formula = rewritten
-    for dv, attr, rewritten in dv_rewrites:
-        setattr(dv, attr, rewritten)
-    for ref, rewritten in chart_rewrites:
-        ref.f = rewritten
 
     # ledger bookkeeping: the sheet keeps counting as LOADED under its
     # new name, state patches re-key, and the save patches the name attr
@@ -956,9 +915,24 @@ def mark_dirty_target(wb, target):
                 max_col = min(max_col, ws.max_column or 1)
                 min_row = max(1, min_row)
                 min_col = max(1, min_col)
-                for row in range(min_row, max_row + 1):
-                    for col in range(min_col, max_col + 1):
-                        led.mark_cell(ws, row, col)
+                cells = led.cells
+                before = {
+                    sheet: set(values) for sheet, values in cells.items()}
+                overwrites = led.value_overwrites
+                before_overwrites = {
+                    sheet: set(values)
+                    for sheet, values in overwrites.items()}
+                try:
+                    for row in range(min_row, max_row + 1):
+                        for col in range(min_col, max_col + 1):
+                            led.mark_cell(ws, row, col)
+                            overwrites.setdefault(ws, set()).add((row, col))
+                except BaseException:
+                    cells.clear()
+                    cells.update(before)
+                    overwrites.clear()
+                    overwrites.update(before_overwrites)
+                    raise
                 return
         raise TargetNotFoundError(
             "mark_dirty: no worksheet named {0!r}".format(title))
@@ -1179,7 +1153,10 @@ def begin_move_range(ws, move_spec):
     OUTSIDE the moved block referencing the source (Excel's cut-paste
     would follow them; we do not rewrite them in this wave)."""
     led = _armed_ledger_for_ws(ws)
-    if led is None or ws in led.added_sheets:
+    if led is None:
+        return
+    _guard_data_only_loaded_sheet(ws.parent, ws, "move_range")
+    if ws in led.added_sheets:
         return
     from openpyxl.utils.cell import range_boundaries
 

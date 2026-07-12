@@ -14,7 +14,6 @@ from openpyxl.errors import UnsupportedStructureError
 from openpyxl.utils.cell import range_boundaries
 
 from . import emit
-import re
 
 from .regions import (CT_ORDER_INDEX, REGION_BY_TAG, DETECT_ONLY_REGIONS,
                       SAVER_CRAFTED_REGIONS)
@@ -23,6 +22,99 @@ from .xmlscan import scan_sheet
 
 class SpliceRefusal(UnsupportedStructureError):
     pass
+
+
+class _ChildSpan:
+    __slots__ = ("name", "start", "end")
+
+    def __init__(self, name, start, end):
+        self.name = name
+        self.start = start
+        self.end = end
+
+
+def _markup_name(data, start, end):
+    index = start + 2 if data[start:start + 2] == b"</" else start + 1
+    name_start = index
+    while index < end and data[index] not in b" \t\r\n/>":
+        index += 1
+    if index == name_start:
+        raise ValueError("XML markup has no element name")
+    return data[name_start:index]
+
+
+def _direct_cell_children(cell_bytes):
+    """Return exact spans for direct children of an unprefixed cell."""
+    tag_end, self_closing, _attrs = emit._start_tag_attributes(cell_bytes)
+    if self_closing:
+        return ()
+    close_start = cell_bytes.rfind(b"</c>")
+    if close_start < tag_end or cell_bytes[close_start:] != b"</c>":
+        raise ValueError("cell fragment has no exact closing tag")
+    children = []
+    stack = []
+    direct_start = direct_name = None
+    position = tag_end + 1
+    while position < close_start:
+        start = cell_bytes.find(b"<", position, close_start)
+        if start < 0:
+            break
+        if cell_bytes.startswith(b"<!--", start):
+            end = cell_bytes.find(b"-->", start + 4, close_start)
+            if end < 0:
+                raise ValueError("unterminated comment")
+            position = end + 3
+            continue
+        if cell_bytes.startswith(b"<?", start):
+            end = cell_bytes.find(b"?>", start + 2, close_start)
+            if end < 0:
+                raise ValueError("unterminated processing instruction")
+            position = end + 2
+            continue
+        if cell_bytes.startswith(b"<![CDATA[", start):
+            end = cell_bytes.find(b"]]>", start + 9, close_start)
+            if end < 0:
+                raise ValueError("unterminated CDATA section")
+            position = end + 3
+            continue
+        if cell_bytes.startswith(b"<!", start):
+            raise ValueError("unsupported declaration in cell content")
+        if cell_bytes.startswith(b"</", start):
+            end = cell_bytes.find(b">", start + 2, close_start)
+            if end < 0 or not stack:
+                raise ValueError("malformed closing tag")
+            if stack.pop() != _markup_name(cell_bytes, start, end):
+                raise ValueError("mismatched child markup")
+            if not stack:
+                children.append(_ChildSpan(
+                    direct_name, direct_start, end + 1))
+                direct_start = direct_name = None
+            position = end + 1
+            continue
+        relative_end = emit._start_tag_end(cell_bytes[start:close_start])
+        end = start + relative_end
+        name = _markup_name(cell_bytes, start, end)
+        self_closing_child = cell_bytes[end - 1:end] == b"/"
+        if not stack:
+            direct_start, direct_name = start, name
+        if self_closing_child:
+            if not stack:
+                children.append(_ChildSpan(name, start, end + 1))
+                direct_start = direct_name = None
+        else:
+            stack.append(name)
+        position = end + 1
+    if stack:
+        raise ValueError("unclosed child markup")
+    return tuple(children)
+
+
+def _direct_child(cell_bytes, name):
+    matches = [child for child in _direct_cell_children(cell_bytes)
+               if child.name == name]
+    if len(matches) > 1:
+        raise ValueError("duplicate child {0!r}".format(name))
+    return matches[0] if matches else None
 
 
 # row attributes the model owns (dict(RowDimension) keys + spans/r); anything
@@ -52,7 +144,7 @@ def _coordinate_in_bounds(coordinate, bounds):
     return min_row <= row <= max_row and min_col <= col <= max_col
 
 
-def resolve_dirty_cells(ws, ledger_dirty, scan):
+def resolve_dirty_cells(ws, ledger_dirty, scan, value_overwrites=frozenset()):
     """The effective dirty-coordinate set for one sheet.
 
     - rich-text cells are always dirty (in-place edits bypass every hook);
@@ -125,6 +217,14 @@ def resolve_dirty_cells(ws, ledger_dirty, scan):
                 "cannot edit cell {0}{1} on sheet {2!r}: it carries a "
                 "cell-level extLst the replacement cannot preserve. "
                 "Nothing was written.".format(_col_letter(col), row, ws.title))
+        if cell_span.has_unowned_children \
+                and ((row, col) in value_overwrites
+                     or cell_span.shared_si is not None):
+            raise SpliceRefusal(
+                "cannot rewrite cell {0}{1} on sheet {2!r}: it carries "
+                "unowned direct-child XML that cannot be preserved with "
+                "this value/formula edit. Nothing was written.".format(
+                    _col_letter(col), row, ws.title))
     return dirty
 
 
@@ -248,8 +348,8 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     # 2. cell and row edits inside sheetData (rank 0: sheetData precedes
     # every insertable region, so offsets never collide with them)
     edits.extend((s, e, r, 0) for (s, e, r)
-                 in _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes,
-                                     style_resolver,
+                 in _sheetdata_edits(ws, scan, original, dirty_cells,
+                                     row_attr_changes, style_resolver,
                                      value_overwrites=value_overwrites))
     if cache_writes:
         overlap = set(cache_writes) & set(dirty_cells)
@@ -292,7 +392,7 @@ def _region_insert_offset(scan, tag):
     return scan.root_end_offset
 
 
-def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve,
+def _sheetdata_edits(ws, scan, original, dirty_cells, row_attr_changes, resolve,
                      value_overwrites=frozenset()):
     edits = []
     by_row = {}
@@ -320,7 +420,8 @@ def _sheetdata_edits(ws, scan, dirty_cells, row_attr_changes, resolve,
     # existing rows: per-row cell edits and attribute sync
     for row_index in sorted(r for r in touched_rows if r in scan.rows):
         row_span = scan.rows[row_index]
-        row_edits = _row_edits(ws, row_span, by_row.get(row_index, set()),
+        row_edits = _row_edits(ws, row_span, original,
+                               by_row.get(row_index, set()),
                                row_attr_changes.get(row_index), resolve,
                                value_overwrites=value_overwrites)
         edits.extend(row_edits)
@@ -377,10 +478,12 @@ def _emit_rows_block(ws, row_indices, by_row, row_attr_changes, resolve):
     return b"".join(parts)
 
 
-def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve,
+def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
                value_overwrites=frozenset()):
     """Edits inside one existing row: replace/insert/delete cells, sync the
     row start tag's attributes when they changed."""
+    from openpyxl.cell.rich_text import CellRichText
+
     edits = []
 
     if new_attrs is not None:
@@ -436,12 +539,24 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve,
     for col in sorted(dirty_cols):
         cell_span = row_span.cells.get(col)
         cell = ws._cells.get((row_span.index, col))
-        rendered = emit.emit_cell(ws, cell, resolve(cell)) \
-            if cell is not None else None
-        if rendered is not None and cell_span is not None:
+        coordinate = (row_span.index, col)
+        original_cell = (original[cell_span.start:cell_span.end]
+                         if cell_span is not None else None)
+        preserve_cell_content = (
+            cell is not None and original_cell is not None
+            and coordinate not in value_overwrites
+            and cell_span.shared_si is None
+            and not isinstance(cell._value, CellRichText))
+        if preserve_cell_content:
+            rendered = emit.patch_cell_style(original_cell, resolve(cell))
+        else:
+            rendered = emit.emit_cell(ws, cell, resolve(cell)) \
+                if cell is not None else None
+        if rendered is not None and cell_span is not None \
+                and not preserve_cell_content:
             rendered = emit.carry_attributes(
-                rendered, cell_span.attrs,
-                drop_metadata=(row_span.index, col) in value_overwrites)
+                rendered, original_cell,
+                drop_metadata=coordinate in value_overwrites)
 
         if cell_span is not None:
             # replace or delete an existing cell element
@@ -461,10 +576,6 @@ def _row_edits(ws, row_span, dirty_cols, new_attrs, resolve,
 # oracle write-back: cached-value updates on untouched
 # formula cells — the <f> bytes verbatim, the <v> replaced
 
-_F_BLOCK_RE = re.compile(br"<f\b[^>]*?(?:/>|>.*?</f>)", re.S)
-_CELL_HEAD_RE = re.compile(br"<c\b([^>]*?)(/?)>", re.S)
-
-
 def _serialize_cached_value(value, epoch):
     """(t_attr_or_None, v_text) for a computed value; the mirror of what
     Excel itself writes for a formula cell's cache."""
@@ -482,12 +593,12 @@ def _serialize_cached_value(value, epoch):
     if isinstance(value, str):
         from openpyxl.oracle import ERROR_TOKENS
 
-        normalized = value.strip()
-        text = (normalized if normalized in ERROR_TOKENS else value).encode(
-            "utf-8")
+        is_error = value in ERROR_TOKENS
+        text = value.encode("utf-8")
         text = (text.replace(b"&", b"&amp;").replace(b"<", b"&lt;")
                 .replace(b">", b"&gt;"))
-        if normalized in ERROR_TOKENS:
+        text = text.replace(b"\r", b"&#13;")
+        if is_error:
             return b"e", text
         return b"str", text
     raise SpliceRefusal(
@@ -519,38 +630,64 @@ def _cache_value_edits(ws, scan, original, cache_writes):
 
 def _patch_cached_value(cell_bytes, value, epoch, label,
                         allow_cache_only=False):
-    head = _CELL_HEAD_RE.match(cell_bytes)
-    if head is None:
+    try:
+        tag_end, self_closing, _attrs = emit._start_tag_attributes(cell_bytes)
+    except ValueError as exc:
         raise SpliceRefusal(
             "cache write target {0} is not a formula cell. Nothing was "
-            "written.".format(label))
-    f_m = _F_BLOCK_RE.search(cell_bytes)
-    if f_m is None and not allow_cache_only:
+            "written.".format(label)) from exc
+    head = cell_bytes[:tag_end + 1]
+    if self_closing:
+        body, close = b"", b""
+    else:
+        close_start = cell_bytes.rfind(b"</c>")
+        if close_start < tag_end or cell_bytes[close_start:] != b"</c>":
+            raise SpliceRefusal(
+                "cache write target {0} has malformed cell markup. Nothing "
+                "was written.".format(label))
+        body = cell_bytes[tag_end + 1:close_start]
+        close = b"</c>"
+    try:
+        children = _direct_cell_children(cell_bytes)
+        formulas = [child for child in children if child.name == b"f"]
+        caches = [child for child in children if child.name == b"v"]
+    except ValueError as exc:
+        raise SpliceRefusal(
+            "cache write target {0} has malformed child markup. Nothing "
+            "was written.".format(label)) from exc
+    if len(formulas) > 1 or len(caches) > 1:
+        raise SpliceRefusal(
+            "cache write target {0} has duplicate formula/cache markup. "
+            "Nothing was written.".format(label))
+    formula = formulas[0] if formulas else None
+    cached = caches[0] if caches else None
+    if formula is None and not allow_cache_only:
         raise SpliceRefusal(
             "cache write target {0} carries no formula. Nothing was "
             "written.".format(label))
-    # the cell must hold nothing but its formula and cache: any other
-    # child (extLst, inline string) is content this surgery would drop
-    if head.group(2) == b"/":
-        rest = b""
-    else:
-        rest = cell_bytes[head.end():-len(b"</c>")]
-    if f_m is not None:
-        rest = _F_BLOCK_RE.sub(b"", rest, 1)
-    rest = re.sub(br"<v\b[^>]*?(?:/>|>.*?</v>)", b"", rest, 1, re.S)
-    if rest.strip():
+    if any(child.name not in (b"f", b"v") for child in children):
         raise SpliceRefusal(
             "cache write target {0} carries content besides its formula "
             "and cached value; updating it is not supported. Nothing was "
             "written.".format(label))
     t_attr, v_text = _serialize_cached_value(value, epoch)
-    attr_blob = head.group(1)
-    attr_blob = re.sub(br"\st=(?:\"[^\"]*\"|'[^']*')", b"", attr_blob)
-    if t_attr is not None:
-        attr_blob += b' t="' + t_attr + b'"'
+    head = emit.patch_start_tag_attribute(head, b"t", t_attr)
     v_open = b"<v>"
     if isinstance(value, str) and value != value.strip():
         v_open = b'<v xml:space="preserve">'
-    formula = f_m.group(0) if f_m is not None else b""
-    return (b"<c" + attr_blob + b">" + formula
-            + v_open + v_text + b"</v></c>")
+    rendered = v_open + v_text + b"</v>"
+    body_start = tag_end + 1
+    if cached is not None:
+        start = cached.start - body_start
+        end = cached.end - body_start
+        body = body[:start] + rendered + body[end:]
+    elif formula is not None:
+        insert_at = formula.end - body_start
+        body = body[:insert_at] + rendered + body[insert_at:]
+    elif close:
+        body = rendered + body
+    else:
+        head = head[:-2] + b">"
+        body = rendered
+        close = b"</c>"
+    return head + body + close

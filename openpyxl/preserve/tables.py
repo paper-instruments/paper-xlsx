@@ -392,6 +392,12 @@ def append_row(ws, table_name, values):
             "Excel's grid for table {0!r}. Nothing was changed."
             .format(table_name)) from exc
 
+    from openpyxl.cell import Cell
+    from openpyxl.formula.lint import lint_on_bind
+
+    for col, planned in zip(range(min_col, max_col + 1), planned_values):
+        if isinstance(planned, str) and planned.startswith("="):
+            lint_on_bind(Cell(ws, row=new_data_row, column=col), planned)
     affected = [(new_data_row, col)
                 for col in range(min_col, max_col + 1)]
     planned_totals = {}
@@ -406,6 +412,9 @@ def append_row(ws, table_name, values):
             (row, col)
             for row in (max_row, max_row + 1)
             for col in range(min_col, max_col + 1))
+    for col, planned in planned_totals.items():
+        if isinstance(planned, str) and planned.startswith("="):
+            lint_on_bind(Cell(ws, row=max_row + 1, column=col), planned)
     _preflight_append_protection(ws, affected)
 
     # totals row moves down one: rewrite its cells at +1 first

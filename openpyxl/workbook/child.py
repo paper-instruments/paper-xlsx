@@ -95,10 +95,27 @@ class _WorkbookChild:
 
         if self.title is not None and self.title != value:
             value = avoid_duplicate_name(self.parent.sheetnames, value)
-            _record_rename(self, value)
 
         if len(value) > 31:
             warnings.warn("Title is more than 31 characters. Some applications may not be able to read the file")
+
+        if self.title is not None and self.title != value:
+            ledger = getattr(self.parent, "_paper_ledger", None)
+            snapshot = None
+            if ledger is not None and ledger.armed:
+                from openpyxl.preserve.structural import \
+                    _capture_structural_state
+
+                snapshot = _capture_structural_state(self.parent)
+            try:
+                _record_rename(self, value)
+            except BaseException:
+                if snapshot is not None:
+                    from openpyxl.preserve.structural import \
+                        _restore_structural_state
+
+                    _restore_structural_state(self.parent, snapshot)
+                raise
 
         self.__title = value
 

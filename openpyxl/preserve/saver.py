@@ -125,15 +125,50 @@ class _PlanningState:
 def save_preserved(workbook, target, *, allow_formula_loss=False):
     """Plan and deliver without retaining serializer side effects."""
     zipio.validate_target(target)
+    source_identity = workbook._paper_source_identity
+    if source_identity is not None:
+        zipio._assert_path_identity(source_identity)
+    expected_identity = _expected_delivery_identity(workbook, target)
+    target_is_source = source_identity is not None \
+        and expected_identity is not None \
+        and (expected_identity.requested == source_identity.requested
+             or zipio._same_occupant(expected_identity, source_identity))
     state = _PlanningState(workbook)
     try:
-        return _save_preserved(workbook, target,
-                               allow_formula_loss=allow_formula_loss)
+        committed_identity = _save_preserved(
+            workbook, target, allow_formula_loss=allow_formula_loss,
+            expected_identity=expected_identity,
+            target_is_source=target_is_source)
+        if source_identity is not None and expected_identity is not None \
+                and (expected_identity.requested == source_identity.requested
+                     or zipio._same_occupant(
+                         expected_identity, source_identity)):
+            workbook._paper_source_identity = committed_identity
+        return True
     finally:
         state.restore()
 
 
-def _save_preserved(workbook, target, *, allow_formula_loss=False):
+def _expected_delivery_identity(workbook, target):
+    """Capture the destination, retaining load-time custody for aliases."""
+    if hasattr(target, "write"):
+        if type(target) is io.BytesIO:
+            return None
+        path = zipio._path_backed_target(target)
+    else:
+        path = target
+    requested = os.path.abspath(os.fspath(path))
+    source = workbook._paper_source_identity
+    if source is not None and requested == source.requested:
+        return source
+    current = zipio.path_identity(requested, allow_missing=True)
+    if source is not None and zipio._same_occupant(current, source):
+        return current
+    return current
+
+
+def _save_preserved(workbook, target, *, allow_formula_loss=False,
+                    expected_identity=None, target_is_source=False):
     """Save a preserve-mode workbook to ``target`` (path or binary
     file-like). Validates fully, then writes atomically."""
     led = workbook._paper_ledger
@@ -464,7 +499,9 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False):
                 plan.update(chart_plans)
             baselines[part] = original
         scan = scan_sheet(original)
-        dirty = resolve_dirty_cells(ws, ledger_dirty, scan)
+        dirty = resolve_dirty_cells(
+            ws, ledger_dirty, scan,
+            value_overwrites=led.value_overwrites.get(ws, set()))
 
         region_changes = {tag: rendered
                           for tag, rendered in all_region_changes.items()
@@ -816,18 +853,28 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False):
                     "re-render the same part; drop one of the two "
                     "edits.".format(name))
 
+    source_identity = workbook._paper_source_identity
+
+    def validate_source():
+        if source_identity is not None:
+            zipio._assert_path_identity(source_identity)
+
     if os.environ.get("PAPER_LEDGER_CROSSCHECK") == "1" and plan:
         # the crosscheck needs the finished bytes: in-memory build
         data = zipio.build_archive_bytes(build)
         from .crosscheck import verify_splice
         verify_splice(source, data, dirty_by_part, baselines=baselines,
                       region_claims=region_claims, row_claims=row_claims)
-        zipio.deliver(data, target)
-        return True
+        return zipio.deliver(
+            data, target, expected_identity=expected_identity,
+            precommit=validate_source,
+            postcommit=None if target_is_source else validate_source)
 
     # spool-to-disk for path targets
-    zipio.build_and_deliver(build, target)
-    return True
+    return zipio.build_and_deliver(
+        build, target, expected_identity=expected_identity,
+        precommit=validate_source,
+        postcommit=None if target_is_source else validate_source)
 
 
 def _model_style_resolver(cell):

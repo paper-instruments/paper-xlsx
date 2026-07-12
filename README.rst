@@ -109,7 +109,7 @@ and the new API are purely additive.
 * PyPI distribution: ``paper-xlsx``
 * Built wheel/sdist names: ``paper_xlsx-*``
 * Python import: ``openpyxl``
-* Fork sentinel: ``openpyxl.__paper_version__ = "0.1.1"``
+* Fork sentinel: ``openpyxl.__paper_version__ = "0.1.2"``
 * Upstream base: openpyxl **3.1.5** (marker tag ``paper-base``)
 
 Upstream releases are merged rather than rebased. The ``paper-base`` tag records
@@ -145,7 +145,7 @@ Verification
 
 Expected output::
 
-    0.1.1
+    0.1.2
 
 How it's tested
 ---------------

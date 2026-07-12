@@ -255,10 +255,10 @@ def test_path_backed_replace_failure_reopens_original(
     wb.active["B2"] = "unsaved"
     original = source.read_bytes()
 
-    def fail_replace(_source, _target):
+    def fail_replace(*args, **kwargs):
         raise OSError("injected replace failure")
 
-    monkeypatch.setattr(zipio.os, "replace", fail_replace)
+    monkeypatch.setattr(zipio, "_conditional_replace", fail_replace)
     with open(source, "r+b") as target:
         target.seek(7)
         with pytest.raises(OSError, match="injected replace failure"):

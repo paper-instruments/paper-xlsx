@@ -226,16 +226,22 @@ class TestMoveRange:
 
 
 class TestStructuredRefs:
-    """Table1[@Col] is never mis-shifted — tables on the
-    shifted sheet block the shift (refusal), and bracketed operands are
-    never rewritten."""
+    """Table ranges move while bracketed structured operands stay intact."""
 
-    def test_shift_on_table_sheet_refuses(self, fixture_copy):
+    def test_shift_on_table_sheet_rewrites_extent(self, fixture_copy,
+                                                   tmp_path):
         wb = load_workbook(fixture_copy("features/tables.xlsx"),
                            preserve=True)
         ws = wb.worksheets[0]
-        with pytest.raises(UnsupportedStructureError, match="table"):
-            ws.insert_rows(2)
+        table_name = next(iter(ws.tables))
+        before = ws.tables[table_name].ref
+        ws.insert_rows(2)
+        assert ws.tables[table_name].ref != before
+
+        output = tmp_path / "table-shift.xlsx"
+        wb.save(output)
+        assert load_workbook(output).worksheets[0].tables[table_name].ref == \
+            ws.tables[table_name].ref
 
     def test_structured_ref_text_survives_other_sheet_shift(
             self, fixture_copy, tmp_path):

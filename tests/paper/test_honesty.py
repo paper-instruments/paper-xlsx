@@ -31,18 +31,14 @@ class TestDataOnlyTrap:
         with open(src, "rb") as f:
             assert f.read() == before
 
-    def test_override_loses_only_edited_cells(self, fixture_copy, tmp_path):
-        # under preserve the trap is defused for untouched cells: only cells
-        # the user edited lose formulas — stock destroys ALL of them
+    def test_override_cannot_bypass_formula_protection(
+            self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule_calc.xlsx")
         wb = load_workbook(src, preserve=True, data_only=True)
-        wb["Schedule"]["B12"] = 9999                # edit a formula cell
-        out = str(tmp_path / "o.xlsx")
-        wb.save(out, allow_formula_loss=True)
-        wb2 = load_workbook(out)                    # formulas view
-        assert wb2["Schedule"]["B12"].value == 9999            # edited: literal
-        assert wb2["Schedule"]["B13"].value == "=B12*(1+Growth)"  # untouched: formula
-        assert wb2["Summary"]["B1"].value == "=Schedule!B12"
+        with pytest.raises(PaperRefusal, match="retained source"):
+            wb["Schedule"]["B12"] = 9999
+
+        assert wb["Schedule"]["B12"].value == 6500
 
     def test_noop_data_only_save_with_override_is_byte_identical(
             self, fixture_copy, tmp_path):
