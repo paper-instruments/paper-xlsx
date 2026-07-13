@@ -1,0 +1,20 @@
+{
+  "fixture": "tables.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "one ListObject/table"
+  },
+  "features": [
+    "table"
+  ],
+  "ground_truth": {
+    "table_names": [
+      "RegionTable"
+    ],
+    "formula_count": 0,
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

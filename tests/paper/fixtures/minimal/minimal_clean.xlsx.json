@@ -1,0 +1,19 @@
+{
+  "fixture": "minimal_clean.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "fresh Workbook; 4 formulas, no cached values"
+  },
+  "features": [
+    "formulas"
+  ],
+  "ground_truth": {
+    "formula_count": 4,
+    "chart_count": 0,
+    "pivot_count": 0,
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

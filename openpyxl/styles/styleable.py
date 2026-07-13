@@ -12,6 +12,8 @@ from .cell_style import StyleArray
 from .named_styles import NamedStyle
 from .builtins import styles
 
+from openpyxl.preserve.ledger import mark_styleable_dirty as _mark_styleable_dirty
+
 
 class StyleDescriptor:
 
@@ -24,6 +26,7 @@ class StyleDescriptor:
         if not getattr(instance, "_style"):
             instance._style = StyleArray()
         setattr(instance._style, self.key, coll.add(value))
+        _mark_styleable_dirty(instance)
 
 
     def __get__(self, instance, cls):
@@ -49,6 +52,7 @@ class NumberFormatDescriptor:
         if not getattr(instance, "_style"):
             instance._style = StyleArray()
         setattr(instance._style, self.key, idx)
+        _mark_styleable_dirty(instance)
 
 
     def __get__(self, instance, cls):
@@ -85,6 +89,7 @@ class NamedStyleDescriptor:
         else:
             style = coll[value]
         instance._style = copy(style.as_tuple())
+        _mark_styleable_dirty(instance)
 
 
     def __get__(self, instance, cls):
@@ -104,6 +109,7 @@ class StyleArrayDescriptor:
         if instance._style is None:
             instance._style = StyleArray()
         setattr(instance._style, self.key, value)
+        _mark_styleable_dirty(instance)
 
 
     def __get__(self, instance, cls):
@@ -148,4 +154,3 @@ class StyleableObject:
         if self._style is None:
             return False
         return any(self._style)
-

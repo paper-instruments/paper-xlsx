@@ -8,6 +8,15 @@ Comments
     but can be written. Comments are not currently supported if
     `read_only=True` is used.
 
+.. note::
+
+    This applies to the stock model. Under **paper-xlsx preserve mode**
+    (``load_workbook(path, preserve=True)``) comments already in the file
+    keep their formatting and dimensions on save — they are preserved as
+    original bytes, and editing that preserved comment machinery is
+    refused rather than performed lossily. Creating comments on a
+    comment-free sheet is supported. See :doc:`paper`.
+
 
 Adding a comment to a cell
 --------------------------

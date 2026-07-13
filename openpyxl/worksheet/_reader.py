@@ -98,7 +98,9 @@ class WorkSheetParser:
 
     def __init__(self, src, shared_strings, data_only=False,
                  epoch=WINDOWS_EPOCH, date_formats=set(),
-                 timedelta_formats=set(), rich_text=False):
+                 timedelta_formats=set(), rich_text=False, *,
+                 warn_extensions=True):
+        self.warn_extensions = warn_extensions
         self.min_row = self.min_col = None
         self.epoch = epoch
         self.source = src
@@ -322,6 +324,10 @@ class WorkSheetParser:
 
 
     def parse_extensions(self, element):
+        if not self.warn_extensions:
+            # preserve mode: the splice passes extLst through untouched, so
+            # the stock "will be removed" warning would be false
+            return
         extLst = ExtensionList.from_tree(element)
         for e in extLst.ext:
             ext_type = EXT_TYPES.get(e.uri.upper(), "Unknown")
@@ -356,11 +362,13 @@ class WorksheetReader:
     Create a parser and apply it to a workbook
     """
 
-    def __init__(self, ws, xml_source, shared_strings, data_only, rich_text):
+    def __init__(self, ws, xml_source, shared_strings, data_only, rich_text,
+                 *, warn_extensions=True):
         self.ws = ws
         self.parser = WorkSheetParser(xml_source, shared_strings,
                 data_only, ws.parent.epoch, ws.parent._date_formats,
-                ws.parent._timedelta_formats, rich_text)
+                ws.parent._timedelta_formats, rich_text,
+                warn_extensions=warn_extensions)
         self.tables = []
 
 
@@ -370,7 +378,7 @@ class WorksheetReader:
                 style = self.ws.parent._cell_styles[cell['style_id']]
                 c = Cell(self.ws, row=cell['row'], column=cell['column'], style_array=style)
                 c._value = cell['value']
-                c.data_type = cell['data_type']
+                c._data_type = cell['data_type']  # direct slot write: load hot path, pre-arm
                 self.ws._cells[(cell['row'], cell['column'])] = c
 
         if self.ws._cells:

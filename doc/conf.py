@@ -12,6 +12,7 @@
 # serve to show the default.
 
 import sys, os
+from pathlib import Path
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -67,7 +68,7 @@ source_suffix = '.rst'
 master_doc = 'index'
 
 # General information about the project.
-project = u'openpyxl'
+project = u'paper-xlsx'
 from datetime import date
 
 copyright = u'2010 - {0}, {1}'.format(date.today().year, openpyxl.__author__)
@@ -77,7 +78,7 @@ copyright = u'2010 - {0}, {1}'.format(date.today().year, openpyxl.__author__)
 # built documents.
 #
 # The full version, including alpha/beta/rc tags.
-release = openpyxl.__version__
+release = openpyxl.__paper_version__
 # The short X.Y version.
 version = ".".join(release.split(".")[:-1])
 
@@ -198,7 +199,7 @@ html_static_path = ['_static']
 #html_file_suffix = None
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'openpyxldoc'
+htmlhelp_basename = 'paperxlsxdoc'
 
 
 # -- Options for LaTeX output --------------------------------------------------
@@ -212,7 +213,7 @@ htmlhelp_basename = 'openpyxldoc'
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, documentclass [howto/manual]).
 latex_documents = [
-  ('index', 'openpyxl.tex', u'openpyxl Documentation',
+  ('index', 'paper-xlsx.tex', u'paper-xlsx Documentation',
    openpyxl.__author__, 'manual'),
 ]
 
@@ -245,7 +246,7 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    ('index', 'openpyxl', u'openpyxl Documentation',
+    ('index', 'paper-xlsx', u'paper-xlsx Documentation',
      [openpyxl.__author__], 1)
 ]
 
@@ -280,36 +281,19 @@ def run_apidoc(_):
     cur_dir = os.path.abspath(os.path.dirname(__file__))
     output_path = os.path.join(cur_dir, 'api')
     shutil.rmtree(output_path, ignore_errors=True)
-    modules = os.path.dirname(openpyxl.__file__)
+    modules = Path(openpyxl.__file__).resolve().parent
     exclusions = [
-        '../openpyxl/cell/tests',
-        '../openpyxl/chart/tests',
-        '../openpyxl/chartsheet/tests',
-        '../openpyxl/comments/tests',
-        '../openpyxl/compat',
-        '../openpyxl/descriptors/tests',
-        '../openpyxl/descriptors/slots.py',
-        '../openpyxl/develop/',
-        '../openpyxl/drawing/tests',
-        '../openpyxl/formula/',
-        '../openpyxl/formatting/tests/',
-        '../openpyxl/worksheet/tests',
-        '../openpyxl/writer/tests/',
-        '../openpyxl/xml/tests',
-        '../openpyxl/conftest.py',
-        '../openpyxl/packaging/tests',
-        '../openpyxl/pivot/tests',
-        '../openpyxl/reader/tests',
-        '../openpyxl/styles/tests',
-        '../openpyxl/tests',
-        '../openpyxl/utils/tests',
-        '../openpyxl/utils/formulas.py',
-        '../openpyxl/workbook/tests',
-        '../openpyxl/workbook/external_link/tests',
-        '../openpyxl/writer/tests',
-        '../openpyxl/xml/tests',
+        modules / 'compat',
+        modules / 'conftest.py',
+        modules / 'descriptors' / 'slots.py',
+        modules / 'develop',
+        modules / 'formula',
+        modules / 'utils' / 'formulas.py',
     ]
-    main(['-f', '-T', '-e', '-M', '-o', output_path, modules] + exclusions)
+    exclusions.extend(path for path in modules.rglob('tests') if path.is_dir())
+    main([
+        '-f', '-T', '-e', '-M', '-o', output_path, str(modules),
+    ] + [str(path) for path in exclusions])
 
 def setup(app):
     app.connect('builder-inited', run_apidoc)

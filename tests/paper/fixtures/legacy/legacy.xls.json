@@ -1,0 +1,14 @@
+{
+  "fixture": "legacy.xls",
+  "provenance": {
+    "app": "LibreOffice (headless convert)",
+    "version": "",
+    "notes": "minimal_clean.xlsx converted to real BIFF .xls \u2014 refusal tests only"
+  },
+  "features": [
+    "legacy_xls"
+  ],
+  "ground_truth": {},
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

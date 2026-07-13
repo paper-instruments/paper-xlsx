@@ -37,6 +37,8 @@ from openpyxl.comments.comment_sheet import CommentSheet
 
 from .strings import read_string_table, read_rich_text
 from .workbook import WorkbookParser
+from openpyxl.preserve.inventory import scan_archive
+from openpyxl.preserve.ledger import DirtyLedger
 from openpyxl.styles.stylesheet import apply_stylesheet
 
 from openpyxl.packaging.core import DocumentProperties
@@ -63,19 +65,11 @@ from .drawings import find_images
 SUPPORTED_FORMATS = ('.xlsx', '.xlsm', '.xltx', '.xltm')
 
 
-def _validate_archive(filename):
-    """
-    Does a first check whether filename is a string or a file-like
-    object. If it is a string representing a filename, a check is done
-    for supported formats by checking the given file-extension. If the
-    file-extension is not in SUPPORTED_FORMATS an InvalidFileException
-    will raised. Otherwise the filename (resp. file-like object) will
-    forwarded to zipfile.ZipFile returning a ZipFile-Instance.
-    """
-    is_file_like = hasattr(filename, 'read')
-    if not is_file_like:
-        file_format = os.path.splitext(filename)[-1].lower()
-        if file_format not in SUPPORTED_FORMATS:
+def _check_extension(filename):
+    """Raise InvalidFileException for unsupported file extensions.
+    ``filename`` must not be a file-like object."""
+    file_format = os.path.splitext(filename)[-1].lower()
+    if file_format not in SUPPORTED_FORMATS:
             if file_format == '.xls':
                 msg = ('openpyxl does not support the old .xls file format, '
                        'please use xlrd to read this file, or convert it to '
@@ -92,8 +86,149 @@ def _validate_archive(filename):
                                                        ','.join(SUPPORTED_FORMATS))
             raise InvalidFileException(msg)
 
-    archive = ZipFile(filename, 'r')
-    return archive
+
+# Stock loads retain the fork-point safeguards. Preserve mode keeps the full
+# package in memory, so it applies tighter package-wide limits before reading
+# any member data. The preserve-mode values must stay equal to
+# openpyxl.preserve.zipguard's MAX_ENTRIES / MAX_PART_BYTES /
+# MAX_TOTAL_BYTES (kept as literals here because this module must not
+# import the preserve package at module scope).
+_DECOMPRESSION_MAX_PART = 2 * 1024 * 1024 * 1024      # 2 GiB per part
+_DECOMPRESSION_RATIO_CAP = 500                        # zip bombs: >>1000x
+_DECOMPRESSION_RATIO_FLOOR = 64 * 1024 * 1024         # ratio checked >64MB
+_PRESERVE_DECOMPRESSION_MAX_PART = 256 * 1024 * 1024  # 256 MiB per part
+_DECOMPRESSION_MAX_ENTRIES = 10000
+_DECOMPRESSION_MAX_TOTAL = 512 * 1024 * 1024           # 512 MiB aggregate
+
+
+def _check_decompression_caps(archive, *, preserve=False):
+    from openpyxl.errors import UnsupportedStructureError
+
+    infos = archive.infolist()
+    if preserve:
+        if len(infos) > _DECOMPRESSION_MAX_ENTRIES:
+            raise UnsupportedStructureError(
+                "archive declares {0} entries, past the {1}-entry cap; "
+                "refusing before inflation. Nothing was loaded.".format(
+                    len(infos), _DECOMPRESSION_MAX_ENTRIES))
+        total = sum(info.file_size for info in infos)
+        if total > _DECOMPRESSION_MAX_TOTAL:
+            raise UnsupportedStructureError(
+                "archive declares {0} aggregate uncompressed bytes, past "
+                "the {1}-byte cap; refusing before inflation. Nothing was "
+                "loaded.".format(total, _DECOMPRESSION_MAX_TOTAL))
+    max_part = (_PRESERVE_DECOMPRESSION_MAX_PART if preserve
+                else _DECOMPRESSION_MAX_PART)
+    for info in infos:
+        if info.file_size > max_part:
+            raise UnsupportedStructureError(
+                "part {0!r} declares {1} bytes uncompressed, past the "
+                "{2}-byte cap; refusing to inflate it. Nothing was "
+                "loaded.".format(info.filename, info.file_size,
+                                 max_part))
+        if (info.file_size > _DECOMPRESSION_RATIO_FLOOR
+                and info.compress_size > 0
+                and info.file_size / info.compress_size
+                > _DECOMPRESSION_RATIO_CAP):
+            raise UnsupportedStructureError(
+                "part {0!r} inflates {1}x (from {2} to {3} bytes) — "
+                "no real spreadsheet compresses like that; refusing to "
+                "inflate it. Nothing was loaded.".format(
+                    info.filename,
+                    info.file_size // max(info.compress_size, 1),
+                    info.compress_size, info.file_size))
+
+
+def _validate_archive(filename, *, preserve=False):
+    """
+    Does a first check whether filename is a string or a file-like
+    object. If it is a string representing a filename, a check is done
+    for supported formats by checking the given file-extension. If the
+    file-extension is not in SUPPORTED_FORMATS an InvalidFileException
+    will raised. Otherwise the filename (resp. file-like object) will
+    forwarded to zipfile.ZipFile returning a ZipFile-Instance.
+    """
+    is_file_like = hasattr(filename, 'read')
+    if not is_file_like:
+        _check_extension(filename)
+
+    _refuse_cfb(filename)
+    archive = None
+    try:
+        archive = ZipFile(filename, 'r')
+        if preserve:
+            from openpyxl.preserve.zipguard import validate_archive
+
+            _check_decompression_caps(archive, preserve=True)
+            validate_archive(archive, context="preserve-mode workbook")
+        else:
+            _check_decompression_caps(archive, preserve=False)
+        return archive
+    except Exception as exc:
+        if archive is not None:
+            close = getattr(archive, "close", None)
+            if callable(close):
+                close()
+        if preserve:
+            from openpyxl.errors import PaperRefusal, UnsupportedStructureError
+
+            if isinstance(exc, PaperRefusal):
+                raise
+            import zipfile
+
+            if isinstance(exc, (zipfile.BadZipFile, zipfile.LargeZipFile,
+                                RuntimeError, NotImplementedError)):
+                raise UnsupportedStructureError(
+                    "preserve-mode workbook has invalid ZIP structure "
+                    "({0}). Nothing was loaded.".format(exc),
+                    kind="invalid-zip-package",
+                ) from exc
+        raise
+
+
+# OLE2/CFB magic: what an ENCRYPTED xlsx actually is on disk (the zip is
+# wrapped in a Compound File). zipfile's "File is not a zip file" told the
+# user nothing actionable.
+_CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _refuse_cfb(filename):
+    try:
+        if hasattr(filename, "read"):
+            # sniff at ABSOLUTE offset 0 (zipfile anchors there too), then
+            # restore the caller's position exactly — a mid-position handle
+            # must neither false-refuse on embedded CFB payloads nor evade
+            # the typed refusal
+            pos = filename.tell()
+            filename.seek(0)
+            head = filename.read(8)
+            filename.seek(pos)
+        else:
+            with open(filename, "rb") as f:
+                head = f.read(8)
+    except Exception:
+        return                       # unreadable sources fail downstream
+    if head == _CFB_MAGIC:
+        from openpyxl.errors import UnsupportedStructureError
+
+        raise UnsupportedStructureError(
+            "this file is an OLE2/Compound File container — almost always "
+            "a password-ENCRYPTED workbook (or a legacy .xls saved with an "
+            ".xlsx name). openpyxl cannot decrypt; remove the password in "
+            "Excel or LibreOffice (File > Save As, clear the password) and "
+            "reopen, or decrypt with a dedicated tool first.")
+
+
+def _read_source_bytes(fn):
+    """Eagerly read the full source bytes for preserve-mode retention.
+
+    File-like sources are rewound first (pandas hands an open r+b handle
+    that will later be overwritten in place, so retention must be eager —
+    a retained path or lazy re-read would see partially overwritten bytes).
+    """
+    from openpyxl.preserve.limits import read_bounded
+
+    return read_bounded(fn, context="preserve-mode workbook")
 
 
 def _find_workbook_part(package):
@@ -119,9 +254,67 @@ class ExcelReader:
     """
 
     def __init__(self, fn, read_only=False, keep_vba=KEEP_VBA,
-                 data_only=False, keep_links=True, rich_text=False):
-        self.archive = _validate_archive(fn)
+                 data_only=False, keep_links=True, rich_text=False, *,
+                 preserve=False):
+        if preserve and read_only:
+            # programmer error, raised before any file handle is opened
+            raise ValueError(
+                "preserve=True cannot be combined with read_only=True. "
+                "Read-only workbooks cannot be edited or saved, so there is "
+                "nothing to preserve. Use preserve=True for a lossless "
+                "editable workbook, or read_only=True for streaming reads."
+            )
+        self.preserve = preserve
+        self._source_blob = None
+        self._source_identity = None
+        if preserve:
+            # retain bytes, not a path or handle: the source may be replaced,
+            # truncated in place, or overwritten through the same handle
+            # before save
+            if not hasattr(fn, "read"):
+                try:
+                    _check_extension(fn)
+                except InvalidFileException as exc:
+                    file_format = os.path.splitext(fn)[-1].lower()
+                    if file_format in (".xls", ".xlsb"):
+                        # preserve mode gets the typed refusal
+                        from openpyxl.errors import UnsupportedStructureError
+                        raise UnsupportedStructureError(
+                            "preserve mode does not support the {0} format. "
+                            "Convert the file to .xlsx first — e.g. with "
+                            "LibreOffice: soffice --headless --convert-to "
+                            "xlsx <file> — and note the conversion itself "
+                            "is done by LibreOffice, not by this "
+                            "library.".format(file_format)) from exc
+                    raise
+            from openpyxl.preserve import zipio
+
+            if hasattr(fn, "read"):
+                snapshot = zipio.read_path_handle_snapshot(fn)
+                if snapshot is None:
+                    self._source_blob = _read_source_bytes(fn)
+                else:
+                    self._source_blob, self._source_identity = snapshot
+            else:
+                self._source_blob, self._source_identity = \
+                    zipio.read_path_snapshot(fn)
+            fn = BytesIO(self._source_blob)
+        self.archive = _validate_archive(fn, preserve=preserve)
         self.valid_files = self.archive.namelist()
+        if preserve and len(self.valid_files) != len(set(self.valid_files)):
+            # a parser differential: the reader takes the
+            # LAST duplicate entry while the raw copy would keep BOTH, so
+            # custody of such a package cannot be honest
+            from collections import Counter
+
+            from openpyxl.errors import UnsupportedStructureError
+            dupes = sorted(name for name, n
+                           in Counter(self.valid_files).items() if n > 1)
+            raise UnsupportedStructureError(
+                "the archive contains duplicate entry names ({0}): readers "
+                "disagree about which copy wins, so preserve mode refuses "
+                "it. Rewrite the file through Excel or LibreOffice (which "
+                "de-duplicates) and reopen.".format(", ".join(dupes)))
         self.read_only = read_only
         self.keep_vba = keep_vba
         self.data_only = data_only
@@ -151,6 +344,8 @@ class ExcelReader:
         wb_part = _find_workbook_part(self.package)
         self.parser = WorkbookParser(self.archive, wb_part.PartName[1:], keep_links=self.keep_links)
         self.parser.parse()
+        if self.preserve:
+            self._validate_sheet_relationships()
         wb = self.parser.wb
         wb._sheets = []
         wb._data_only = self.data_only
@@ -167,7 +362,53 @@ class ExcelReader:
         if self.read_only:
             wb._archive = self.archive
 
+        if self.preserve:
+            wb._preserve = True
+            wb._paper_source = self._source_blob
+            wb._paper_source_identity = self._source_identity
+            wb._paper_content_type = wb_part.ContentType
+
         self.wb = wb
+
+
+    def _validate_sheet_relationships(self):
+        """Every workbook sheet must resolve to one present internal part."""
+        from openpyxl.errors import UnsupportedStructureError
+
+        rels = self.parser.rels
+        names = set(self.valid_files)
+        for sheet in self.parser.sheets:
+            if not sheet.id:
+                raise UnsupportedStructureError(
+                    "sheet {0!r} has no workbook relationship id. Nothing "
+                    "was loaded.".format(sheet.name),
+                    kind="missing-sheet-relationship",
+                    anchor=sheet.name,
+                )
+            rel = rels.get(sheet.id)
+            if rel is None:
+                raise UnsupportedStructureError(
+                    "sheet {0!r} refers to missing relationship {1!r}. "
+                    "Nothing was loaded.".format(sheet.name, sheet.id),
+                    kind="missing-sheet-relationship",
+                    anchor=sheet.name,
+                )
+            if rel.TargetMode == "External":
+                raise UnsupportedStructureError(
+                    "sheet {0!r} uses an external workbook relationship; "
+                    "worksheet parts must be internal. Nothing was loaded."
+                    .format(sheet.name),
+                    kind="invalid-sheet-relationship",
+                    anchor=sheet.name,
+                )
+            if rel.target not in names:
+                raise UnsupportedStructureError(
+                    "sheet {0!r} relationship {1!r} targets missing part "
+                    "{2!r}. Nothing was loaded.".format(
+                        sheet.name, sheet.id, rel.target),
+                    kind="missing-sheet-part",
+                    anchor=sheet.name,
+                )
 
 
     def read_properties(self):
@@ -233,7 +474,8 @@ class ExcelReader:
                 fh = self.archive.open(rel.target)
                 ws = self.wb.create_sheet(sheet.name)
                 ws._rels = rels
-                ws_parser = WorksheetReader(ws, fh, self.shared_strings, self.data_only, self.rich_text)
+                ws_parser = WorksheetReader(ws, fh, self.shared_strings, self.data_only, self.rich_text,
+                                            warn_extensions=not self.preserve)
                 ws_parser.bind_all()
                 fh.close()
 
@@ -304,7 +546,20 @@ class ExcelReader:
             action = "assign names"
             self.parser.assign_names()
             if not self.read_only:
+                # content-level loss inventory for the lossy-save warning:
+                # built now because the archive is gone by save time on the
+                # stock path
+                action = "scan for unpreservable content"
+                self.wb._paper_loss_inventory = scan_archive(
+                    self.archive, self.valid_files, keep_vba=self.keep_vba,
+                    rich_text=self.rich_text)
                 self.archive.close()
+                if self.preserve:
+                    # the ledger arms only now: everything the loader itself
+                    # fired (create_sheet, cell binds, style writes) is the
+                    # file's own state, not user dirt
+                    action = "arm the dirty ledger"
+                    self.wb._paper_ledger = DirtyLedger.arm(self.wb, rich_text=self.rich_text)
         except ValueError as e:
             raise ValueError(
                 f"Unable to read workbook: could not {action} from {self.archive.filename}.\n"
@@ -314,7 +569,8 @@ class ExcelReader:
 
 
 def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
-                  data_only=False, keep_links=True, rich_text=False):
+                  data_only=False, keep_links=True, rich_text=False, *,
+                  preserve=None):
     """Open the given filename and return the workbook
 
     :param filename: the path to open or a file-like object
@@ -335,6 +591,20 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
     :param rich_text: if set to True openpyxl will preserve any rich text formatting in cells. The default is False
     :type rich_text: bool
 
+    :param preserve: opt the workbook into preserve mode: the original package
+        bytes are retained as the source of truth and save becomes a lossless
+        splice of recorded edits into them. Content openpyxl does not model
+        (charts, drawings, VBA, pivot caches, extensions) survives
+        byte-identical. Unsafe operations raise a typed
+        :class:`openpyxl.errors.PaperRefusal` instead of proceeding lossily.
+        Cannot be combined with ``read_only``. The default ``None`` resolves
+        to the ``PAPER_PRESERVE_DEFAULT`` environment switch (``"1"`` turns
+        preserve on for every load that supports it, ``read_only`` loads
+        excepted — a default, not a mandate); unset, it resolves to
+        ``False``. The public package ships with the switch unset; paper-internal
+        harness images set it.
+    :type preserve: bool or None
+
     :rtype: :class:`openpyxl.workbook.Workbook`
 
     .. note::
@@ -343,7 +613,17 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
         and the returned workbook will be read-only.
 
     """
+    if preserve is None:
+        # env switch is a DEFAULT, never a mandate: loads that explicit
+        # preserve=True would refuse (read_only; the .xls/.xlsb legacy
+        # formats) fall back to stock so its exceptions stay stock too
+        name = getattr(filename, "name", filename)
+        legacy = isinstance(name, str) and \
+            name.lower().endswith((".xls", ".xlsb"))
+        preserve = (os.environ.get("PAPER_PRESERVE_DEFAULT") == "1"
+                    and not read_only and not legacy)
     reader = ExcelReader(filename, read_only, keep_vba,
-                         data_only, keep_links, rich_text)
+                         data_only, keep_links, rich_text,
+                         preserve=preserve)
     reader.read()
     return reader.wb

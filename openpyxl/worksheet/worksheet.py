@@ -52,6 +52,37 @@ from .views import (
 )
 from .cell_range import MultiCellRange, CellRange
 from .merge import MergedCellRange
+from openpyxl.preserve.ledger import (
+    finish_structural_edit as _finish_structural_edit,
+    mark_cell_dirty as _mark_cell_dirty,
+    mark_deleted_cell as _mark_deleted_cell,
+    refuse_chart_or_image_add as _refuse_chart_or_image_add,
+)
+
+
+def _structural_guard(ws, operation, index, amount=1):
+    """Preserve mode: fully-modeled sheets get Excel-semantics reference
+    rewriting (returns True so the caller runs the fixups);
+    unmodeled range-bearing content refuses with the victim analysis. Stock mode on a LOADED workbook: loud warning — the shift
+    updates nothing that points at the moved cells."""
+    wb = getattr(ws, "parent", None)
+    led = getattr(wb, "_paper_ledger", None) if wb is not None else None
+    if led is not None and led.armed:
+        if operation == "move_range":
+            from openpyxl.preserve.ledger import begin_move_range
+            begin_move_range(ws, index)      # index carries the move spec
+            return False
+        from openpyxl.preserve.ledger import begin_structural_edit
+        return begin_structural_edit(ws, operation, index, amount)
+    if wb is not None and getattr(wb, "_paper_loss_inventory", None) is not None:
+        import warnings as _warnings
+
+        from openpyxl.errors import StructuralShiftWarning
+        from openpyxl.preserve.structural import STOCK_WARNING
+
+        _warnings.warn(StructuralShiftWarning(STOCK_WARNING.format(operation)),
+                       stacklevel=3)
+    return False
 from .properties import WorksheetProperties
 from .pagebreak import RowBreak, ColBreak
 from .scenario import ScenarioList
@@ -233,7 +264,7 @@ class Worksheet(_WorkbookChild):
         :type column: int
 
         :param value: value of the cell (e.g. 5)
-        :type value: numeric or time or string or bool or none
+        :type value: numeric, ``datetime.time``, string, bool, or none
 
         :rtype: openpyxl.cell.cell.Cell
         """
@@ -314,6 +345,14 @@ class Worksheet(_WorkbookChild):
 
 
     def __setitem__(self, key, value):
+        if getattr(self.parent, "data_only", False):
+            row, column = coordinate_to_tuple(key)
+            from openpyxl.workbook.workbook import \
+                _guard_data_only_range_mutation
+
+            _guard_data_only_range_mutation(
+                self.parent, self, (column, row, column, row),
+                "cell write", anchor="{0}!{1}".format(self.title, key))
         self[key].value = value
 
 
@@ -323,8 +362,25 @@ class Worksheet(_WorkbookChild):
 
     def __delitem__(self, key):
         row, column = coordinate_to_tuple(key)
+        wb = getattr(self, "parent", None)
+        if wb is not None and getattr(wb, "data_only", False):
+            from openpyxl.workbook.workbook import \
+                _guard_data_only_range_mutation
+
+            _guard_data_only_range_mutation(
+                wb, self, (column, row, column, row), "cell deletion",
+                anchor="{0}!{1}".format(self.title, key))
         if (row, column) in self._cells:
+            # deleting a locked cell is a value-level change: the same
+            # protection check as a write, BEFORE the deletion
+            wb = getattr(self, "parent", None)
+            if wb is not None \
+                    and getattr(wb, "_paper_ledger", None) is not None:
+                from openpyxl.preserve.ledger import check_protection
+                check_protection(self._cells[(row, column)])
+            was_formula = self._cells[(row, column)].data_type == 'f'
             del self._cells[(row, column)]
+            _mark_deleted_cell(self, row, column, was_formula)
 
 
     @property
@@ -522,7 +578,7 @@ class Worksheet(_WorkbookChild):
 
     @property
     def columns(self):
-        """Produces all cells in the worksheet, by column  (see :func:`iter_cols`)"""
+        """Produces all cells in the worksheet, by column (see :func:`iter_cols`)"""
         return self.iter_cols()
 
 
@@ -542,18 +598,39 @@ class Worksheet(_WorkbookChild):
 
 
     def add_data_validation(self, data_validation):
-        """ Add a data-validation object to the sheet.  The data-validation
+        """ Add a data-validation object to the sheet. The data-validation
             object defines the type of data-validation to be applied and the
             cell or range of cells it should apply to.
         """
         self.data_validations.append(data_validation)
 
 
+    def locate(self, label, *, prefer="right"):
+        """The value cell belonging to a text label (paper-xlsx): exact-then-normalized match over
+        this sheet, value = nearest non-label neighbour to the ``right``
+        (or ``below``). Zero matches raise
+        :class:`~openpyxl.errors.TargetNotFoundError`; multiple labels
+        or no locatable value raise
+        :class:`~openpyxl.errors.AmbiguousTargetError` listing every
+        candidate."""
+        from openpyxl.preserve.locate import locate as _locate
+
+        return _locate(self, label, prefer=prefer)
+
+    def allowed_values(self, cell):
+        """The data-validation vocabulary for ``cell`` (address string or
+        Cell), or None when no list-type validation covers it
+        (paper-xlsx)."""
+        from openpyxl.preserve.locate import allowed_values as _allowed
+
+        return _allowed(self, cell)
+
     def add_chart(self, chart, anchor=None):
         """
         Add a chart to the sheet
         Optionally provide a cell for the top-left anchor
         """
+        _refuse_chart_or_image_add(self, "chart")
         if anchor is not None:
             chart.anchor = anchor
         self._charts.append(chart)
@@ -564,6 +641,7 @@ class Worksheet(_WorkbookChild):
         Add an image to the sheet.
         Optionally provide a cell for the top-left anchor
         """
+        _refuse_chart_or_image_add(self, "image")
         if anchor is not None:
             img.anchor = anchor
         self._images.append(img)
@@ -592,11 +670,22 @@ class Worksheet(_WorkbookChild):
 
 
     def merge_cells(self, range_string=None, start_row=None, start_column=None, end_row=None, end_column=None):
-        """ Set merge on a cell range.  Range is a cell range (e.g. A1:E1) """
+        """ Set merge on a cell range. Range is a cell range (e.g. A1:E1) """
         if range_string is None:
             cr = CellRange(range_string=range_string, min_col=start_column, min_row=start_row,
                       max_col=end_column, max_row=end_row)
             range_string = cr.coord
+        else:
+            cr = CellRange(range_string)
+        if getattr(self.parent, "data_only", False):
+            from openpyxl.workbook.workbook import \
+                _guard_data_only_range_mutation
+
+            _guard_data_only_range_mutation(
+                self.parent, self,
+                (cr.min_col, cr.min_row, cr.max_col, cr.max_row),
+                "merge_cells", anchor="{0}!{1}".format(
+                    self.title, cr.coord))
         mcr = MergedCellRange(self, range_string)
         self.merged_cells.add(mcr)
         self._clean_merge_range(mcr)
@@ -623,7 +712,7 @@ class Worksheet(_WorkbookChild):
 
 
     def unmerge_cells(self, range_string=None, start_row=None, start_column=None, end_row=None, end_column=None):
-        """ Remove merge on a cell range.  Range is a cell range (e.g. A1:E1) """
+        """ Remove merge on a cell range. Range is a cell range (e.g. A1:E1) """
         cr = CellRange(range_string=range_string, min_col=start_column, min_row=start_row,
                       max_col=end_column, max_row=end_row)
 
@@ -639,6 +728,35 @@ class Worksheet(_WorkbookChild):
 
 
     def append(self, iterable):
+        cells = self._cells
+        before_cells = dict(cells)
+        before_row = self._current_row
+        ledger = getattr(self.parent, "_paper_ledger", None)
+        transaction = None
+        bindings = []
+        if ledger is not None and ledger.armed:
+            from openpyxl.preserve.structural import _capture_structural_state
+
+            transaction = _capture_structural_state(self.parent)
+        try:
+            return self._append_impl(iterable, bindings)
+        except BaseException:
+            if transaction is not None:
+                from openpyxl.preserve.structural import \
+                    _restore_structural_state
+
+                _restore_structural_state(self.parent, transaction)
+            else:
+                cells.clear()
+                cells.update(before_cells)
+                self._current_row = before_row
+            for cell, parent, row, column in bindings:
+                cell.parent = parent
+                cell.row = row
+                cell.column = column
+            raise
+
+    def _append_impl(self, iterable, bindings=None):
         """Appends a group of values at the bottom of the current sheet.
 
         * If it's a list: all values are added in order, starting from the first column
@@ -666,9 +784,15 @@ class Worksheet(_WorkbookChild):
                     cell = content
                     if cell.parent and cell.parent != self:
                         raise ValueError("Cells cannot be copied from other worksheets")
+                    if bindings is not None:
+                        bindings.append(
+                            (cell, cell.parent, cell.row, cell.column))
                     cell.parent = self
                     cell.column = col_idx
                     cell.row = row_idx
+                    # pre-built cells bypass the value-setter chokepoint:
+                    # mark them here or the ledger misses the whole row
+                    _mark_cell_dirty(cell)
                 else:
                     cell = Cell(self, row=row_idx, column=col_idx, value=content)
                 self._cells[(row_idx, col_idx)] = cell
@@ -717,56 +841,119 @@ class Worksheet(_WorkbookChild):
     def insert_rows(self, idx, amount=1):
         """
         Insert row or rows before row==idx
+
+        Under ``preserve=True`` on a loaded sheet the fork rewrites every
+        reference that points into the shifted range (formulas, defined
+        names, chart series) and returns an ``AddressRemap`` so pre-edit
+        addresses can be remapped; a shift that would strand a reference it
+        cannot rewrite refuses with ``UnsupportedStructureError`` and
+        changes nothing. Stock loads and in-session-added sheets keep the
+        upstream behaviour — references are NOT updated — and return
+        ``None``.
         """
-        self._move_cells(min_row=idx, offset=amount, row_or_col="row")
-        self._current_row = self.max_row
+        transaction = _structural_guard(self, "insert_rows", idx, amount)
+        try:
+            self._move_cells(min_row=idx, offset=amount, row_or_col="row")
+            self._current_row = self.max_row
+            if transaction:
+                return _finish_structural_edit(
+                    self, "insert_rows", idx, amount, transaction)
+        except BaseException:
+            if transaction:
+                transaction.rollback()
+            raise
 
 
     def insert_cols(self, idx, amount=1):
         """
         Insert column or columns before col==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a shift that would strand a reference refuses with
+        ``UnsupportedStructureError`` and changes nothing. Stock loads and
+        added sheets keep upstream behaviour and return ``None``.
         """
-        self._move_cells(min_col=idx, offset=amount, row_or_col="column")
+        transaction = _structural_guard(self, "insert_cols", idx, amount)
+        try:
+            self._move_cells(min_col=idx, offset=amount,
+                             row_or_col="column")
+            if transaction:
+                return _finish_structural_edit(
+                    self, "insert_cols", idx, amount, transaction)
+        except BaseException:
+            if transaction:
+                transaction.rollback()
+            raise
 
 
     def delete_rows(self, idx, amount=1):
         """
         Delete row or rows from row==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a delete that would strand a reference (or drop cells a chart or
+        name still points at) refuses with ``UnsupportedStructureError``
+        and changes nothing. Stock loads and added sheets keep upstream
+        behaviour and return ``None``.
         """
+        transaction = _structural_guard(self, "delete_rows", idx, amount)
+        try:
+            remainder = _gutter(idx, amount, self.max_row)
+            self._move_cells(min_row=idx+amount, offset=-amount,
+                             row_or_col="row")
 
-        remainder = _gutter(idx, amount, self.max_row)
-
-        self._move_cells(min_row=idx+amount, offset=-amount, row_or_col="row")
-
-        # calculating min and max col is an expensive operation, do it only once
-        min_col = self.min_column
-        max_col = self.max_column + 1
-        for row in remainder:
-            for col in range(min_col, max_col):
-                if (row, col) in self._cells:
-                    del self._cells[row, col]
-        self._current_row = self.max_row
-        if not self._cells:
-            self._current_row = 0
+            # calculating min and max col is an expensive operation, do it only once
+            min_col = self.min_column
+            max_col = self.max_column + 1
+            for row in remainder:
+                for col in range(min_col, max_col):
+                    if (row, col) in self._cells:
+                        del self._cells[row, col]
+            self._current_row = self.max_row
+            if not self._cells:
+                self._current_row = 0
+            if transaction:
+                return _finish_structural_edit(
+                    self, "delete_rows", idx, amount, transaction)
+        except BaseException:
+            if transaction:
+                transaction.rollback()
+            raise
 
 
     def delete_cols(self, idx, amount=1):
         """
         Delete column or columns from col==idx
+
+        Under ``preserve=True`` on a loaded sheet, references into the
+        shifted range are rewritten and an ``AddressRemap`` is returned;
+        a delete that would strand a reference refuses with
+        ``UnsupportedStructureError`` and changes nothing. Stock loads and
+        added sheets keep upstream behaviour and return ``None``.
         """
+        transaction = _structural_guard(self, "delete_cols", idx, amount)
+        try:
+            remainder = _gutter(idx, amount, self.max_column)
+            self._move_cells(min_col=idx+amount, offset=-amount,
+                             row_or_col="column")
 
-        remainder = _gutter(idx, amount, self.max_column)
+            # calculating min and max row is an expensive operation, do it only once
+            min_row = self.min_row
+            max_row = self.max_row + 1
+            for col in remainder:
+                for row in range(min_row, max_row):
+                    if (row, col) in self._cells:
+                        del self._cells[row, col]
 
-        self._move_cells(min_col=idx+amount, offset=-amount, row_or_col="column")
-
-        # calculating min and max row is an expensive operation, do it only once
-        min_row = self.min_row
-        max_row = self.max_row + 1
-        for col in remainder:
-            for row in range(min_row, max_row):
-                if (row, col) in self._cells:
-                    del self._cells[row, col]
-
+            if transaction:
+                return _finish_structural_edit(
+                    self, "delete_cols", idx, amount, transaction)
+        except BaseException:
+            if transaction:
+                transaction.rollback()
+            raise
 
     def move_range(self, cell_range, rows=0, cols=0, translate=False):
         """
@@ -775,6 +962,12 @@ class Worksheet(_WorkbookChild):
         right if cols > 0 and left if cols < 0
         Existing cells will be overwritten.
         Formulae and references will not be updated.
+
+        Under ``preserve=True`` the move lands as tracked cell edits and
+        refuses with ``UnsupportedStructureError`` (changing nothing) when
+        it cannot keep the sheet coherent — e.g. merged ranges, tables,
+        conditional formatting or data validation intersecting either
+        rectangle, or outside formulas that reference the moved block.
         """
         if isinstance(cell_range, str):
             cell_range = CellRange(cell_range)
@@ -782,20 +975,36 @@ class Worksheet(_WorkbookChild):
             raise ValueError("Only CellRange objects can be moved")
         if not rows and not cols:
             return
+        ledger = getattr(self.parent, "_paper_ledger", None)
+        snapshot = None
+        if ledger is not None and ledger.armed:
+            from openpyxl.preserve.structural import _capture_structural_state
 
-        down = rows > 0
-        right = cols > 0
+            snapshot = _capture_structural_state(self.parent)
+        try:
+            _structural_guard(self, "move_range",
+                              (cell_range, rows, cols, translate))
 
-        if rows:
-            cells = sorted(cell_range.rows, reverse=down)
-        else:
-            cells = sorted(cell_range.cols, reverse=right)
+            down = rows > 0
+            right = cols > 0
 
-        for row, col in chain.from_iterable(cells):
-            self._move_cell(row, col, rows, cols, translate)
+            if rows:
+                cells = sorted(cell_range.rows, reverse=down)
+            else:
+                cells = sorted(cell_range.cols, reverse=right)
 
-        # rebase moved range
-        cell_range.shift(row_shift=rows, col_shift=cols)
+            for row, col in chain.from_iterable(cells):
+                self._move_cell(row, col, rows, cols, translate)
+
+            # rebase moved range
+            cell_range.shift(row_shift=rows, col_shift=cols)
+        except BaseException:
+            if snapshot is not None:
+                from openpyxl.preserve.structural import \
+                    _restore_structural_state
+
+                _restore_structural_state(self.parent, snapshot)
+            raise
 
 
     def _move_cell(self, row, column, row_offset, col_offset, translate=False):

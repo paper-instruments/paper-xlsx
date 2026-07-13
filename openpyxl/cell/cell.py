@@ -3,7 +3,7 @@
 """Manage individual cells in a spreadsheet.
 
 The Cell class is required to know its value and type, display options,
-and any other features of an Excel cell.  Utilities for referencing
+and any other features of an Excel cell. Utilities for referencing
 cells using Excel's 'A1' column/row nomenclature are also provided.
 
 """
@@ -28,6 +28,10 @@ from openpyxl.styles.styleable import StyleableObject
 from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.formula import DataTableFormula, ArrayFormula
 from openpyxl.cell.rich_text import CellRichText
+from openpyxl.preserve.ledger import (
+    check_protection as _check_protection,
+    mark_cell_dirty as _mark_cell_dirty,
+)
 
 # constants
 
@@ -60,6 +64,94 @@ VALID_TYPES = (TYPE_STRING, TYPE_FORMULA, TYPE_NUMERIC, TYPE_BOOL,
 
 
 _TYPES = {int:'n', float:'n', str:'s', bool:'b'}
+
+
+class _CellBindTransaction:
+    """Rollback the public value setter if its ledger hook fails."""
+
+    def __init__(self, cell):
+        self.cell = cell
+        ws = cell.parent
+        wb = getattr(ws, "parent", None) if ws is not None else None
+        self.ledger = getattr(wb, "_paper_ledger", None)
+        self.active = bool(self.ledger is not None and self.ledger.armed)
+        if not self.active:
+            return
+        self.value = cell._value
+        self.data_type = cell._data_type
+        self.style = cell._style
+        self.hyperlink = cell._hyperlink
+        self.hyperlink_ref = getattr(self.hyperlink, "ref", None)
+        self.comment = getattr(cell, "_comment", None)
+        self.comment_parent = getattr(self.comment, "_parent", None)
+        self.cells = self.ledger.cells
+        self.cell_sets = self._capture_mapping(self.cells)
+        self.overwrites = self.ledger.value_overwrites
+        self.overwrite_sets = self._capture_mapping(self.overwrites)
+        self.formulas_changed = self.ledger.formulas_changed
+        self.protection_warned = self.ledger.protection_warned
+        self.protection_warned_values = set(self.protection_warned)
+        self.cache_writes = self.ledger.cache_writes
+        self.cache_values = self._capture_mapping(self.cache_writes)
+        self.number_formats = wb._number_formats
+        self.number_format_values = list(self.number_formats)
+        self.number_format_clean = self.number_formats.clean
+        self.number_format_index = self.number_formats._dict
+        self.number_format_index_values = dict(self.number_format_index)
+
+    @staticmethod
+    def _capture_mapping(mapping):
+        snapshots = []
+        for key, value in mapping.items():
+            if isinstance(value, set):
+                copied = set(value)
+            elif isinstance(value, dict):
+                copied = dict(value)
+            else:
+                copied = value
+            snapshots.append((key, value, copied))
+        return snapshots
+
+    @staticmethod
+    def _restore_mapping(mapping, snapshots):
+        mapping.clear()
+        for key, original, copied in snapshots:
+            if isinstance(original, set):
+                original.clear()
+                original.update(copied)
+            elif isinstance(original, dict):
+                original.clear()
+                original.update(copied)
+            mapping[key] = original
+
+    def rollback(self):
+        if not self.active:
+            return
+        self.cell._value = self.value
+        self.cell._data_type = self.data_type
+        self.cell._style = self.style
+        current_comment = getattr(self.cell, "_comment", None)
+        if current_comment is not self.comment \
+                and getattr(current_comment, "_parent", None) is self.cell:
+            current_comment._parent = None
+        self.cell._hyperlink = self.hyperlink
+        if self.hyperlink is not None:
+            self.hyperlink.ref = self.hyperlink_ref
+        self.cell._comment = self.comment
+        if self.comment is not None:
+            self.comment._parent = self.comment_parent
+        self._restore_mapping(self.cells, self.cell_sets)
+        self._restore_mapping(self.overwrites, self.overwrite_sets)
+        self._restore_mapping(self.cache_writes, self.cache_values)
+        self.number_formats[:] = self.number_format_values
+        self.number_formats.clean = self.number_format_clean
+        self.number_format_index.clear()
+        self.number_format_index.update(self.number_format_index_values)
+        self.number_formats._dict = self.number_format_index
+        self.ledger.formulas_changed = self.formulas_changed
+        self.protection_warned.clear()
+        self.protection_warned.update(self.protection_warned_values)
+        self.active = False
 
 
 def get_type(t, value):
@@ -99,7 +191,7 @@ class Cell(StyleableObject):
         'row',
         'column',
         '_value',
-        'data_type',
+        '_data_type',
         'parent',
         '_hyperlink',
         '_comment',
@@ -114,10 +206,44 @@ class Cell(StyleableObject):
         # _value is the stored value, while value is the displayed value
         self._value = None
         self._hyperlink = None
-        self.data_type = 'n'
+        self._data_type = 'n'
         if value is not None:
             self.value = value
         self._comment = None
+
+
+    @property
+    def data_type(self):
+        return self._data_type
+
+    @data_type.setter
+    def data_type(self, value):
+        # a direct data_type assignment changes how the value serializes
+        # (it can silently demote a formula to literal text), so it is a
+        # ledger chokepoint like any other cell mutation
+        transaction = _CellBindTransaction(self)
+        try:
+            ws = self.parent
+            old = self._data_type
+            ledger = getattr(getattr(ws, "parent", None),
+                             "_paper_ledger", None)
+            if ledger is not None and ledger.armed \
+                    and ws.parent.data_only:
+                from openpyxl.workbook.workbook import \
+                    _guard_data_only_cell_mutation
+
+                _guard_data_only_cell_mutation(
+                    ws.parent, self, "data_type assignment")
+            if old == value:
+                return
+            _check_protection(self)
+            self._data_type = value
+            _mark_cell_dirty(
+                self, formula_involved='f' in (old, value),
+                value_change=True)
+        except BaseException:
+            transaction.rollback()
+            raise
 
 
     @property
@@ -174,9 +300,38 @@ class Cell(StyleableObject):
 
 
     def _bind_value(self, value):
+        transaction = _CellBindTransaction(self)
+        try:
+            return self._bind_value_impl(value)
+        except BaseException:
+            transaction.rollback()
+            raise
+
+    def _bind_value_impl(self, value):
         """Given a value, infer the correct data type"""
 
-        self.data_type = "n"
+        # single inline fast bail for BOTH paper hooks (the helper call
+        # costs ~28% on the fresh-generation hot path, and doubling the
+        # lookup chain measured +13%): resolved once here,
+        # reused for the pre-bind protection check and the post-bind mark
+        ws = self.parent
+        paper_armed = (
+            ws is not None
+            and getattr(ws, "parent", None) is not None
+            and getattr(ws.parent, "_paper_ledger", None) is not None
+            and ws.parent._paper_ledger.armed)
+        if paper_armed:
+            if ws.parent.data_only:
+                from openpyxl.workbook.workbook import \
+                    _guard_data_only_cell_mutation
+
+                _guard_data_only_cell_mutation(ws.parent, self)
+            # protection awareness runs BEFORE any
+            # mutation so a strict-mode refusal is atomic
+            _check_protection(self)
+
+        old_data_type = self._data_type
+        self._data_type = "n"
         t = type(value)
         try:
             dt = _TYPES[t]
@@ -187,7 +342,20 @@ class Cell(StyleableObject):
             raise ValueError("Cannot convert {0!r} to Excel".format(value))
 
         if dt:
-            self.data_type = dt
+            self._data_type = dt
+
+        if dt == "f" and paper_armed:
+            # ArrayFormula/DataTableFormula objects carry their text out
+            # of band: they must not bypass the lint chokepoint
+            #
+            text = getattr(value, "text", None)
+            if isinstance(text, str) and text.startswith("="):
+                from openpyxl.formula.lint import lint_on_bind
+                try:
+                    lint_on_bind(self, text)
+                except Exception:
+                    self._data_type = old_data_type
+                    raise
 
         if dt == 'd':
             if not is_date_format(self.number_format):
@@ -196,11 +364,29 @@ class Cell(StyleableObject):
         elif dt == "s" and not isinstance(value, CellRichText):
             value = self.check_string(value)
             if len(value) > 1 and value.startswith("="):
-                self.data_type = 'f'
+                if paper_armed:
+                    # pre-flight lint: warns or refuses
+                    # BEFORE the value lands (a refusal restores the
+                    # pre-bind type; nothing was assigned yet)
+                    from openpyxl.formula.lint import lint_on_bind
+                    try:
+                        lint_on_bind(self, value)
+                    except Exception:
+                        self._data_type = old_data_type
+                        raise
+                self._data_type = 'f'
             elif value in ERROR_CODES:
-                self.data_type = 'e'
+                self._data_type = 'e'
 
         self._value = value
+        # ledger chokepoint: the mark happens only after validation and
+        # assignment succeeded, so a refused/invalid bind dirties nothing
+        # (armed state resolved once at the top of this method)
+        if paper_armed:
+            _mark_cell_dirty(
+                self,
+                formula_involved='f' in (old_data_type, self._data_type),
+                value_change=True)
 
 
     @property
@@ -235,15 +421,29 @@ class Cell(StyleableObject):
         but you can modify it afterwards by setting the `value`
         property, and the hyperlink will remain.
         Hyperlink is removed if set to ``None``."""
-        if val is None:
-            self._hyperlink = None
-        else:
-            if not isinstance(val, Hyperlink):
-                val = Hyperlink(ref="", target=val)
-            val.ref = self.coordinate
-            self._hyperlink = val
-            if self._value is None:
-                self.value = val.target or val.location
+        transaction = _CellBindTransaction(self)
+        external_link = val if isinstance(val, Hyperlink) else None
+        external_ref = getattr(external_link, "ref", None)
+        try:
+            if val is not None and self._value is None:
+                # A link on an empty cell also binds its display value. Run
+                # strict protection before attaching or mutating the link.
+                _check_protection(self)
+            if val is None:
+                self._hyperlink = None
+            else:
+                if not isinstance(val, Hyperlink):
+                    val = Hyperlink(ref="", target=val)
+                val.ref = self.coordinate
+                self._hyperlink = val
+                if self._value is None:
+                    self.value = val.target or val.location
+            _mark_cell_dirty(self)
+        except BaseException:
+            transaction.rollback()
+            if external_link is not None:
+                external_link.ref = external_ref
+            raise
 
 
     @property
@@ -288,13 +488,23 @@ class Cell(StyleableObject):
         Assign a comment to a cell
         """
 
-        if value is not None:
-            if value.parent:
-                value = copy(value)
-            value.bind(self)
-        elif value is None and self._comment:
-            self._comment.unbind()
-        self._comment = value
+        transaction = _CellBindTransaction(self)
+        external_comment = value
+        external_parent = getattr(value, "_parent", None)
+        try:
+            if value is not None:
+                if value.parent:
+                    value = copy(value)
+                value.bind(self)
+            elif value is None and self._comment:
+                self._comment.unbind()
+            self._comment = value
+            _mark_cell_dirty(self)
+        except BaseException:
+            transaction.rollback()
+            if external_comment is not None:
+                external_comment._parent = external_parent
+            raise
 
 
 class MergedCell(StyleableObject):

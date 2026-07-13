@@ -1,3 +1,20 @@
+paper-xlsx 0.1.2 (2026-07-12)
+===============================
+
+* Bind preserve-mode saves to the loaded source and destination identities,
+  with atomic delivery and concurrent-replacement refusals.
+* Protect formulas hidden by ``data_only=True`` across cell, worksheet, and
+  copy operations.
+* Rewrite modeled formulas, defined names, print areas, tables, charts,
+  filters, scenarios, and related references during guarded structural edits.
+* Make guarded workbook mutations rollback-complete on refusals and
+  interrupt-class failures.
+* Tighten oracle certification, input-dependency propagation, error evidence,
+  and type-safe cache write-back.
+* Preserve unowned worksheet XML and formula metadata during cell-level
+  splicing, or refuse before mutation when exact preservation is not possible.
+
+
 3.1.5 (2024-06-28)
 ==================
 

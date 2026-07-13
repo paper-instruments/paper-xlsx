@@ -1,0 +1,21 @@
+{
+  "fixture": "merged.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "two merged ranges"
+  },
+  "features": [
+    "merged_cells"
+  ],
+  "ground_truth": {
+    "merged_ranges": [
+      "A1:D1",
+      "A3:B4"
+    ],
+    "formula_count": 0,
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

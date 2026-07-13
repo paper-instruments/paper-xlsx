@@ -194,6 +194,34 @@ class ChartBase(Serialisable):
         self.series = l
 
 
+    def repoint(self, series_index, new_range):
+        """Point a series' VALUES at ``new_range`` — "the chart now covers
+        Q1-Q4" (paper-xlsx). ``new_range`` must be a
+        sheet-qualified single-area range like "'Data'!$B$2:$B$13"; it is
+        validated here, and under preserve mode the save expresses the
+        change as a byte patch of the chart's <c:f> text."""
+        from openpyxl.preserve.chartpatch import parse_series_range
+
+        parse_series_range(new_range)      # raises ValueError with detail
+        try:
+            ser = self.series[series_index]
+        except (IndexError, TypeError):
+            raise ValueError(
+                "chart has no series {0!r} (it has {1})".format(
+                    series_index, len(self.series)))
+        target = getattr(ser, "val", None)
+        if target is None:
+            target = getattr(ser, "yVal", None)
+        if target is None or target.numRef is None:
+            raise ValueError(
+                "series {0} has no numeric reference to repoint".format(
+                    series_index))
+        target.numRef.f = new_range
+        # the cached values are now stale, but they stay: Excel re-reads
+        # series from cells when it renders, and dropping the cache would
+        # be whole-element surgery under preserve mode
+
+
     @property
     def path(self):
         return self._path.format(self._id)

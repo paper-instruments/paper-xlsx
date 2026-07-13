@@ -101,8 +101,7 @@ class WriteOnlyWorksheet(_WorkbookChild):
 
 
     def append(self, row):
-        """
-        :param row: iterable containing values to append
+        """param row: iterable containing values to append
         :type row: iterable
         """
 

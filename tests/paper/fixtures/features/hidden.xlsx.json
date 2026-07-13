@@ -1,0 +1,21 @@
+{
+  "fixture": "hidden.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "hidden row, hidden column, hidden sheet"
+  },
+  "features": [
+    "hidden_rows",
+    "hidden_sheet"
+  ],
+  "ground_truth": {
+    "hidden_sheets": [
+      "HiddenNotes"
+    ],
+    "formula_count": 0,
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}

@@ -1,0 +1,20 @@
+{
+  "fixture": "chart_image.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "bar chart + embedded PNG; both openpyxl-modeled (stock round-trips them lossily-but-presently; real-Excel chart fixtures are in FIXTURE-REQUESTS.md)"
+  },
+  "features": [
+    "chart",
+    "image"
+  ],
+  "ground_truth": {
+    "chart_count": 1,
+    "image_count": 1,
+    "formula_count": 0,
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-07-08"
+}
