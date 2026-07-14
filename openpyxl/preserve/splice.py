@@ -700,7 +700,7 @@ def _patch_formula_cache_invalidation(cell_bytes, label,
             "was written.".format(label)) from exc
     head = cell_bytes[:tag_end + 1]
     if self_closing:
-        if require_formula:
+        if require_formula and not allow_cache_only:
             raise SpliceRefusal(
                 "cache invalidation target {0} carries no formula. Nothing "
                 "was written.".format(label))

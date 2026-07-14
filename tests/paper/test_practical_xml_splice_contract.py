@@ -315,6 +315,23 @@ def test_prefixed_array_follower_before_anchor_is_recorded():
     assert b"m:v" not in patched
 
 
+def test_self_closing_array_follower_needs_no_cache_invalidation_edit():
+    main = b"http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    follower = b'<c r="A1" s="1"/>'
+    sheet = (
+        b'<worksheet xmlns="' + main + b'"><sheetData><row r="1">' +
+        follower +
+        b'<c r="B1"><f t="array" ref="A1:B1">1+1</f><v>2</v></c>'
+        b'</row></sheetData></worksheet>')
+    scan = scan_sheet(sheet)
+
+    edits = splice._formula_cache_invalidation_edits(
+        Workbook().active, scan, sheet, {(1, 1), (1, 2)})
+
+    assert edits[0][2] == follower
+    assert b"<v>2</v>" not in edits[1][2]
+
+
 def test_style_only_scalar_preserves_foreign_child_markup():
     workbook = Workbook()
     workbook.active["A1"] = 1
