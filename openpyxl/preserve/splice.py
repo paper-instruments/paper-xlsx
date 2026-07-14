@@ -239,7 +239,8 @@ def _col_letter(col):
 def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                  scan=None, cf_replacement=None, hyperlinks_replacement=None,
                  style_resolver=None,
-                 value_overwrites=frozenset(), cache_writes=None):
+                 value_overwrites=frozenset(), cache_writes=None,
+                 cache_invalidations=None):
     """Return the new part payload for one worksheet.
 
     ``dirty_cells``: resolved coordinate set (see resolve_dirty_cells).
@@ -257,11 +258,14 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     for UNTOUCHED formula cells (oracle write-back): the
     <f> bytes stay verbatim, only the cached <v> (and its t attribute)
     change.
+    ``cache_invalidations``: {(row, col)} — formula cells whose cached
+    <v> must be removed because calculation results are uncertified.
     """
     if scan is None:
         scan = scan_sheet(original)
     if style_resolver is None:
         style_resolver = lambda cell: None  # noqa: E731 — styleless contexts only
+    cache_invalidations = set(cache_invalidations or ())
 
     for tag in region_changes:
         if tag in DETECT_ONLY_REGIONS:
@@ -350,15 +354,26 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     edits.extend((s, e, r, 0) for (s, e, r)
                  in _sheetdata_edits(ws, scan, original, dirty_cells,
                                      row_attr_changes, style_resolver,
-                                     value_overwrites=value_overwrites))
+                                     value_overwrites=value_overwrites,
+                                     cache_invalidations=cache_invalidations))
     if cache_writes:
         overlap = set(cache_writes) & set(dirty_cells)
         if overlap:
             raise SpliceRefusal(
                 "internal: cache writes and dirty cells overlap at "
                 "{0}".format(sorted(overlap)[:4]))
+        invalidate_overlap = set(cache_writes) & cache_invalidations
+        if invalidate_overlap:
+            raise SpliceRefusal(
+                "internal: cache writes and cache invalidations overlap at "
+                "{0}".format(sorted(invalidate_overlap)[:4]))
         edits.extend((s, e, r, 0) for (s, e, r)
                      in _cache_value_edits(ws, scan, original, cache_writes))
+    standalone_invalidations = cache_invalidations - set(dirty_cells)
+    if standalone_invalidations:
+        edits.extend((s, e, r, 0) for (s, e, r)
+                     in _formula_cache_invalidation_edits(
+                         ws, scan, original, standalone_invalidations))
 
     # ------- apply (sorted, non-overlapping by construction) -------------
     edits.sort(key=lambda e: (e[0], e[1], e[3]))
@@ -393,7 +408,8 @@ def _region_insert_offset(scan, tag):
 
 
 def _sheetdata_edits(ws, scan, original, dirty_cells, row_attr_changes, resolve,
-                     value_overwrites=frozenset()):
+                     value_overwrites=frozenset(),
+                     cache_invalidations=frozenset()):
     edits = []
     by_row = {}
     for (row, col) in dirty_cells:
@@ -423,7 +439,8 @@ def _sheetdata_edits(ws, scan, original, dirty_cells, row_attr_changes, resolve,
         row_edits = _row_edits(ws, row_span, original,
                                by_row.get(row_index, set()),
                                row_attr_changes.get(row_index), resolve,
-                               value_overwrites=value_overwrites)
+                               value_overwrites=value_overwrites,
+                               cache_invalidations=cache_invalidations)
         edits.extend(row_edits)
 
     # new rows: insert each before the first existing row with a larger index
@@ -479,7 +496,7 @@ def _emit_rows_block(ws, row_indices, by_row, row_attr_changes, resolve):
 
 
 def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
-               value_overwrites=frozenset()):
+               value_overwrites=frozenset(), cache_invalidations=frozenset()):
     """Edits inside one existing row: replace/insert/delete cells, sync the
     row start tag's attributes when they changed."""
     from openpyxl.cell.rich_text import CellRichText
@@ -557,6 +574,13 @@ def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
             rendered = emit.carry_attributes(
                 rendered, original_cell,
                 drop_metadata=coordinate in value_overwrites)
+        if rendered is not None and cell_span is not None \
+                and coordinate in cache_invalidations:
+            rendered = _patch_formula_cache_invalidation(
+                rendered,
+                "{0}!r{1}c{2}".format(
+                    ws.title, row_span.index, col),
+                require_formula=False)
 
         if cell_span is not None:
             # replace or delete an existing cell element
@@ -626,6 +650,71 @@ def _cache_value_edits(ws, scan, original, cache_writes):
                               _coordinate_in_bounds((row, col), bounds)
                               for bounds in array_bounds))))
     return edits
+
+
+def _formula_cache_invalidation_edits(ws, scan, original, coordinates):
+    edits = []
+    for row, col in sorted(coordinates):
+        label = "{0}!r{1}c{2}".format(ws.title, row, col)
+        row_span = scan.rows.get(row)
+        cell_span = row_span.cells.get(col) if row_span is not None else None
+        if cell_span is None:
+            raise SpliceRefusal(
+                "cache invalidation target {0} does not exist in the "
+                "original bytes. Nothing was written.".format(label))
+        cell_bytes = original[cell_span.start:cell_span.end]
+        edits.append((cell_span.start, cell_span.end,
+                      _patch_formula_cache_invalidation(cell_bytes, label)))
+    return edits
+
+
+def _patch_formula_cache_invalidation(cell_bytes, label,
+                                      require_formula=True):
+    try:
+        tag_end, self_closing, _attrs = emit._start_tag_attributes(cell_bytes)
+    except ValueError as exc:
+        raise SpliceRefusal(
+            "cache invalidation target {0} is not a formula cell. Nothing "
+            "was written.".format(label)) from exc
+    head = cell_bytes[:tag_end + 1]
+    if self_closing:
+        if require_formula:
+            raise SpliceRefusal(
+                "cache invalidation target {0} carries no formula. Nothing "
+                "was written.".format(label))
+        return cell_bytes
+    close_start = cell_bytes.rfind(b"</c>")
+    if close_start < tag_end or cell_bytes[close_start:] != b"</c>":
+        raise SpliceRefusal(
+            "cache invalidation target {0} has malformed cell markup. "
+            "Nothing was written.".format(label))
+    body = cell_bytes[tag_end + 1:close_start]
+    try:
+        children = _direct_cell_children(cell_bytes)
+        formulas = [child for child in children if child.name == b"f"]
+        caches = [child for child in children if child.name == b"v"]
+    except ValueError as exc:
+        raise SpliceRefusal(
+            "cache invalidation target {0} has malformed child markup. "
+            "Nothing was written.".format(label)) from exc
+    if len(formulas) > 1:
+        raise SpliceRefusal(
+            "cache invalidation target {0} has duplicate formula "
+            "markup. Nothing was written.".format(label))
+    if not formulas:
+        if require_formula:
+            raise SpliceRefusal(
+                "cache invalidation target {0} carries no formula. "
+                "Nothing was written.".format(label))
+        return cell_bytes
+
+    head = emit.patch_start_tag_attribute(head, b"t", None)
+    for cached in reversed(caches):
+        body_start = tag_end + 1
+        start = cached.start - body_start
+        end = cached.end - body_start
+        body = body[:start] + body[end:]
+    return head + body + b"</c>"
 
 
 def _patch_cached_value(cell_bytes, value, epoch, label,

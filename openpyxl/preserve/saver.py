@@ -64,7 +64,9 @@ class _PlanningState:
 
     def __init__(self, workbook):
         self.workbook = workbook
+        self.calc_mode = workbook.calculation.calcMode
         self.calc_flag = workbook.calculation.fullCalcOnLoad
+        self.force_full_calc = workbook.calculation.forceFullCalc
         self.registries = []
         for name in ("_fonts", "_fills", "_borders", "_alignments",
                      "_protections", "_number_formats", "_cell_styles"):
@@ -109,7 +111,9 @@ class _PlanningState:
         } if led is not None else None
 
     def restore(self):
+        self.workbook.calculation.calcMode = self.calc_mode
         self.workbook.calculation.fullCalcOnLoad = self.calc_flag
+        self.workbook.calculation.forceFullCalc = self.force_full_calc
         for registry, values, clean, index in self.registries:
             registry[:] = values
             registry.clean = clean
@@ -200,7 +204,9 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         # diff cannot see this change: calcPr is forced into the
         # workbook.xml plan (sanctioned collateral) and
         # re-rendered from the fully-modeled object.
+        workbook.calculation.calcMode = "auto"
         workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
         force_calcpr = True
 
     if led.parts:
@@ -430,7 +436,8 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         shift_ops = led.shifts.get(ws, [])
         if not (ledger_dirty or all_region_changes or row_changes
                 or comments_changed or shift_ops or led.rich_text_mode
-                or table_changes or new_drawables or cache_writes):
+                or table_changes or new_drawables or cache_writes
+                or force_calcpr):
             continue
         table_lifecycle = "tableParts" in all_region_changes
 
@@ -502,6 +509,10 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         dirty = resolve_dirty_cells(
             ws, ledger_dirty, scan,
             value_overwrites=led.value_overwrites.get(ws, set()))
+        cache_invalidations = _formula_cache_invalidations(scan, original) \
+            if force_calcpr else set()
+        if cache_writes:
+            cache_invalidations -= set(cache_writes)
 
         region_changes = {tag: rendered
                           for tag, rendered in all_region_changes.items()
@@ -612,7 +623,7 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         if not (dirty or region_changes or row_changes or shift_ops
                 or cf_replacement is not None
                 or hyperlinks_replacement is not None
-                or cache_writes):
+                or cache_writes or cache_invalidations):
             continue
         if translator is None:
             # no styles.xml in the package: the part is CREATED from the
@@ -632,12 +643,14 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
             hyperlinks_replacement=hyperlinks_replacement,
             style_resolver=resolver,
             value_overwrites=led.value_overwrites.get(ws, frozenset()),
-            cache_writes=cache_writes)
+            cache_writes=cache_writes,
+            cache_invalidations=cache_invalidations)
         plan[part], dimension_changed = _sync_dimension(
             sheet_payload, ws, scan, dirty)
         # cache-written cells are CLAIMED changes: the crosscheck verifies
         # them exactly like dirty cells
-        dirty_by_part[part] = dirty | set(cache_writes)
+        dirty_by_part[part] = dirty | set(cache_writes) \
+            | set(cache_invalidations)
         claims = set(region_changes)
         if cf_replacement is not None:
             claims.add("conditionalFormatting")
@@ -964,6 +977,18 @@ def _sync_dimension(payload, ws, original_scan, dirty):
 def _namelist(source):
     with zipfile.ZipFile(io.BytesIO(source)) as z:
         return set(z.namelist())
+
+
+def _formula_cache_invalidations(scan, original):
+    targets = set()
+    for row_index, row_span in scan.rows.items():
+        for col, cell_span in row_span.cells.items():
+            if not cell_span.has_formula:
+                continue
+            cell_bytes = original[cell_span.start:cell_span.end]
+            if b"<v" in cell_bytes or cell_span.attrs.get("t") is not None:
+                targets.add((row_index, col))
+    return targets
 
 
 def _dirty_feeds_formulas(workbook, led):

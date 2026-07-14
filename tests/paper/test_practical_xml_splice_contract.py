@@ -73,6 +73,29 @@ def test_cache_patch_preserves_boundary_whitespace_in_string_value():
         b'<v xml:space="preserve"> updated </v></c>')
 
 
+def test_cache_invalidation_changes_only_type_and_direct_value_span():
+    original = (
+        b"<c r='A1' t='str' xmlns:x='urn:vendor' x:hint='keep'> "
+        b"<f t='shared' si='2'>A2</f>\r\n"
+        b"<v xml:space='preserve'> stale </v>\n</c>")
+
+    patched = splice._patch_formula_cache_invalidation(
+        original, "Sheet!A1")
+
+    assert patched == (
+        b"<c r='A1' xmlns:x='urn:vendor' x:hint='keep'> "
+        b"<f t='shared' si='2'>A2</f>\r\n\n</c>")
+
+
+def test_cache_invalidation_removes_every_duplicate_cache():
+    original = b'<c r="A1"><f>1</f><v>stale</v> <v></v></c>'
+
+    patched = splice._patch_formula_cache_invalidation(
+        original, "Sheet!A1")
+
+    assert patched == b'<c r="A1"><f>1</f> </c>'
+
+
 def test_in_place_rich_text_edit_reemits_modeled_value():
     workbook = Workbook()
     workbook.active["A1"] = CellRichText(
