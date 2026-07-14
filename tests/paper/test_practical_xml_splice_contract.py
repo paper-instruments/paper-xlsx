@@ -219,6 +219,36 @@ def test_style_only_prefixed_formula_preserves_formula_bytes():
     assert b"<v>2</v>" in _sheet_xml(saved.getvalue())
 
 
+def test_cache_invalidation_recognizes_prefixed_formula_and_cache_children():
+    source = _formula_package()
+    main = b"http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    prefixed = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source)) as archive, \
+            zipfile.ZipFile(prefixed, "w") as destination:
+        for info in archive.infolist():
+            payload = archive.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                payload = payload.replace(
+                    b'<c r="A1"',
+                    b'<c r="A1" xmlns:m="' + main + b'"', 1)
+                payload = payload.replace(
+                    b'<f t="normal">1+1</f>',
+                    b'<m:f t="normal">1+1</m:f>', 1)
+                payload = payload.replace(
+                    b"<v>2</v>", b"<m:v>2</m:v>", 1)
+            destination.writestr(info, payload)
+
+    workbook = load_workbook(
+        io.BytesIO(prefixed.getvalue()), preserve=True)
+    workbook.active["B1"] = "=3+3"
+    saved = io.BytesIO()
+    workbook.save(saved)
+
+    xml = _sheet_xml(saved.getvalue())
+    assert b'<m:f t="normal">1+1</m:f>' in xml
+    assert b"<m:v>2</m:v>" not in xml
+
+
 def test_style_only_scalar_preserves_foreign_child_markup():
     workbook = Workbook()
     workbook.active["A1"] = 1

@@ -37,7 +37,7 @@ from .regions import (
     render_hyperlinks_for_write,
 )
 from .splice import resolve_dirty_cells, splice_sheet
-from .xmlscan import scan_sheet
+from .xmlscan import ScanRefusal, scan_sheet
 
 _CALC_CHAIN = "xl/calcChain.xml"
 _CUSTOM_REGIONS = ("conditionalFormatting", "hyperlinks", "tableParts")
@@ -434,10 +434,11 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         row_changes = diff_row_attrs(ws, led.row_attr_snapshots.get(ws, {}))
         comments_changed = _comments_changed(ws, led)
         shift_ops = led.shifts.get(ws, [])
-        if not (ledger_dirty or all_region_changes or row_changes
-                or comments_changed or shift_ops or led.rich_text_mode
-                or table_changes or new_drawables or cache_writes
-                or force_calcpr):
+        sheet_changed = bool(
+            ledger_dirty or all_region_changes or row_changes
+            or comments_changed or shift_ops or led.rich_text_mode
+            or table_changes or new_drawables or cache_writes)
+        if not (sheet_changed or force_calcpr):
             continue
         table_lifecycle = "tableParts" in all_region_changes
 
@@ -505,11 +506,20 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
                                 ws.title, "; ".join(chart_blockers)))
                 plan.update(chart_plans)
             baselines[part] = original
-        scan = scan_sheet(original)
+        try:
+            scan = scan_sheet(original)
+        except ScanRefusal:
+            if force_calcpr and not sheet_changed:
+                # This part was raw-copyable before cache invalidation existed.
+                # Keep that contract for untouched XML outside the splice
+                # grammar; calcPr still tells spreadsheet applications to
+                # recompute it on open.
+                continue
+            raise
         dirty = resolve_dirty_cells(
             ws, ledger_dirty, scan,
             value_overwrites=led.value_overwrites.get(ws, set()))
-        cache_invalidations = _formula_cache_invalidations(scan, original) \
+        cache_invalidations = _formula_cache_invalidations(scan) \
             if force_calcpr else set()
         if cache_writes:
             cache_invalidations -= set(cache_writes)
@@ -979,34 +989,43 @@ def _namelist(source):
         return set(z.namelist())
 
 
-def _formula_cache_invalidations(scan, original):
+def _formula_cache_invalidations(scan):
+    from openpyxl.utils.cell import range_boundaries
+
     targets = set()
+    array_bounds = []
+    for ref in scan.array_refs:
+        min_col, min_row, max_col, max_row = range_boundaries(ref)
+        array_bounds.append((min_row, min_col, max_row, max_col))
     for row_index, row_span in scan.rows.items():
         for col, cell_span in row_span.cells.items():
-            if not cell_span.has_formula:
+            array_member = any(
+                min_row <= row_index <= max_row
+                and min_col <= col <= max_col
+                for min_row, min_col, max_row, max_col in array_bounds)
+            if not cell_span.has_formula and not array_member:
                 continue
-            cell_bytes = original[cell_span.start:cell_span.end]
-            if b"<v" in cell_bytes or cell_span.attrs.get("t") is not None:
+            if cell_span.cache_names or cell_span.attrs.get("t") is not None:
                 targets.add((row_index, col))
     return targets
 
 
 def _dirty_feeds_formulas(workbook, led):
-    """True when any ledger-dirty cell intersects a reference some formula
+    """True when any value-overwritten cell intersects a reference some formula
     makes: the saved file's caches for those formulas are
     stale, and the human opener must recompute. Structured/table and
     unresolvable references count as always-intersecting
     (conservative)."""
-    if not any(led.cells.values()):
+    if not any(led.value_overwrites.values()):
         return False
     from .perception import dependency_sketch
 
     sketch = dependency_sketch(workbook)
     if not sketch.references and not sketch.unresolved:
         return False
-    if sketch.unresolved and any(led.cells.values()):
+    if sketch.unresolved and any(led.value_overwrites.values()):
         return True
-    for ws, dirty in led.cells.items():
+    for ws, dirty in led.value_overwrites.items():
         if not dirty:
             continue
         title = ws.title.casefold()      # Excel sheet names: case-insensitive

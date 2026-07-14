@@ -38,7 +38,8 @@ class ScanRefusal(UnsupportedStructureError):
 class CellSpan:
     __slots__ = ("row", "column", "start", "end", "_attr_blob", "_attrs",
                  "shared_si", "shared_ref", "array_ref", "has_extlst",
-                 "has_formula", "has_unowned_children")
+                 "has_formula", "has_unowned_children", "formula_names",
+                 "cache_names")
 
     def __init__(self, row, column, start):
         self.row = row
@@ -53,6 +54,8 @@ class CellSpan:
         self.has_extlst = False
         self.has_formula = False
         self.has_unowned_children = False
+        self.formula_names = ()
+        self.cache_names = ()
 
     @property
     def attrs(self):
@@ -163,6 +166,8 @@ def scan_sheet(data):
                     # well-formed character data, so this IS the end tag;
                     # CDATA/comments/nested markup miss the check and take
                     # the generic path
+                    if b"v" not in current_cell.cache_names:
+                        current_cell.cache_names += (b"v",)
                     pos = close + 4
                     continue
             elif nxt == 0x2F and data.startswith(b"</c>", lt) \
@@ -433,6 +438,8 @@ def scan_sheet(data):
                 current_cell.has_unowned_children = True
             elif local == b"f":
                 current_cell.has_formula = True
+                if raw_name not in current_cell.formula_names:
+                    current_cell.formula_names += (raw_name,)
                 t = attrs.get(b"t")
                 si = attrs.get(b"si")
                 ref = attrs.get(b"ref")
@@ -447,6 +454,9 @@ def scan_sheet(data):
                 elif t == b"array" and ref is not None:
                     current_cell.array_ref = ref.decode("ascii")
                     scan.array_refs.append(ref.decode("ascii"))
+            elif local == b"v":
+                if raw_name not in current_cell.cache_names:
+                    current_cell.cache_names += (raw_name,)
             elif local == b"extLst":
                 current_cell.has_extlst = True
 

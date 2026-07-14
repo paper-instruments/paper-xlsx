@@ -258,8 +258,8 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     for UNTOUCHED formula cells (oracle write-back): the
     <f> bytes stay verbatim, only the cached <v> (and its t attribute)
     change.
-    ``cache_invalidations``: {(row, col)} — formula cells whose cached
-    <v> must be removed because calculation results are uncertified.
+    ``cache_invalidations``: {(row, col)} — formula cells and array followers
+    whose cached <v> must be removed because results are uncertified.
     """
     if scan is None:
         scan = scan_sheet(original)
@@ -576,11 +576,17 @@ def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
                 drop_metadata=coordinate in value_overwrites)
         if rendered is not None and cell_span is not None \
                 and coordinate in cache_invalidations:
+            formula_names = getattr(cell_span, "formula_names", ()) \
+                if preserve_cell_content else ()
+            cache_names = getattr(cell_span, "cache_names", ()) \
+                if preserve_cell_content else ()
             rendered = _patch_formula_cache_invalidation(
                 rendered,
                 "{0}!r{1}c{2}".format(
                     ws.title, row_span.index, col),
-                require_formula=False)
+                require_formula=False,
+                formula_names=formula_names,
+                cache_names=cache_names)
 
         if cell_span is not None:
             # replace or delete an existing cell element
@@ -648,12 +654,17 @@ def _cache_value_edits(ws, scan, original, cache_writes):
                           cell_bytes, value, epoch, label,
                           allow_cache_only=any(
                               _coordinate_in_bounds((row, col), bounds)
-                              for bounds in array_bounds))))
+                              for bounds in array_bounds),
+                          formula_names=getattr(
+                              cell_span, "formula_names", ()),
+                          cache_names=getattr(
+                              cell_span, "cache_names", ()))))
     return edits
 
 
 def _formula_cache_invalidation_edits(ws, scan, original, coordinates):
     edits = []
+    array_bounds = [_range_bounds(ref) for ref in scan.array_refs]
     for row, col in sorted(coordinates):
         label = "{0}!r{1}c{2}".format(ws.title, row, col)
         row_span = scan.rows.get(row)
@@ -664,12 +675,22 @@ def _formula_cache_invalidation_edits(ws, scan, original, coordinates):
                 "original bytes. Nothing was written.".format(label))
         cell_bytes = original[cell_span.start:cell_span.end]
         edits.append((cell_span.start, cell_span.end,
-                      _patch_formula_cache_invalidation(cell_bytes, label)))
+                      _patch_formula_cache_invalidation(
+                          cell_bytes, label,
+                          allow_cache_only=any(
+                              _coordinate_in_bounds((row, col), bounds)
+                              for bounds in array_bounds),
+                          formula_names=getattr(
+                              cell_span, "formula_names", ()),
+                          cache_names=getattr(
+                              cell_span, "cache_names", ()))))
     return edits
 
 
 def _patch_formula_cache_invalidation(cell_bytes, label,
-                                      require_formula=True):
+                                      require_formula=True,
+                                      allow_cache_only=False,
+                                      formula_names=(), cache_names=()):
     try:
         tag_end, self_closing, _attrs = emit._start_tag_attributes(cell_bytes)
     except ValueError as exc:
@@ -691,8 +712,11 @@ def _patch_formula_cache_invalidation(cell_bytes, label,
     body = cell_bytes[tag_end + 1:close_start]
     try:
         children = _direct_cell_children(cell_bytes)
-        formulas = [child for child in children if child.name == b"f"]
-        caches = [child for child in children if child.name == b"v"]
+        formula_names = set(formula_names) | {b"f"}
+        cache_names = set(cache_names) | {b"v"}
+        formulas = [child for child in children
+                    if child.name in formula_names]
+        caches = [child for child in children if child.name in cache_names]
     except ValueError as exc:
         raise SpliceRefusal(
             "cache invalidation target {0} has malformed child markup. "
@@ -702,11 +726,12 @@ def _patch_formula_cache_invalidation(cell_bytes, label,
             "cache invalidation target {0} has duplicate formula "
             "markup. Nothing was written.".format(label))
     if not formulas:
-        if require_formula:
+        if require_formula and not allow_cache_only:
             raise SpliceRefusal(
                 "cache invalidation target {0} carries no formula. "
                 "Nothing was written.".format(label))
-        return cell_bytes
+        if not allow_cache_only:
+            return cell_bytes
 
     head = emit.patch_start_tag_attribute(head, b"t", None)
     for cached in reversed(caches):
@@ -718,7 +743,8 @@ def _patch_formula_cache_invalidation(cell_bytes, label,
 
 
 def _patch_cached_value(cell_bytes, value, epoch, label,
-                        allow_cache_only=False):
+                        allow_cache_only=False,
+                        formula_names=(), cache_names=()):
     try:
         tag_end, self_closing, _attrs = emit._start_tag_attributes(cell_bytes)
     except ValueError as exc:
@@ -738,8 +764,11 @@ def _patch_cached_value(cell_bytes, value, epoch, label,
         close = b"</c>"
     try:
         children = _direct_cell_children(cell_bytes)
-        formulas = [child for child in children if child.name == b"f"]
-        caches = [child for child in children if child.name == b"v"]
+        formula_names = set(formula_names) | {b"f"}
+        cache_names = set(cache_names) | {b"v"}
+        formulas = [child for child in children
+                    if child.name in formula_names]
+        caches = [child for child in children if child.name in cache_names]
     except ValueError as exc:
         raise SpliceRefusal(
             "cache write target {0} has malformed child markup. Nothing "

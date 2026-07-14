@@ -164,6 +164,86 @@ class TestRecalcOnLoad:
         assert b"<v>6</v>" not in sheet
         assert b"<v>9</v>" not in parts["xl/worksheets/sheet2.xml"]
 
+    def test_value_edit_invalidates_array_follower_caches(self, tmp_path):
+        src = self._cached_formula_workbook(tmp_path)
+        array_src = str(tmp_path / "array-cached.xlsx")
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(array_src, "w") as zout:
+            for info in zin.infolist():
+                payload = zin.read(info.filename)
+                if info.filename == "xl/worksheets/sheet1.xml":
+                    payload = payload.replace(
+                        b"<f>A1+A2</f><v>3</v>",
+                        b'<f t="array" ref="B1:B3">A1+A2</f><v>3</v>')
+                    payload = payload.replace(
+                        b"<f>B1*2</f><v>6</v>", b"<v>6</v>")
+                    payload = payload.replace(
+                        b"</sheetData>",
+                        b'<row r="3"><c r="B3"><v>9</v></c></row>'
+                        b"</sheetData>")
+                zout.writestr(info, payload)
+
+        wb = load_workbook(array_src, preserve=True)
+        wb["Model"]["A1"] = 10
+        out = str(tmp_path / "array-output.xlsx")
+        wb.save(out)
+
+        sheet = part_payloads(out)["xl/worksheets/sheet1.xml"]
+        for coordinate in (b"B1", b"B2", b"B3"):
+            cell = re.search(
+                br'<c r="' + coordinate + br'".*?</c>', sheet, re.S).group(0)
+            assert b"<v" not in cell
+        assert b'<f t="array" ref="B1:B3">A1+A2</f>' in sheet
+
+    def test_style_only_precedent_edit_preserves_formula_caches(
+            self, tmp_path):
+        src = self._cached_formula_workbook(tmp_path)
+        before = part_payloads(src)
+        wb = load_workbook(src, preserve=True)
+        cell = wb["Model"]["A1"]
+        cell.font = cell.font.copy(bold=True)
+        out = str(tmp_path / "style-only.xlsx")
+        wb.save(out)
+
+        after = part_payloads(out)
+        assert after["xl/workbook.xml"] == before["xl/workbook.xml"]
+        assert b"<f>A1+A2</f><v>3</v>" in \
+            after["xl/worksheets/sheet1.xml"]
+        assert b"<f>B1*2</f><v>6</v>" in \
+            after["xl/worksheets/sheet1.xml"]
+        assert b"<f>Model!B1*3</f><v>9</v>" in \
+            after["xl/worksheets/sheet2.xml"]
+
+    def test_calcpr_only_save_raw_copies_unspliceable_untouched_sheet(
+            self, tmp_path):
+        src = self._cached_formula_workbook(tmp_path)
+        prefixed_src = str(tmp_path / "prefixed-root.xlsx")
+        main = b"http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        with zipfile.ZipFile(src) as zin, \
+                zipfile.ZipFile(prefixed_src, "w") as zout:
+            for info in zin.infolist():
+                payload = zin.read(info.filename)
+                if info.filename == "xl/worksheets/sheet2.xml":
+                    payload = payload.replace(
+                        b"<worksheet ",
+                        b'<m:worksheet xmlns:m="' + main + b'" ', 1)
+                    payload = payload.replace(
+                        b"</worksheet>", b"</m:worksheet>", 1)
+                zout.writestr(info, payload)
+
+        before = part_payloads(prefixed_src)
+        assert b"<m:worksheet" in before["xl/worksheets/sheet2.xml"]
+        wb = load_workbook(prefixed_src, preserve=True)
+        wb["Model"]["B1"] = "=A1+A2+1"
+        out = str(tmp_path / "prefixed-root-output.xlsx")
+        wb.save(out)
+
+        after = part_payloads(out)
+        assert after["xl/worksheets/sheet2.xml"] == \
+            before["xl/worksheets/sheet2.xml"]
+        assert b'fullCalcOnLoad="1"' in after["xl/workbook.xml"]
+        assert b'forceFullCalc="1"' in after["xl/workbook.xml"]
+
     def test_unrelated_value_edit_preserves_formula_caches(self, tmp_path):
         src = self._cached_formula_workbook(tmp_path)
         before = part_payloads(src)
