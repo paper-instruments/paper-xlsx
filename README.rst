@@ -60,8 +60,7 @@ receipt:
 
     wb = load_workbook("model.xlsx", preserve=True)
 
-    wb.manifest().to_dict()             # what is in the file and survives a save
-    wb.model_map().to_dict()            # inputs, calculations, and outputs
+    wb.sheetnames                       # inspect workbook structure directly
     wb.active.locate("Growth rate")     # find a value cell by its label
 
     wb.set_input("Growth rate", 0.07)   # does not overwrite formulas
@@ -74,12 +73,9 @@ What it adds
 Inspecting a workbook
 +++++++++++++++++++++
 
-* **``wb.manifest()``** inventories sheets, formulas, defined names,
-  protection, and package objects such as charts, pivots, VBA, and extensions.
-  It returns the versioned ``workbook_manifest`` payload.
 * **``wb.model_map()``** classifies populated cells as inputs, calculations,
-  outputs, or constants through a dependency sketch. It returns the versioned
-  ``model_map`` payload.
+  outputs, or constants through a dependency sketch when that analysis is
+  explicitly useful. It returns the versioned ``model_map`` payload.
 * **``ws.locate()`` / ``wb.search()``** find values by label or search text and
   refuse when a target is ambiguous rather than selecting one.
 * **``ws.allowed_values()`` / ``openpyxl.preserve.scan_errors()`` /
@@ -88,6 +84,9 @@ Inspecting a workbook
 * **``openpyxl.preserve.diff_workbooks()``** distinguishes content changes from
   addresses shifted by structural edits. It returns the versioned
   ``workbook_diff`` payload.
+
+Preservation checks run automatically during load, mutation, validation, and
+save; they do not require a package-wide preflight inventory call.
 
 Editing one workbook
 ++++++++++++++++++++

@@ -86,7 +86,7 @@ def build_model_map(wb):
                            for cell in ws._cells.values())
         # a formula-free sheet whose cells other sheets READ is part of
         # the model: its referenced cells are inputs
-        # (cross-sheet inputs were invisible in the map and the manifest)
+        # (cross-sheet inputs were previously invisible in the map)
         if not has_formulas and ws.title not in referenced_titles:
             continue
         roles = {"inputs": [], "calculations": [], "outputs": [],

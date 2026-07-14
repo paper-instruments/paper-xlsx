@@ -1,61 +1,13 @@
-"""Perception — manifest, diff_cells, dependency sketch
-."""
+"""Perception helpers for cell diffs and dependency sketches."""
 from __future__ import annotations
-
-import json
-import os
-
-import pytest
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.package import diff_cells
 from openpyxl.preserve.perception import dependency_sketch
 
-GOLDENS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "goldens")
 
-
-class TestManifest:
-
-    def test_gauntlet_manifest_matches_golden(self, fixture_copy):
-        # golden files update only via explicit command with human-reviewed
-        # diffs
-        wb = load_workbook(fixture_copy("gauntlet/gauntlet.xlsx"),
-                           preserve=True)
-        doc = wb.manifest().to_dict()
-        with open(os.path.join(GOLDENS, "gauntlet_manifest.json")) as f:
-            golden = json.load(f)
-        assert json.loads(json.dumps(doc, sort_keys=True)) == golden
-
-    def test_confession_comes_from_the_package_not_the_model(
-            self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/macro_stub.xlsm"),
-                           preserve=True)
-        conf = wb.manifest().to_dict()["confession"]
-        assert conf["vba_present"] is True     # model never parses VBA
-
-    def test_preservation_block_stock_vs_preserve(self, fixture_copy):
-        src = fixture_copy("gauntlet/gauntlet.xlsx")
-        preserve = load_workbook(src, preserve=True).manifest().to_dict()
-        assert preserve["preservation"]["mode"] == "preserve"
-        stock = load_workbook(src).manifest().to_dict()
-        assert stock["preservation"]["mode"] == "stock"
-        assert "worksheet-extension" in stock["preservation"]["at_risk"]
-
-    def test_volatile_functions_detected_per_pinned_table(self):
-        wb = Workbook()
-        ws = wb.active
-        ws["A1"] = "=NOW()"
-        ws["A2"] = "=RANDBETWEEN(1,10)"
-        ws["A3"] = "=OFFSET(A1,1,0)"
-        ws["A4"] = "=SUM(B1:B3)"
-        vol = wb.manifest().to_dict()["volatile_functions"]
-        assert set(vol["nondeterministic"]) == {"NOW", "RANDBETWEEN"}
-        assert set(vol["deterministic"]) == {"OFFSET"}
-
-    def test_fresh_workbook_manifest_works(self):
-        doc = Workbook().manifest().to_dict()
-        assert doc["schema"] == "workbook_manifest"
-        assert doc["confession"]["vba_present"] is False
+def test_workbook_has_no_manifest_api():
+    assert not hasattr(Workbook(), "manifest")
 
 
 class TestDiffCells:

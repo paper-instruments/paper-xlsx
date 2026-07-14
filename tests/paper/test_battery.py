@@ -469,11 +469,6 @@ class TestBatteryToday:
             wb3.active["A1"] = "refused"
         assert wb3.active["A1"].value == "original"   # atomic
 
-        # the manifest reports protection so agents can check BEFORE writing
-        doc = wb3.manifest().to_dict()
-        assert doc["sheets"][0]["protection"] is True
-        assert doc["workbook_protection"] is False
-
     # job 10: CORRECT table append discipline (flipped
     # from the refusal by the lifecycle engine + table verbs).
     def test_job10_table_append_is_correct(self, fixture_copy, tmp_path):

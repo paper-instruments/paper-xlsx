@@ -21,7 +21,7 @@ def current_titles_by_part(wb, zin):
     """{part_name: CURRENT sheet title} for a preserve workbook — the
     package still uses ORIGINAL titles after an in-session rename, and
     sheets removed this session map to nothing (shared by scan_errors
-    and the manifest — stale/None attributions)."""
+    and other package-aware diagnostics — stale/None attributions)."""
     from .saver import _package_info
 
     led = getattr(wb, "_paper_ledger", None)

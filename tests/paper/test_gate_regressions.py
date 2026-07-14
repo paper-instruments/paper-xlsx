@@ -1415,14 +1415,6 @@ class TestBatch6InstrumentGaps:
         assert "B1" in mm.sheets["Data"]["inputs"]
         assert mm.inputs("Data") == ["B1"]
 
-    def test_manifest_part_name_follows_rename(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           preserve=True)
-        wb["Schedule"].title = "Renamed"
-        doc = wb.manifest().to_dict()
-        entry = next(s for s in doc["sheets"] if s["title"] == "Renamed")
-        assert entry["part_name"] == "xl/worksheets/sheet1.xml"
-
     def test_merged_hazard_fires_from_preserved_bytes(self, fixture_copy,
                                                       tmp_path):
         # the model discards shadowed interior values at load, so the
