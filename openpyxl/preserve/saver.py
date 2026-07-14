@@ -990,13 +990,8 @@ def _namelist(source):
 
 
 def _formula_cache_invalidations(scan):
-    from openpyxl.utils.cell import range_boundaries
-
     targets = set()
-    array_bounds = []
-    for ref in scan.array_refs:
-        min_col, min_row, max_col, max_row = range_boundaries(ref)
-        array_bounds.append((min_row, min_col, max_row, max_col))
+    array_bounds = scan.array_bounds
     for row_index, row_span in scan.rows.items():
         for col, cell_span in row_span.cells.items():
             array_member = bool(array_bounds) and any(

@@ -19,7 +19,7 @@ refuse. Every refusal happens before any output is written.
 import re
 
 from openpyxl.errors import UnsupportedStructureError
-from openpyxl.xml.constants import SHEET_MAIN_NS
+from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW, SHEET_MAIN_NS
 from openpyxl.utils.cell import range_boundaries
 
 _WS = b" \t\r\n"
@@ -116,6 +116,16 @@ class SheetScan:
         self.cache_names = {}        # (row, col) -> raw main-ns child names
         self.rows_monotonic = True
         self.root_end_offset = None  # offset of '</worksheet>'
+
+
+def _range_bounds(ref):
+    min_col, min_row, max_col, max_row = range_boundaries(ref)
+    return (
+        1 if min_row is None else min_row,
+        1 if min_col is None else min_col,
+        MAX_ROW if max_row is None else max_row,
+        MAX_COLUMN if max_col is None else max_col,
+    )
 
 
 def _decode_name(raw, default_ns, prefixes, what, offset):
@@ -457,18 +467,9 @@ def scan_sheet(data):
                     ref_text = ref.decode("ascii")
                     current_cell.array_ref = ref_text
                     scan.array_refs.append(ref_text)
-                    min_col, min_row, max_col, max_row = \
-                        range_boundaries(ref_text)
-                    scan.array_bounds.append(
-                        (min_row, min_col, max_row, max_col))
+                    scan.array_bounds.append(_range_bounds(ref_text))
             elif local == b"v":
-                in_array = scan.array_bounds and any(
-                    min_row <= current_cell.row <= max_row
-                    and min_col <= current_cell.column <= max_col
-                    for min_row, min_col, max_row, max_col
-                    in scan.array_bounds)
-                if raw_name != b"v" \
-                        and (current_cell.has_formula or in_array):
+                if raw_name != b"v":
                     coordinate = (current_cell.row, current_cell.column)
                     names = scan.cache_names.setdefault(coordinate, ())
                     if raw_name not in names:

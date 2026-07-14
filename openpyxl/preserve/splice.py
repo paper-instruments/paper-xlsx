@@ -11,13 +11,11 @@ through because it is never interpreted.
 """
 
 from openpyxl.errors import UnsupportedStructureError
-from openpyxl.utils.cell import range_boundaries
-
 from . import emit
 
 from .regions import (CT_ORDER_INDEX, REGION_BY_TAG, DETECT_ONLY_REGIONS,
                       SAVER_CRAFTED_REGIONS)
-from .xmlscan import scan_sheet
+from .xmlscan import _range_bounds, scan_sheet
 
 
 class SpliceRefusal(UnsupportedStructureError):
@@ -123,11 +121,6 @@ _MODEL_ROW_ATTRS = frozenset((
     "ht", "customFormat", "customHeight", "s", "hidden", "outlineLevel",
     "collapsed", "thickTop", "thickBot", "spans",
 ))
-
-
-def _range_bounds(ref):
-    min_col, min_row, max_col, max_row = range_boundaries(ref)
-    return min_row, min_col, max_row, max_col
 
 
 def _coordinates_in_bounds(coordinates, bounds):
@@ -647,7 +640,7 @@ def _serialize_cached_value(value, epoch):
 def _cache_value_edits(ws, scan, original, cache_writes):
     edits = []
     epoch = ws.parent.epoch
-    array_bounds = [_range_bounds(ref) for ref in scan.array_refs]
+    array_bounds = scan.array_bounds
     formula_names = getattr(scan, "formula_names", {})
     cache_names = getattr(scan, "cache_names", {})
     for (row, col), value in sorted(cache_writes.items()):
@@ -672,7 +665,7 @@ def _cache_value_edits(ws, scan, original, cache_writes):
 
 def _formula_cache_invalidation_edits(ws, scan, original, coordinates):
     edits = []
-    array_bounds = [_range_bounds(ref) for ref in scan.array_refs]
+    array_bounds = scan.array_bounds
     formula_names = getattr(scan, "formula_names", {})
     cache_names = getattr(scan, "cache_names", {})
     for row, col in sorted(coordinates):
@@ -805,7 +798,10 @@ def _patch_cached_value(cell_bytes, value, epoch, label,
         raise SpliceRefusal(
             "cache write target {0} carries no formula. Nothing was "
             "written.".format(label))
-    if any(child.name not in (b"f", b"v") for child in children):
+    owned_names = (b"f", b"v")
+    if formula_names or cache_names:
+        owned_names = set(owned_names) | set(formula_names) | set(cache_names)
+    if any(child.name not in owned_names for child in children):
         raise SpliceRefusal(
             "cache write target {0} carries content besides its formula "
             "and cached value; updating it is not supported. Nothing was "
