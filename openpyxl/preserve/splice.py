@@ -355,7 +355,11 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
                  in _sheetdata_edits(ws, scan, original, dirty_cells,
                                      row_attr_changes, style_resolver,
                                      value_overwrites=value_overwrites,
-                                     cache_invalidations=cache_invalidations))
+                                     cache_invalidations=cache_invalidations,
+                                     formula_names=getattr(
+                                         scan, "formula_names", {}),
+                                     cache_names=getattr(
+                                         scan, "cache_names", {})))
     if cache_writes:
         overlap = set(cache_writes) & set(dirty_cells)
         if overlap:
@@ -409,7 +413,8 @@ def _region_insert_offset(scan, tag):
 
 def _sheetdata_edits(ws, scan, original, dirty_cells, row_attr_changes, resolve,
                      value_overwrites=frozenset(),
-                     cache_invalidations=frozenset()):
+                     cache_invalidations=frozenset(),
+                     formula_names=None, cache_names=None):
     edits = []
     by_row = {}
     for (row, col) in dirty_cells:
@@ -440,7 +445,9 @@ def _sheetdata_edits(ws, scan, original, dirty_cells, row_attr_changes, resolve,
                                by_row.get(row_index, set()),
                                row_attr_changes.get(row_index), resolve,
                                value_overwrites=value_overwrites,
-                               cache_invalidations=cache_invalidations)
+                               cache_invalidations=cache_invalidations,
+                               formula_names=formula_names,
+                               cache_names=cache_names)
         edits.extend(row_edits)
 
     # new rows: insert each before the first existing row with a larger index
@@ -496,7 +503,8 @@ def _emit_rows_block(ws, row_indices, by_row, row_attr_changes, resolve):
 
 
 def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
-               value_overwrites=frozenset(), cache_invalidations=frozenset()):
+               value_overwrites=frozenset(), cache_invalidations=frozenset(),
+               formula_names=None, cache_names=None):
     """Edits inside one existing row: replace/insert/delete cells, sync the
     row start tag's attributes when they changed."""
     from openpyxl.cell.rich_text import CellRichText
@@ -576,17 +584,17 @@ def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
                 drop_metadata=coordinate in value_overwrites)
         if rendered is not None and cell_span is not None \
                 and coordinate in cache_invalidations:
-            formula_names = getattr(cell_span, "formula_names", ()) \
+            cell_formula_names = (formula_names or {}).get(coordinate, ()) \
                 if preserve_cell_content else ()
-            cache_names = getattr(cell_span, "cache_names", ()) \
+            cell_cache_names = (cache_names or {}).get(coordinate, ()) \
                 if preserve_cell_content else ()
             rendered = _patch_formula_cache_invalidation(
                 rendered,
                 "{0}!r{1}c{2}".format(
                     ws.title, row_span.index, col),
                 require_formula=False,
-                formula_names=formula_names,
-                cache_names=cache_names)
+                formula_names=cell_formula_names,
+                cache_names=cell_cache_names)
 
         if cell_span is not None:
             # replace or delete an existing cell element
@@ -656,9 +664,9 @@ def _cache_value_edits(ws, scan, original, cache_writes):
                               _coordinate_in_bounds((row, col), bounds)
                               for bounds in array_bounds),
                           formula_names=getattr(
-                              cell_span, "formula_names", ()),
+                              scan, "formula_names", {}).get((row, col), ()),
                           cache_names=getattr(
-                              cell_span, "cache_names", ()))))
+                              scan, "cache_names", {}).get((row, col), ()))))
     return edits
 
 
@@ -681,9 +689,9 @@ def _formula_cache_invalidation_edits(ws, scan, original, coordinates):
                               _coordinate_in_bounds((row, col), bounds)
                               for bounds in array_bounds),
                           formula_names=getattr(
-                              cell_span, "formula_names", ()),
+                              scan, "formula_names", {}).get((row, col), ()),
                           cache_names=getattr(
-                              cell_span, "cache_names", ()))))
+                              scan, "cache_names", {}).get((row, col), ()))))
     return edits
 
 

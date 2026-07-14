@@ -1005,7 +1005,9 @@ def _formula_cache_invalidations(scan):
                 for min_row, min_col, max_row, max_col in array_bounds)
             if not cell_span.has_formula and not array_member:
                 continue
-            if cell_span.cache_names or cell_span.attrs.get("t") is not None:
+            coordinate = (row_index, col)
+            if scan.cache_names.get(coordinate) \
+                    or cell_span.attrs.get("t") is not None:
                 targets.add((row_index, col))
     return targets
 

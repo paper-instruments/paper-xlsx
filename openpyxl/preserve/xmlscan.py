@@ -38,8 +38,7 @@ class ScanRefusal(UnsupportedStructureError):
 class CellSpan:
     __slots__ = ("row", "column", "start", "end", "_attr_blob", "_attrs",
                  "shared_si", "shared_ref", "array_ref", "has_extlst",
-                 "has_formula", "has_unowned_children", "formula_names",
-                 "cache_names")
+                 "has_formula", "has_unowned_children")
 
     def __init__(self, row, column, start):
         self.row = row
@@ -54,8 +53,6 @@ class CellSpan:
         self.has_extlst = False
         self.has_formula = False
         self.has_unowned_children = False
-        self.formula_names = ()
-        self.cache_names = ()
 
     @property
     def attrs(self):
@@ -113,6 +110,8 @@ class SheetScan:
         self.shared_groups = {}      # si -> ref string (from host cells)
         self.shared_members = {}     # si -> set[(row, col)] seen carrying it
         self.array_refs = []         # ref strings of t="array" formulas
+        self.formula_names = {}      # (row, col) -> raw main-ns child names
+        self.cache_names = {}        # (row, col) -> raw main-ns child names
         self.rows_monotonic = True
         self.root_end_offset = None  # offset of '</worksheet>'
 
@@ -166,8 +165,10 @@ def scan_sheet(data):
                     # well-formed character data, so this IS the end tag;
                     # CDATA/comments/nested markup miss the check and take
                     # the generic path
-                    if b"v" not in current_cell.cache_names:
-                        current_cell.cache_names += (b"v",)
+                    coordinate = (current_cell.row, current_cell.column)
+                    names = scan.cache_names.setdefault(coordinate, ())
+                    if b"v" not in names:
+                        scan.cache_names[coordinate] = names + (b"v",)
                     pos = close + 4
                     continue
             elif nxt == 0x2F and data.startswith(b"</c>", lt) \
@@ -438,8 +439,10 @@ def scan_sheet(data):
                 current_cell.has_unowned_children = True
             elif local == b"f":
                 current_cell.has_formula = True
-                if raw_name not in current_cell.formula_names:
-                    current_cell.formula_names += (raw_name,)
+                coordinate = (current_cell.row, current_cell.column)
+                names = scan.formula_names.setdefault(coordinate, ())
+                if raw_name not in names:
+                    scan.formula_names[coordinate] = names + (raw_name,)
                 t = attrs.get(b"t")
                 si = attrs.get(b"si")
                 ref = attrs.get(b"ref")
@@ -455,8 +458,10 @@ def scan_sheet(data):
                     current_cell.array_ref = ref.decode("ascii")
                     scan.array_refs.append(ref.decode("ascii"))
             elif local == b"v":
-                if raw_name not in current_cell.cache_names:
-                    current_cell.cache_names += (raw_name,)
+                coordinate = (current_cell.row, current_cell.column)
+                names = scan.cache_names.setdefault(coordinate, ())
+                if raw_name not in names:
+                    scan.cache_names[coordinate] = names + (raw_name,)
             elif local == b"extLst":
                 current_cell.has_extlst = True
 
