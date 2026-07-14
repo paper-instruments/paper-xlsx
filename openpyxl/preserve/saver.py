@@ -999,15 +999,11 @@ def _formula_cache_invalidations(scan):
         array_bounds.append((min_row, min_col, max_row, max_col))
     for row_index, row_span in scan.rows.items():
         for col, cell_span in row_span.cells.items():
-            array_member = any(
+            array_member = bool(array_bounds) and any(
                 min_row <= row_index <= max_row
                 and min_col <= col <= max_col
                 for min_row, min_col, max_row, max_col in array_bounds)
-            if not cell_span.has_formula and not array_member:
-                continue
-            coordinate = (row_index, col)
-            if scan.cache_names.get(coordinate) \
-                    or cell_span.attrs.get("t") is not None:
+            if cell_span.has_formula or array_member:
                 targets.add((row_index, col))
     return targets
 

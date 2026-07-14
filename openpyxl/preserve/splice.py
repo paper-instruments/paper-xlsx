@@ -648,6 +648,8 @@ def _cache_value_edits(ws, scan, original, cache_writes):
     edits = []
     epoch = ws.parent.epoch
     array_bounds = [_range_bounds(ref) for ref in scan.array_refs]
+    formula_names = getattr(scan, "formula_names", {})
+    cache_names = getattr(scan, "cache_names", {})
     for (row, col), value in sorted(cache_writes.items()):
         label = "{0}!r{1}c{2}".format(ws.title, row, col)
         row_span = scan.rows.get(row)
@@ -660,19 +662,19 @@ def _cache_value_edits(ws, scan, original, cache_writes):
         edits.append((cell_span.start, cell_span.end,
                       _patch_cached_value(
                           cell_bytes, value, epoch, label,
-                          allow_cache_only=any(
+                          allow_cache_only=bool(array_bounds) and any(
                               _coordinate_in_bounds((row, col), bounds)
                               for bounds in array_bounds),
-                          formula_names=getattr(
-                              scan, "formula_names", {}).get((row, col), ()),
-                          cache_names=getattr(
-                              scan, "cache_names", {}).get((row, col), ()))))
+                          formula_names=formula_names.get((row, col), ()),
+                          cache_names=cache_names.get((row, col), ()))))
     return edits
 
 
 def _formula_cache_invalidation_edits(ws, scan, original, coordinates):
     edits = []
     array_bounds = [_range_bounds(ref) for ref in scan.array_refs]
+    formula_names = getattr(scan, "formula_names", {})
+    cache_names = getattr(scan, "cache_names", {})
     for row, col in sorted(coordinates):
         label = "{0}!r{1}c{2}".format(ws.title, row, col)
         row_span = scan.rows.get(row)
@@ -685,13 +687,11 @@ def _formula_cache_invalidation_edits(ws, scan, original, coordinates):
         edits.append((cell_span.start, cell_span.end,
                       _patch_formula_cache_invalidation(
                           cell_bytes, label,
-                          allow_cache_only=any(
+                          allow_cache_only=bool(array_bounds) and any(
                               _coordinate_in_bounds((row, col), bounds)
                               for bounds in array_bounds),
-                          formula_names=getattr(
-                              scan, "formula_names", {}).get((row, col), ()),
-                          cache_names=getattr(
-                              scan, "cache_names", {}).get((row, col), ()))))
+                          formula_names=formula_names.get((row, col), ()),
+                          cache_names=cache_names.get((row, col), ()))))
     return edits
 
 
@@ -720,11 +720,18 @@ def _patch_formula_cache_invalidation(cell_bytes, label,
     body = cell_bytes[tag_end + 1:close_start]
     try:
         children = _direct_cell_children(cell_bytes)
-        formula_names = set(formula_names) | {b"f"}
-        cache_names = set(cache_names) | {b"v"}
-        formulas = [child for child in children
-                    if child.name in formula_names]
-        caches = [child for child in children if child.name in cache_names]
+        if formula_names:
+            accepted_formulas = set(formula_names) | {b"f"}
+            formulas = [child for child in children
+                        if child.name in accepted_formulas]
+        else:
+            formulas = [child for child in children if child.name == b"f"]
+        if cache_names:
+            accepted_caches = set(cache_names) | {b"v"}
+            caches = [child for child in children
+                      if child.name in accepted_caches]
+        else:
+            caches = [child for child in children if child.name == b"v"]
     except ValueError as exc:
         raise SpliceRefusal(
             "cache invalidation target {0} has malformed child markup. "
@@ -772,11 +779,18 @@ def _patch_cached_value(cell_bytes, value, epoch, label,
         close = b"</c>"
     try:
         children = _direct_cell_children(cell_bytes)
-        formula_names = set(formula_names) | {b"f"}
-        cache_names = set(cache_names) | {b"v"}
-        formulas = [child for child in children
-                    if child.name in formula_names]
-        caches = [child for child in children if child.name in cache_names]
+        if formula_names:
+            accepted_formulas = set(formula_names) | {b"f"}
+            formulas = [child for child in children
+                        if child.name in accepted_formulas]
+        else:
+            formulas = [child for child in children if child.name == b"f"]
+        if cache_names:
+            accepted_caches = set(cache_names) | {b"v"}
+            caches = [child for child in children
+                      if child.name in accepted_caches]
+        else:
+            caches = [child for child in children if child.name == b"v"]
     except ValueError as exc:
         raise SpliceRefusal(
             "cache write target {0} has malformed child markup. Nothing "
