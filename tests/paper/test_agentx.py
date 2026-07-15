@@ -138,7 +138,8 @@ class TestValidateAndReceipt:
         assert sheet_part in result.parts_changed
 
     def test_receipt_requires_preserve(self, fixture_copy, tmp_path):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        wb = load_workbook(
+            fixture_copy("features/schedule.xlsx"), preserve=False)
         with pytest.raises(ValueError, match="preserve"):
             wb.save(str(tmp_path / "o.xlsx"), receipt=True)
 

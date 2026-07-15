@@ -122,7 +122,8 @@ class TestReplacePart:
             wb2.replace_part("xl/worksheets/sheet1.xml", b"x")
 
     def test_replace_part_meaningless_on_stock(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/chart_image.xlsx"))
+        wb = load_workbook(
+            fixture_copy("features/chart_image.xlsx"), preserve=False)
         with pytest.raises(ValueError, match="preserve"):
             wb.replace_part("xl/media/image1.png", b"x")
 

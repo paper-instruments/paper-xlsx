@@ -57,7 +57,7 @@ class TestStockCarnageBaseline:
 
         # extension drop is warned at LOAD (Q11: not silent, and load-time)
         with pytest.warns(UserWarning, match="extension is not supported"):
-            wb = load_workbook(src)
+            wb = load_workbook(src, preserve=False)
         wb["Model"]["B8"] = 0.15
         out = str(tmp_path / "job1_out.xlsx")
         wb.save(out)
@@ -86,12 +86,14 @@ class TestStockCarnageBaseline:
         rels_before = part_payloads(src)["xl/_rels/workbook.xml.rels"]
 
         df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
-        with pd.ExcelWriter(src, engine="openpyxl", mode="a") as writer:
+        with pd.ExcelWriter(
+                src, engine="openpyxl", mode="a",
+                engine_kwargs={"preserve": False}) as writer:
             df.to_excel(writer, sheet_name="Appended", index=False)
 
         parts = part_payloads(src)
         # the intended append landed...
-        wb = load_workbook(src)
+        wb = load_workbook(src, preserve=False)
         assert "Appended" in wb.sheetnames
         # ...but the sheet nobody touched lost its extensions,
         _, model_after = _sheet_payload(src, b"Quarterly Model")
@@ -102,7 +104,7 @@ class TestStockCarnageBaseline:
     def test_job3_insert_rows_corrupts_references_silently(
             self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule.xlsx")
-        wb = load_workbook(src)
+        wb = load_workbook(src, preserve=False)
         ws = wb["Schedule"]
         assert ws["B12"].value == "=SUM(B2:B11)"
         ws.insert_rows(5)
@@ -127,7 +129,7 @@ class TestStockCarnageBaseline:
         src = fixture_copy("features/macro_stub.xlsm")
         vba_before = part_payloads(src)["xl/vbaProject.bin"]
 
-        wb = load_workbook(src)  # no keep_vba
+        wb = load_workbook(src, preserve=False)  # no keep_vba
         out = str(tmp_path / "job4_out.xlsm")
         wb.save(out)
         parts = part_payloads(out)
@@ -136,7 +138,7 @@ class TestStockCarnageBaseline:
 
         # contrast: keep_vba=True preserves it byte-identically (the in-tree
         # retention precedent the spine generalizes)
-        wb2 = load_workbook(src, keep_vba=True)
+        wb2 = load_workbook(src, keep_vba=True, preserve=False)
         out2 = str(tmp_path / "job4_keepvba.xlsm")
         wb2.save(out2)
         assert part_payloads(out2)["xl/vbaProject.bin"] == vba_before
@@ -148,7 +150,7 @@ class TestStockCarnageBaseline:
         _, sheet_before = _sheet_payload(src, b"SUM(B2:B11)")
         assert sheet_before.count(b"<f") >= 2  # formulas present in the file
 
-        wb = load_workbook(src, data_only=True)
+        wb = load_workbook(src, data_only=True, preserve=False)
         assert wb["Schedule"]["B12"].value == 6500  # cached values read fine
         out = str(tmp_path / "job5_out.xlsx")
         wb.save(out)                                # ...and this is the trap
@@ -359,13 +361,9 @@ class TestBatterySafety:
         assert wb2["Sheet1"].page_margins.left == 1.25
         assert wb2["Sheet1"]["B2"].value is not None   # data intact
 
-    # Battery job 2: with the internal
-    # default flipped (PAPER_PRESERVE_DEFAULT=1, set in paper harness
-    # images), plain pandas mode="a" — no engine_kwargs — preserves.
-    def test_job2_pandas_append_under_internal_default_flip(
-            self, fixture_copy, monkeypatch):
+    # Battery job 2: plain pandas mode="a" — no engine_kwargs — preserves.
+    def test_job2_pandas_append_preserves_by_default(self, fixture_copy):
         pd = pytest.importorskip("pandas")
-        monkeypatch.setenv("PAPER_PRESERVE_DEFAULT", "1")
         src = fixture_copy("gauntlet/gauntlet.xlsx")
         df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
         with pd.ExcelWriter(src, engine="openpyxl", mode="a") as writer:
@@ -532,7 +530,8 @@ class TestBatteryToday:
         from openpyxl.workbook import Workbook
 
         assert callable(Workbook.evaluate)
-        wb = load_workbook(fixture_copy("features/schedule_calc.xlsx"))
+        wb = load_workbook(
+            fixture_copy("features/schedule_calc.xlsx"), preserve=False)
         with pytest.raises(ValueError, match="preserve"):
             wb.evaluate(set={"Schedule!B2": 1}, read=["Summary!B1"])
 
@@ -570,7 +569,7 @@ class TestBatteryToday:
                     zout.writestr(name, zin.read(name))   # duplicate
         with pytest.raises(UnsupportedStructureError, match="duplicate"):
             load_workbook(dup, preserve=True)
-        load_workbook(dup)                       # stock keeps upstream arm
+        load_workbook(dup, preserve=False)       # stock keeps upstream arm
 
     # job 16: REFUSE (flipped from silent staleness by
     # the object guards). chart editing is correct.

@@ -748,7 +748,7 @@ class TestPerformanceGuardrail:
                 times.append(time.perf_counter() - t0)
             return min(times)
 
-        wb_stock = load_workbook(src)
+        wb_stock = load_workbook(src, preserve=False)
         t_stock = best_of(2, lambda: wb_stock.save(str(tmp_path / "stock.xlsx")))
 
         wb = load_workbook(src, preserve=True)

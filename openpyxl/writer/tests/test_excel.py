@@ -142,7 +142,8 @@ def test_duplicate_comment(ExcelWriter, archive):
 def test_merge_vba(ExcelWriter, archive, datadir):
     from openpyxl import load_workbook
     datadir.chdir()
-    wb = load_workbook("vba+comments.xlsm", keep_vba=True)
+    wb = load_workbook(
+        "vba+comments.xlsm", keep_vba=True, preserve=False)
 
     writer = ExcelWriter(wb, archive)
     writer._merge_vba()

@@ -4,8 +4,8 @@ paper-xlsx
 ``paper-xlsx`` is an agent-first Python library for safely inspecting, editing,
 and verifying existing Excel (``.xlsx``) workbooks. It is a strict-superset hard
 fork of ``openpyxl`` 3.1.5 and a drop-in replacement. The distribution is
-renamed; the import name stays ``openpyxl``, so existing code keeps working
-unchanged.
+renamed; the import name stays ``openpyxl``, so existing imports do not
+change.
 
 .. code-block:: python
 
@@ -28,8 +28,8 @@ Safety contract
 ---------------
 
 Every added operation either does exactly what it claims or refuses atomically.
-``load_workbook(path, preserve=True)`` keeps the original package bytes as the
-source of truth. Every editing session has one of three explicit outcomes:
+``load_workbook(path)`` keeps the original package bytes as the source of
+truth by default. Every editing session has one of three explicit outcomes:
 
 * a **correct save**: edits are spliced into the original bytes, and unrelated
   package content survives byte-identical; formula-affecting edits may
@@ -38,9 +38,10 @@ source of truth. Every editing session has one of three explicit outcomes:
   the exception identifies the remedy;
 * a **loud warning**: a stock-mode path reports that an operation may be lossy.
 
-Preserve mode is opt-in today. Pass ``preserve=True`` per call or set
-``PAPER_PRESERVE_DEFAULT=1``. Preserve-by-default for the public and pandas APIs
-is release-gated.
+Preserve mode is the default for editable OOXML workbooks, including files
+opened indirectly by pandas append mode. Pass ``preserve=False`` explicitly
+only when you intend to use openpyxl's stock, potentially lossy round trip.
+Read-only and unsupported-format loads retain stock behavior.
 
 A short example
 ---------------
@@ -59,7 +60,7 @@ receipt:
     ws["B3"] = "=B2 * (1 + B1)"
     wb.save("model.xlsx")
 
-    wb = load_workbook("model.xlsx", preserve=True)
+    wb = load_workbook("model.xlsx")
 
     wb.sheetnames                       # inspect workbook structure directly
     wb.active.locate("Growth rate")     # find a value cell by its label
@@ -92,9 +93,10 @@ save; they do not require a package-wide preflight inventory call.
 Editing one workbook
 ++++++++++++++++++++
 
-* **``load_workbook(..., preserve=True)`` / ``wb.save(..., receipt=True)`` /
-  ``wb.validate()``** retain original package bytes, return an ``EditReceipt``,
-  and run save validation without writing.
+* **``load_workbook(...)`` / ``wb.save(..., receipt=True)`` /
+  ``wb.validate()``** retain original package bytes by default, return an
+  ``EditReceipt``, and run save validation without writing. Pass
+  ``preserve=False`` to request stock openpyxl behavior explicitly.
 * **``wb.set_input()``** resolves a defined name or label and changes the input
   only if the target is not a formula.
 * **Row, column, and range operations** rewrite formulas, defined names, and

@@ -11,9 +11,9 @@ Safety contract
 
 The fork exists to prevent **silent corruption**: a workbook that opens fine
 and is quietly wrong. Every added operation either does exactly what it claims
-or refuses atomically. Loading with ``preserve=True`` retains the original
-package bytes as the source of truth. Every session then has one of three
-outcomes:
+or refuses atomically. Loading an editable OOXML workbook retains the original
+package bytes as the source of truth by default. Every session then has one of
+three outcomes:
 
 1. **A correct save.** Your edits are spliced into the original bytes;
    unrelated package content survives byte-identical. Formula-affecting edits
@@ -34,7 +34,7 @@ Loading and saving
 
 .. code-block:: python
 
-    wb = load_workbook(path, preserve=True)
+    wb = load_workbook(path)
     wb.save(out_path)                    # the splice save
     receipt = wb.save(out_path, receipt=True)   # + an EditReceipt
     wb.validate()                        # run save validation without writing
@@ -44,8 +44,10 @@ exported buffer views or the verified path-backed ``io.BufferedRandom`` used by
 pandas append mode. Use a filesystem path for any other stream type. Stock-mode
 saves retain openpyxl's file-like behavior.
 
-Setting ``PAPER_PRESERVE_DEFAULT=1`` in the environment makes ``preserve=True``
-the default for regular loads. Read-only and legacy formats fall back.
+Preserve mode is the default for editable OOXML workbooks, including files
+opened indirectly by pandas append mode. Pass ``preserve=False`` explicitly to
+request openpyxl's stock, potentially lossy round trip. Read-only and
+unsupported-format loads retain stock behavior.
 
 Under preserve, ``docProps/core.xml`` is raw-copied and the ``modified``
 timestamp is **not** auto-stamped unless you explicitly change
@@ -162,10 +164,10 @@ The refusal taxonomy
 check enforces it), and every refusal message states what happened,
 what was not changed, and what to do instead.
 
-The release gate
-----------------
+Compatibility opt-out
+---------------------
 
-Preserve mode remains opt-in for the public/pandas API.
-``PAPER_PRESERVE_DEFAULT`` enables it by environment setting. The public
-default changes after the release conditions, including real-Excel open checks,
-are met.
+Code that intentionally depends on openpyxl's stock package regeneration can
+pass ``preserve=False`` to ``load_workbook`` or through a caller's engine
+arguments. This opt-out is explicit and local to the load; process-wide
+environment configuration does not change the package's safety contract.

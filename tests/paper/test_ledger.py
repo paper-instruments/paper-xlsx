@@ -36,7 +36,8 @@ class TestArming:
         assert led.loaded_sheet_titles == frozenset(wb.sheetnames)
 
     def test_stock_workbook_has_no_ledger(self, fixture_copy):
-        wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"))
+        wb = load_workbook(
+            fixture_copy("minimal/minimal_clean.xlsx"), preserve=False)
         assert wb._paper_ledger is None
         wb["Sheet1"]["A1"] = "mutate freely"    # no ledger, no refusals
 
@@ -242,7 +243,8 @@ class TestMarkDirty:
             wb.mark_dirty("xl/media/missing.png")
 
     def test_stock_workbook_raises_value_error(self, fixture_copy):
-        wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"))
+        wb = load_workbook(
+            fixture_copy("minimal/minimal_clean.xlsx"), preserve=False)
         with pytest.raises(ValueError, match="preserve=True"):
             wb.mark_dirty("Sheet1!A1")
 

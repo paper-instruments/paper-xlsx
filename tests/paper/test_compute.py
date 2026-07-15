@@ -100,7 +100,8 @@ class TestLintChokepoint:
         assert not any(isinstance(w.message, LintWarning) for w in caught)
 
     def test_stock_mode_never_lints(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        wb = load_workbook(
+            fixture_copy("features/schedule.xlsx"), preserve=False)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             wb["Summary"]["D1"] = "=SUMM(A1)"
@@ -120,7 +121,8 @@ class TestEvaluate:
             wb.evaluate(set={"NotAName": 1}, read=[])
 
     def test_evaluate_requires_preserve(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule_calc.xlsx"))
+        wb = load_workbook(
+            fixture_copy("features/schedule_calc.xlsx"), preserve=False)
         with pytest.raises(ValueError, match="preserve"):
             wb.evaluate(set={}, read=[])
 

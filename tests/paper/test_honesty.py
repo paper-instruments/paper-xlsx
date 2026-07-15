@@ -54,14 +54,14 @@ class TestDataOnlyTrap:
 
     def test_stock_data_only_save_warns(self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule_calc.xlsx")
-        wb = load_workbook(src, data_only=True)
+        wb = load_workbook(src, data_only=True, preserve=False)
         with pytest.warns(LossySaveWarning, match="PERMANENTLY replaces"):
             wb.save(str(tmp_path / "o.xlsx"))
 
     def test_stock_data_only_warning_silenced_by_override(
             self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule_calc.xlsx")
-        wb = load_workbook(src, data_only=True)
+        wb = load_workbook(src, data_only=True, preserve=False)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             wb.save(str(tmp_path / "o.xlsx"), allow_formula_loss=True)

@@ -29,7 +29,7 @@ def load_workbook():
 def test_read_empty_file(datadir, load_workbook):
     datadir.chdir()
     with pytest.raises(BadZipfile):
-        load_workbook('null_file.xlsx')
+        load_workbook('null_file.xlsx', preserve=False)
 
 
 def test_load_workbook_from_fileobj(datadir, load_workbook):
@@ -129,7 +129,7 @@ def test_read_stringio(load_workbook):
     filelike = BytesIO(b"certainly not a valid XSLX content")
     # Test invalid file-like objects are detected and not handled as regular files
     with pytest.raises(BadZipfile):
-        load_workbook(filelike)
+        load_workbook(filelike, preserve=False)
 
 
 def test_load_workbook_with_vba(datadir, load_workbook):

@@ -14,7 +14,7 @@ from openpyxl.xml.constants import CONTYPES_NS
 def test_content_types(datadir):
     datadir.join('reader').chdir()
     fname = 'vba+comments.xlsm'
-    wb = load_workbook(fname, keep_vba=True)
+    wb = load_workbook(fname, keep_vba=True, preserve=False)
     tmp = NamedTemporaryFile()
     wb.save(tmp)
     ct = fromstring(zipfile.ZipFile(tmp, 'r').open('[Content_Types].xml').read())
@@ -28,7 +28,7 @@ def test_content_types(datadir):
 def test_save_with_vba(datadir):
     datadir.join('reader').chdir()
     fname = 'vba-test.xlsm'
-    wb = load_workbook(fname, keep_vba=True)
+    wb = load_workbook(fname, keep_vba=True, preserve=False)
     tmp = NamedTemporaryFile()
     wb.save(tmp)
     files = set(zipfile.ZipFile(tmp, 'r').namelist())
@@ -63,7 +63,7 @@ def test_save_with_vba(datadir):
 def test_save_with_saved_comments(datadir):
     datadir.join('reader').chdir()
     fname = 'vba-comments-saved.xlsm'
-    wb = load_workbook(fname, keep_vba=True)
+    wb = load_workbook(fname, keep_vba=True, preserve=False)
     tmp = NamedTemporaryFile()
     wb.save(tmp)
     files = set(zipfile.ZipFile(tmp, 'r').namelist())
@@ -104,7 +104,7 @@ def test_save_without_vba(datadir):
                    'xl/drawings/drawing1.xml'
                    ])
 
-    wb = load_workbook(fname, keep_vba=False)
+    wb = load_workbook(fname, keep_vba=False, preserve=False)
     tmp = NamedTemporaryFile()
     wb.save(tmp)
     files1 = set(zipfile.ZipFile(fname, 'r').namelist())

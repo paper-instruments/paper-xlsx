@@ -201,7 +201,8 @@ class TestPivotRefresh:
         assert b"<cacheSource" in payload            # content intact
 
     def test_requires_preserve(self, fixture_copy):
-        wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"))
+        wb = load_workbook(
+            fixture_copy("minimal/minimal_clean.xlsx"), preserve=False)
         with pytest.raises(ValueError, match="preserve"):
             wb.set_pivot_refresh_on_load()
 

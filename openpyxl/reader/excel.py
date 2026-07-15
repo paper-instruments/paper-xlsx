@@ -591,18 +591,15 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
     :param rich_text: if set to True openpyxl will preserve any rich text formatting in cells. The default is False
     :type rich_text: bool
 
-    :param preserve: opt the workbook into preserve mode: the original package
-        bytes are retained as the source of truth and save becomes a lossless
-        splice of recorded edits into them. Content openpyxl does not model
-        (charts, drawings, VBA, pivot caches, extensions) survives
-        byte-identical. Unsafe operations raise a typed
-        :class:`openpyxl.errors.PaperRefusal` instead of proceeding lossily.
-        Cannot be combined with ``read_only``. The default ``None`` resolves
-        to the ``PAPER_PRESERVE_DEFAULT`` environment switch (``"1"`` turns
-        preserve on for every load that supports it, ``read_only`` loads
-        excepted — a default, not a mandate); unset, it resolves to
-        ``False``. The public package ships with the switch unset; paper-internal
-        harness images set it.
+    :param preserve: control preserve mode: the original package bytes are
+        retained as the source of truth and save becomes a lossless splice of
+        recorded edits into them. Content openpyxl does not model (charts,
+        drawings, VBA, pivot caches, extensions) survives byte-identical.
+        Unsafe operations raise a typed :class:`openpyxl.errors.PaperRefusal`
+        instead of proceeding lossily. The default ``None`` enables preserve
+        mode for editable OOXML workbooks. Read-only and unsupported-format
+        loads retain stock behavior. Pass ``False`` explicitly to opt into the
+        stock, potentially lossy round trip.
     :type preserve: bool or None
 
     :rtype: :class:`openpyxl.workbook.Workbook`
@@ -614,14 +611,14 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
 
     """
     if preserve is None:
-        # env switch is a DEFAULT, never a mandate: loads that explicit
-        # preserve=True would refuse (read_only; the .xls/.xlsb legacy
-        # formats) fall back to stock so its exceptions stay stock too
         name = getattr(filename, "name", filename)
-        legacy = isinstance(name, str) and \
-            name.lower().endswith((".xls", ".xlsb"))
-        preserve = (os.environ.get("PAPER_PRESERVE_DEFAULT") == "1"
-                    and not read_only and not legacy)
+        try:
+            name = os.fspath(name)
+        except TypeError:
+            name = None
+        supported = (not isinstance(name, str) or
+                     os.path.splitext(name)[-1].lower() in SUPPORTED_FORMATS)
+        preserve = not read_only and supported
     reader = ExcelReader(filename, read_only, keep_vba,
                          data_only, keep_links, rich_text,
                          preserve=preserve)

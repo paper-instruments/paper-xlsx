@@ -6,6 +6,9 @@ Unreleased
 * Remove the package-wide workbook manifest API in favor of targeted inspection
   through standard workbook objects, search, locate, validation, findings, and
   optional model-map analysis.
+* Enable preserve mode by default for editable OOXML workbooks and remove the
+  process-wide ``PAPER_PRESERVE_DEFAULT`` environment switch. Use
+  ``preserve=False`` for an explicit stock openpyxl round trip.
 
 
 paper-xlsx 0.1.2 (2026-07-12)
