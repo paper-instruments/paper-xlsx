@@ -19,7 +19,8 @@ refuse. Every refusal happens before any output is written.
 import re
 
 from openpyxl.errors import UnsupportedStructureError
-from openpyxl.xml.constants import SHEET_MAIN_NS
+from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW, SHEET_MAIN_NS
+from openpyxl.utils.cell import range_boundaries
 
 _WS = b" \t\r\n"
 _NAME_END = b" \t\r\n/>"
@@ -110,8 +111,21 @@ class SheetScan:
         self.shared_groups = {}      # si -> ref string (from host cells)
         self.shared_members = {}     # si -> set[(row, col)] seen carrying it
         self.array_refs = []         # ref strings of t="array" formulas
+        self.array_bounds = []       # (min_row, min_col, max_row, max_col)
+        self.formula_names = {}      # (row, col) -> raw main-ns child names
+        self.cache_names = {}        # (row, col) -> raw main-ns child names
         self.rows_monotonic = True
         self.root_end_offset = None  # offset of '</worksheet>'
+
+
+def _range_bounds(ref):
+    min_col, min_row, max_col, max_row = range_boundaries(ref)
+    return (
+        1 if min_row is None else min_row,
+        1 if min_col is None else min_col,
+        MAX_ROW if max_row is None else max_row,
+        MAX_COLUMN if max_col is None else max_col,
+    )
 
 
 def _decode_name(raw, default_ns, prefixes, what, offset):
@@ -433,6 +447,11 @@ def scan_sheet(data):
                 current_cell.has_unowned_children = True
             elif local == b"f":
                 current_cell.has_formula = True
+                if raw_name != b"f":
+                    coordinate = (current_cell.row, current_cell.column)
+                    names = scan.formula_names.setdefault(coordinate, ())
+                    if raw_name not in names:
+                        scan.formula_names[coordinate] = names + (raw_name,)
                 t = attrs.get(b"t")
                 si = attrs.get(b"si")
                 ref = attrs.get(b"ref")
@@ -445,8 +464,16 @@ def scan_sheet(data):
                         current_cell.shared_ref = ref.decode("ascii")
                         scan.shared_groups[si] = ref.decode("ascii")
                 elif t == b"array" and ref is not None:
-                    current_cell.array_ref = ref.decode("ascii")
-                    scan.array_refs.append(ref.decode("ascii"))
+                    ref_text = ref.decode("ascii")
+                    current_cell.array_ref = ref_text
+                    scan.array_refs.append(ref_text)
+                    scan.array_bounds.append(_range_bounds(ref_text))
+            elif local == b"v":
+                if raw_name != b"v":
+                    coordinate = (current_cell.row, current_cell.column)
+                    names = scan.cache_names.setdefault(coordinate, ())
+                    if raw_name not in names:
+                        scan.cache_names[coordinate] = names + (raw_name,)
             elif local == b"extLst":
                 current_cell.has_extlst = True
 

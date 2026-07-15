@@ -129,7 +129,11 @@ def test_validate_restores_calculation_dxf_and_hyperlink_ids(tmp_path):
     before_dxfs = list(wb._differential_styles.styles)
     before_dxf_id = rule.dxfId
     before_id = ws["C1"].hyperlink.id
-    before_calc = wb.calculation.fullCalcOnLoad
+    before_calc = (
+        wb.calculation.calcMode,
+        wb.calculation.fullCalcOnLoad,
+        wb.calculation.forceFullCalc,
+    )
     before_cells = {sheet: set(coords)
                     for sheet, coords in wb._paper_ledger.cells.items()}
 
@@ -138,7 +142,11 @@ def test_validate_restores_calculation_dxf_and_hyperlink_ids(tmp_path):
     assert list(wb._differential_styles.styles) == before_dxfs
     assert rule.dxfId == before_dxf_id
     assert ws["C1"].hyperlink.id == before_id
-    assert wb.calculation.fullCalcOnLoad == before_calc
+    assert (
+        wb.calculation.calcMode,
+        wb.calculation.fullCalcOnLoad,
+        wb.calculation.forceFullCalc,
+    ) == before_calc
     assert wb._paper_ledger.cells == before_cells
 
 
@@ -182,7 +190,11 @@ def test_late_save_refusal_rolls_back_planner_mutations(tmp_path):
     ws["C1"].hyperlink = None
     before_dxfs = list(wb._differential_styles.styles)
     before_dxf_id = rule.dxfId
-    before_calc = wb.calculation.fullCalcOnLoad
+    before_calc = (
+        wb.calculation.calcMode,
+        wb.calculation.fullCalcOnLoad,
+        wb.calculation.forceFullCalc,
+    )
     before_cells = {sheet: set(coords)
                     for sheet, coords in wb._paper_ledger.cells.items()}
 
@@ -191,7 +203,11 @@ def test_late_save_refusal_rolls_back_planner_mutations(tmp_path):
 
     assert list(wb._differential_styles.styles) == before_dxfs
     assert rule.dxfId == before_dxf_id
-    assert wb.calculation.fullCalcOnLoad == before_calc
+    assert (
+        wb.calculation.calcMode,
+        wb.calculation.fullCalcOnLoad,
+        wb.calculation.forceFullCalc,
+    ) == before_calc
     assert wb._paper_ledger.cells == before_cells
     assert not (tmp_path / "refused.xlsx").exists()
 

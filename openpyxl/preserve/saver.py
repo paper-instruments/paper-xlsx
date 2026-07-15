@@ -37,7 +37,7 @@ from .regions import (
     render_hyperlinks_for_write,
 )
 from .splice import resolve_dirty_cells, splice_sheet
-from .xmlscan import scan_sheet
+from .xmlscan import ScanRefusal, scan_sheet
 
 _CALC_CHAIN = "xl/calcChain.xml"
 _CUSTOM_REGIONS = ("conditionalFormatting", "hyperlinks", "tableParts")
@@ -64,7 +64,9 @@ class _PlanningState:
 
     def __init__(self, workbook):
         self.workbook = workbook
+        self.calc_mode = workbook.calculation.calcMode
         self.calc_flag = workbook.calculation.fullCalcOnLoad
+        self.force_full_calc = workbook.calculation.forceFullCalc
         self.registries = []
         for name in ("_fonts", "_fills", "_borders", "_alignments",
                      "_protections", "_number_formats", "_cell_styles"):
@@ -109,7 +111,9 @@ class _PlanningState:
         } if led is not None else None
 
     def restore(self):
+        self.workbook.calculation.calcMode = self.calc_mode
         self.workbook.calculation.fullCalcOnLoad = self.calc_flag
+        self.workbook.calculation.forceFullCalc = self.force_full_calc
         for registry, values, clean, index in self.registries:
             registry[:] = values
             registry.clean = clean
@@ -200,7 +204,9 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         # diff cannot see this change: calcPr is forced into the
         # workbook.xml plan (sanctioned collateral) and
         # re-rendered from the fully-modeled object.
+        workbook.calculation.calcMode = "auto"
         workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
         force_calcpr = True
 
     if led.parts:
@@ -428,9 +434,11 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         row_changes = diff_row_attrs(ws, led.row_attr_snapshots.get(ws, {}))
         comments_changed = _comments_changed(ws, led)
         shift_ops = led.shifts.get(ws, [])
-        if not (ledger_dirty or all_region_changes or row_changes
-                or comments_changed or shift_ops or led.rich_text_mode
-                or table_changes or new_drawables or cache_writes):
+        sheet_changed = bool(
+            ledger_dirty or all_region_changes or row_changes
+            or comments_changed or shift_ops or led.rich_text_mode
+            or table_changes or new_drawables or cache_writes)
+        if not (sheet_changed or force_calcpr):
             continue
         table_lifecycle = "tableParts" in all_region_changes
 
@@ -498,10 +506,23 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
                                 ws.title, "; ".join(chart_blockers)))
                 plan.update(chart_plans)
             baselines[part] = original
-        scan = scan_sheet(original)
+        try:
+            scan = scan_sheet(original)
+        except ScanRefusal:
+            if force_calcpr and not sheet_changed:
+                # This part was raw-copyable before cache invalidation existed.
+                # Keep that contract for untouched XML outside the splice
+                # grammar; calcPr still tells spreadsheet applications to
+                # recompute it on open.
+                continue
+            raise
         dirty = resolve_dirty_cells(
             ws, ledger_dirty, scan,
             value_overwrites=led.value_overwrites.get(ws, set()))
+        cache_invalidations = _formula_cache_invalidations(scan) \
+            if force_calcpr else set()
+        if cache_writes:
+            cache_invalidations -= set(cache_writes)
 
         region_changes = {tag: rendered
                           for tag, rendered in all_region_changes.items()
@@ -612,7 +633,7 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         if not (dirty or region_changes or row_changes or shift_ops
                 or cf_replacement is not None
                 or hyperlinks_replacement is not None
-                or cache_writes):
+                or cache_writes or cache_invalidations):
             continue
         if translator is None:
             # no styles.xml in the package: the part is CREATED from the
@@ -632,12 +653,14 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
             hyperlinks_replacement=hyperlinks_replacement,
             style_resolver=resolver,
             value_overwrites=led.value_overwrites.get(ws, frozenset()),
-            cache_writes=cache_writes)
+            cache_writes=cache_writes,
+            cache_invalidations=cache_invalidations)
         plan[part], dimension_changed = _sync_dimension(
             sheet_payload, ws, scan, dirty)
         # cache-written cells are CLAIMED changes: the crosscheck verifies
         # them exactly like dirty cells
-        dirty_by_part[part] = dirty | set(cache_writes)
+        dirty_by_part[part] = dirty | set(cache_writes) \
+            | set(cache_invalidations)
         claims = set(region_changes)
         if cf_replacement is not None:
             claims.add("conditionalFormatting")
@@ -966,22 +989,36 @@ def _namelist(source):
         return set(z.namelist())
 
 
+def _formula_cache_invalidations(scan):
+    targets = set()
+    array_bounds = scan.array_bounds
+    for row_index, row_span in scan.rows.items():
+        for col, cell_span in row_span.cells.items():
+            array_member = bool(array_bounds) and any(
+                min_row <= row_index <= max_row
+                and min_col <= col <= max_col
+                for min_row, min_col, max_row, max_col in array_bounds)
+            if cell_span.has_formula or array_member:
+                targets.add((row_index, col))
+    return targets
+
+
 def _dirty_feeds_formulas(workbook, led):
-    """True when any ledger-dirty cell intersects a reference some formula
+    """True when any value-overwritten cell intersects a reference some formula
     makes: the saved file's caches for those formulas are
     stale, and the human opener must recompute. Structured/table and
     unresolvable references count as always-intersecting
     (conservative)."""
-    if not any(led.cells.values()):
+    if not any(led.value_overwrites.values()):
         return False
     from .perception import dependency_sketch
 
     sketch = dependency_sketch(workbook)
     if not sketch.references and not sketch.unresolved:
         return False
-    if sketch.unresolved and any(led.cells.values()):
+    if sketch.unresolved and any(led.value_overwrites.values()):
         return True
-    for ws, dirty in led.cells.items():
+    for ws, dirty in led.value_overwrites.items():
         if not dirty:
             continue
         title = ws.title.casefold()      # Excel sheet names: case-insensitive
