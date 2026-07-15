@@ -10,6 +10,7 @@ import pytest
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.errors import LossySaveWarning, PaperRefusal, UnsupportedStructureError
+from openpyxl.reader.excel import _preserve_by_default
 from openpyxl.utils.exceptions import InvalidFileException
 
 
@@ -26,6 +27,27 @@ class TestPreserveLoad:
         wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"))
         assert wb.preserve is True
         assert wb._paper_source is not None
+
+    @pytest.mark.parametrize("suffix", [b".xls", b".xlsb", b".csv"])
+    def test_unsupported_bytes_path_defaults_to_stock(self, suffix):
+        assert _preserve_by_default(b"/tmp/workbook" + suffix, False) is False
+
+    def test_supported_bytes_path_defaults_to_preserve(self):
+        assert _preserve_by_default(b"/tmp/workbook.xlsx", False) is True
+
+    def test_extensionless_file_like_defaults_to_preserve(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("minimal/minimal_clean.xlsx")
+        upload = tmp_path / "upload"
+        with open(src, "rb") as source:
+            data = source.read()
+        upload.write_bytes(data)
+
+        with upload.open("rb") as stream:
+            wb = load_workbook(stream)
+
+        assert wb.preserve is True
+        assert wb._paper_source == data
 
     def test_explicit_stock_load_retains_nothing(self, fixture_copy):
         wb = load_workbook(

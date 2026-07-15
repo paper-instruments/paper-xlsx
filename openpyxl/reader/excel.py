@@ -568,6 +568,29 @@ class ExcelReader:
                 ) from e
 
 
+def _preserve_by_default(filename, read_only):
+    """Choose preserve mode without changing stock source validation.
+
+    Filesystem paths need a supported OOXML suffix. File-like sources are
+    validated from their bytes, so only names identifying legacy Excel
+    formats disable preserve mode.
+    """
+    if read_only:
+        return False
+
+    is_file_like = hasattr(filename, "read")
+    name = getattr(filename, "name", None) if is_file_like else filename
+    try:
+        name = os.fsdecode(os.fspath(name))
+    except TypeError:
+        return is_file_like
+
+    suffix = os.path.splitext(name)[-1].lower()
+    if is_file_like:
+        return suffix not in (".xls", ".xlsb")
+    return suffix in SUPPORTED_FORMATS
+
+
 def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
                   data_only=False, keep_links=True, rich_text=False, *,
                   preserve=None):
@@ -611,14 +634,7 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
 
     """
     if preserve is None:
-        name = getattr(filename, "name", filename)
-        try:
-            name = os.fspath(name)
-        except TypeError:
-            name = None
-        supported = (not isinstance(name, str) or
-                     os.path.splitext(name)[-1].lower() in SUPPORTED_FORMATS)
-        preserve = not read_only and supported
+        preserve = _preserve_by_default(filename, read_only)
     reader = ExcelReader(filename, read_only, keep_vba,
                          data_only, keep_links, rich_text,
                          preserve=preserve)
