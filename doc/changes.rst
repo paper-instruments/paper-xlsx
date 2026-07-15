@@ -1,6 +1,10 @@
 Unreleased
 ==========
 
+
+paper-xlsx 0.1.3 (2026-07-14)
+===============================
+
 * Invalidate retained formula caches and request automatic full recalculation
   when formula-affecting edits could otherwise leave plausible stale values.
 * Remove the package-wide workbook manifest API in favor of targeted inspection
