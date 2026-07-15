@@ -141,7 +141,8 @@ def test_preserve_data_only_set_input_allows_proven_nonformula():
 
 
 def test_stock_data_only_set_input_refuses_without_source_custody():
-    workbook = load_workbook(io.BytesIO(_source_bytes()), data_only=True)
+    workbook = load_workbook(
+        io.BytesIO(_source_bytes()), data_only=True, preserve=False)
 
     with pytest.raises(UnsupportedStructureError) as refusal:
         workbook.set_input("ValueInput", 20)

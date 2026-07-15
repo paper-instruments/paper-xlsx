@@ -3,9 +3,10 @@
 """Preserve mode: the original package is the source of truth; the object
 model is a source of edits to it.
 
-Loaded via ``load_workbook(path, preserve=True)``. Untouched parts survive
-byte-identical by construction (raw compressed-stream copy where possible);
-touched worksheet parts are spliced, never re-serialized.
+Enabled by default for editable OOXML workbooks loaded with
+``load_workbook(path)``. Untouched parts survive byte-identical by
+construction (raw compressed-stream copy where possible); touched worksheet
+parts are spliced, never re-serialized.
 """
 
 from .inventory import LossInventory, scan_archive

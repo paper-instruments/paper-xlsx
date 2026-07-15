@@ -58,7 +58,8 @@ class TestPreserveRefusals:
 class TestStockWarning:
 
     def test_loaded_workbook_warns_on_shift(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        wb = load_workbook(
+            fixture_copy("features/schedule.xlsx"), preserve=False)
         with pytest.warns(StructuralShiftWarning, match="updates NOTHING"):
             wb["Schedule"].insert_rows(5)
         # stock behavior unchanged: the shift still happened
@@ -108,7 +109,8 @@ class TestAddressRemap:
         assert remap.map("B2") == "B2"
 
     def test_stock_path_keeps_returning_none(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
+        wb = load_workbook(
+            fixture_copy("features/schedule.xlsx"), preserve=False)
         with pytest.warns(StructuralShiftWarning):
             assert wb["Schedule"].insert_rows(3) is None
 

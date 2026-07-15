@@ -150,7 +150,7 @@ def test_write_workbook(datadir, tmpdir):
     src.close()
 
     from openpyxl import load_workbook
-    wb = load_workbook("book1.xlsx")
+    wb = load_workbook("book1.xlsx", preserve=False)
     tmpdir.chdir()
     wb.save("book1.xlsx")
 

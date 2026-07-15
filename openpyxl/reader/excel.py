@@ -568,6 +568,29 @@ class ExcelReader:
                 ) from e
 
 
+def _preserve_by_default(filename, read_only):
+    """Choose preserve mode without changing stock source validation.
+
+    Filesystem paths need a supported OOXML suffix. File-like sources are
+    validated from their bytes, so only names identifying legacy Excel
+    formats disable preserve mode.
+    """
+    if read_only:
+        return False
+
+    is_file_like = hasattr(filename, "read")
+    name = getattr(filename, "name", None) if is_file_like else filename
+    try:
+        name = os.fsdecode(os.fspath(name))
+    except TypeError:
+        return is_file_like
+
+    suffix = os.path.splitext(name)[-1].lower()
+    if is_file_like:
+        return suffix not in (".xls", ".xlsb")
+    return suffix in SUPPORTED_FORMATS
+
+
 def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
                   data_only=False, keep_links=True, rich_text=False, *,
                   preserve=None):
@@ -591,18 +614,15 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
     :param rich_text: if set to True openpyxl will preserve any rich text formatting in cells. The default is False
     :type rich_text: bool
 
-    :param preserve: opt the workbook into preserve mode: the original package
-        bytes are retained as the source of truth and save becomes a lossless
-        splice of recorded edits into them. Content openpyxl does not model
-        (charts, drawings, VBA, pivot caches, extensions) survives
-        byte-identical. Unsafe operations raise a typed
-        :class:`openpyxl.errors.PaperRefusal` instead of proceeding lossily.
-        Cannot be combined with ``read_only``. The default ``None`` resolves
-        to the ``PAPER_PRESERVE_DEFAULT`` environment switch (``"1"`` turns
-        preserve on for every load that supports it, ``read_only`` loads
-        excepted — a default, not a mandate); unset, it resolves to
-        ``False``. The public package ships with the switch unset; paper-internal
-        harness images set it.
+    :param preserve: control preserve mode: the original package bytes are
+        retained as the source of truth and save becomes a lossless splice of
+        recorded edits into them. Content openpyxl does not model (charts,
+        drawings, VBA, pivot caches, extensions) survives byte-identical.
+        Unsafe operations raise a typed :class:`openpyxl.errors.PaperRefusal`
+        instead of proceeding lossily. The default ``None`` enables preserve
+        mode for editable OOXML workbooks. Read-only and unsupported-format
+        loads retain stock behavior. Pass ``False`` explicitly to opt into the
+        stock, potentially lossy round trip.
     :type preserve: bool or None
 
     :rtype: :class:`openpyxl.workbook.Workbook`
@@ -614,14 +634,7 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
 
     """
     if preserve is None:
-        # env switch is a DEFAULT, never a mandate: loads that explicit
-        # preserve=True would refuse (read_only; the .xls/.xlsb legacy
-        # formats) fall back to stock so its exceptions stay stock too
-        name = getattr(filename, "name", filename)
-        legacy = isinstance(name, str) and \
-            name.lower().endswith((".xls", ".xlsb"))
-        preserve = (os.environ.get("PAPER_PRESERVE_DEFAULT") == "1"
-                    and not read_only and not legacy)
+        preserve = _preserve_by_default(filename, read_only)
     reader = ExcelReader(filename, read_only, keep_vba,
                          data_only, keep_links, rich_text,
                          preserve=preserve)
