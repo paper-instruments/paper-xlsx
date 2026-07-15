@@ -31,8 +31,9 @@ Every added operation either does exactly what it claims or refuses atomically.
 ``load_workbook(path, preserve=True)`` keeps the original package bytes as the
 source of truth. Every editing session has one of three explicit outcomes:
 
-* a **correct save**: edits are spliced into the original bytes, and everything
-  untouched survives byte-identical;
+* a **correct save**: edits are spliced into the original bytes, and unrelated
+  package content survives byte-identical; formula-affecting edits may
+  intentionally invalidate caches and update calculation metadata;
 * a **typed refusal**: an unsafe edit changes nothing on disk or in memory and
   the exception identifies the remedy;
 * a **loud warning**: a stock-mode path reports that an operation may be lossy.
@@ -112,6 +113,12 @@ Editing one workbook
 Computing workbook values
 +++++++++++++++++++++++++
 
+Preserve-mode saves automatically invalidate retained formula caches after
+formula changes or value edits that may feed formulas, then request an
+automatic full recalculation on open. Style-only and unrelated value edits keep
+their caches. Until a calculation engine runs, ``data_only=True`` may therefore
+return ``None`` for invalidated formulas.
+
 * **``oracle.recalc()``** asks a profile-isolated LibreOffice process to
   recalculate a temporary copy and scan the result for formula errors.
 * **``oracle.certify()``** reports whether LibreOffice reproduces the workbook's
@@ -177,10 +184,9 @@ Confirm the install::
 
     paper-xlsx-doctor
 
-The source repository remains private. Users with repository access can install
-the current branch from Git::
+Install the current branch from Git::
 
-    pip install "paper-xlsx @ git+https://github.com/The-LLM-Data-Company/paper-xlsx.git@main"
+    pip install "paper-xlsx @ git+https://github.com/paper-instruments/paper-xlsx.git@main"
 
 Documentation
 -------------
