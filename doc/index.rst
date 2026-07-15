@@ -3,8 +3,8 @@ paper-xlsx: agent-first editing of Excel files
 
 
 :Based on: openpyxl by Eric Gazoni and Charlie Clark
-:Source code: https://github.com/The-LLM-Data-Company/paper-xlsx
-:Issues: https://github.com/The-LLM-Data-Company/paper-xlsx/issues
+:Source code: https://github.com/paper-instruments/paper-xlsx
+:Issues: https://github.com/paper-instruments/paper-xlsx/issues
 :Generated: |today|
 :License: MIT/Expat
 :Version: |release|
@@ -17,9 +17,8 @@ Source and support
 ------------------
 
 ``paper-xlsx`` is an MIT-licensed, strict-superset hard fork of openpyxl. The
-PyPI package is public; the GitHub repository and its issue tracker are
-currently private. The source distribution contains the fork source and the
-preserve-mode guide. For the upstream project ``paper-xlsx`` builds on, see
+source distribution contains the fork source and the preserve-mode guide. For
+the upstream project ``paper-xlsx`` builds on, see
 `openpyxl <https://foss.heptapod.net/openpyxl/openpyxl>`_.
 
 

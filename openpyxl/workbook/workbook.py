@@ -715,20 +715,6 @@ class Workbook:
         return oracle.evaluate(self._paper_source, set, read,
                                timeout=timeout)
 
-    def manifest(self):
-        """A structured description of this workbook: sheets, formulas,
-        defined names, volatile functions, a confession block enumerating
-        content the package carries (charts, pivots, VBA, extensions), and
-        what survives a save under the active mode.
-
-        Returns a :class:`openpyxl.preserve.perception.WorkbookManifest`;
-        call ``.to_dict()`` for the stable JSON form (schema
-        ``workbook_manifest`` v1).
-        """
-        from openpyxl.preserve.perception import build_manifest
-
-        return build_manifest(self)
-
     @property
     def data_only(self):
         return self._data_only

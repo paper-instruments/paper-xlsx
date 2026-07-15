@@ -16,7 +16,8 @@ package bytes as the source of truth. Every session then has one of three
 outcomes:
 
 1. **A correct save.** Your edits are spliced into the original bytes;
-   everything untouched survives byte-identical.
+   unrelated package content survives byte-identical. Formula-affecting edits
+   may intentionally invalidate cached results and update calculation metadata.
 2. **A typed refusal.** A :class:`openpyxl.errors.PaperRefusal`
    subclass is raised *atomically*: the file on disk, the model, and the
    ledger stay exactly as they were. Refusals carry ``.kind``,
@@ -50,6 +51,20 @@ Under preserve, ``docProps/core.xml`` is raw-copied and the ``modified``
 timestamp is **not** auto-stamped unless you explicitly change
 ``wb.properties`` — so a no-op save stays byte-identical.
 
+Formula cache freshness
+-----------------------
+
+When formula text changes, or a value edit may feed a formula, preserve-mode
+saves remove retained cached formula results from loaded worksheets and set
+Excel to recalculate the workbook automatically and fully on open. This avoids
+shipping plausible but stale values. Style-only edits and unrelated value edits
+retain existing caches.
+
+Until Excel, LibreOffice, or another calculation engine recalculates the saved
+file, ``data_only=True`` may return ``None`` for invalidated formulas. Use the
+oracle APIs when the task requires calculated outputs before delivery. Certified
+``oracle.write_back()`` results remain authoritative and are not invalidated.
+
 The PyPI distribution is ``paper-xlsx``, but the import package remains
 ``openpyxl``. Do not install the separate ``openpyxl`` distribution in the same
 environment. The two distributions own the same files, and package-manager
@@ -58,13 +73,18 @@ dependency metadata does not provide a safe replacement mechanism.
 Perception
 ----------
 
-* ``wb.manifest()``: sheets, formulas, defined names, volatile
-  functions, protection, and a package inventory of charts, pivots,
-  VBA and extensions enumerated from the actual package bytes. Schema
-  ``workbook_manifest`` v1.
+Start with the smallest inspection surface that answers the task:
+``wb.sheetnames``, bounded worksheet ranges, ``wb.defined_names``,
+``ws.calculate_dimension()``, and the workbook's standard chart, validation,
+protection, and relationship collections. Preserve checks run automatically;
+there is no package-wide preflight inventory API.
+
+Use the following targeted helpers when the task calls for them:
+
 * ``wb.model_map()``: every populated cell classified as input /
   calculation / output / constant via the dependency sketch. Schema
-  ``model_map`` v1.
+  ``model_map`` v1. This can be expensive on large workbooks, so use it only
+  when role or dependency classification is useful.
 * ``ws.locate(label, prefer="right"|"below")``: the value cell for a
   text label; raises a typed refusal on ambiguity.
 * ``wb.search(text_or_regex, ...)``, ``ws.allowed_values(cell)``,

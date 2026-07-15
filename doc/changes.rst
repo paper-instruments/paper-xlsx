@@ -1,3 +1,13 @@
+Unreleased
+==========
+
+* Invalidate retained formula caches and request automatic full recalculation
+  when formula-affecting edits could otherwise leave plausible stale values.
+* Remove the package-wide workbook manifest API in favor of targeted inspection
+  through standard workbook objects, search, locate, validation, findings, and
+  optional model-map analysis.
+
+
 paper-xlsx 0.1.2 (2026-07-12)
 ===============================
 

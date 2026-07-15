@@ -1,6 +1,6 @@
 """Perception and the agent experience —
 locate, search, scan_errors, allowed_values, validate, model map,
-manifest enrichment, receipts, structured refusals, findings, diffs."""
+receipts, structured refusals, findings, diffs."""
 from __future__ import annotations
 
 import io
@@ -160,19 +160,6 @@ class TestModelMap:
         assert "B13" in schedule["outputs"]
         assert "A1" in schedule["constants"]  # header text
         assert mm.inputs("Schedule")
-
-    def test_manifest_enrichment(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule_calc.xlsx"),
-                           preserve=True)
-        doc = wb.manifest().to_dict()
-        assert doc["computation"]["certifiable"] is True
-        assert doc["computation"]["inputs"] >= 4
-        sched = next(s for s in doc["sheets"]
-                     if s["title"] == "Schedule")
-        assert sched["part_name"] == "xl/worksheets/sheet1.xml"
-        assert "B12" in sched["formula_addresses"]
-        assert "protection_summary" in doc
-
 
 class TestFindings:
 
