@@ -162,7 +162,7 @@ mode and the added APIs are additive.
 * GitHub repository / PyPI distribution: **``paper-xlsx``**
 * Built wheel and sdist names: ``paper_xlsx-*``
 * Python import: **``openpyxl``**
-* Fork sentinel: ``openpyxl.__paper_version__ = "0.1.2"``
+* Fork sentinel: ``openpyxl.__paper_version__ = "0.1.3"``
 * Upstream base: openpyxl **3.1.5** (marker tag ``paper-base``)
 
 Upstream releases are merged rather than rebased. The ``paper-base`` tag records

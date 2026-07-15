@@ -49,7 +49,7 @@ def test_runtime_version_comes_from_packaging_source():
 
 def test_release_candidate_version_pin():
     # Deliberate pin: bump alongside openpyxl/_paper_version.py at release.
-    assert openpyxl.__paper_version__ == "0.1.2"
+    assert openpyxl.__paper_version__ == "0.1.3"
 
 
 class _StubDistribution:
