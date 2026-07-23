@@ -1,10 +1,19 @@
-# paper-xlsx
+<div align="center">
+  <a href="https://github.com/paper-instruments/paper-xlsx">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/paper-instruments/paper-xlsx/main/.github/assets/logo-dark.svg">
+      <img alt="Paper Instruments logo" src="https://raw.githubusercontent.com/paper-instruments/paper-xlsx/main/.github/assets/logo-light.svg" height="128">
+    </picture>
+  </a>
+  <h1>paper-xlsx</h1>
 
 **A drop-in, agent-safe fork of openpyxl that will not silently corrupt a real Excel file.**
 
 [![PyPI](https://img.shields.io/pypi/v/paper-xlsx)](https://pypi.org/project/paper-xlsx/)
 [![Python versions](https://img.shields.io/pypi/pyversions/paper-xlsx)](https://pypi.org/project/paper-xlsx/)
 [![Test](https://github.com/paper-instruments/paper-xlsx/actions/workflows/test.yml/badge.svg)](https://github.com/paper-instruments/paper-xlsx/actions/workflows/test.yml)
+
+</div>
 
 `paper-xlsx` is a strict-superset hard fork of [openpyxl](https://foss.heptapod.net/openpyxl/openpyxl) 3.1.5 for safely inspecting, editing, and verifying existing Excel workbooks. It keeps everything that makes openpyxl excellent — the reader, the object model, the formula tokenizer, fifteen years of absorbed producer quirks — and replaces the one thing that isn't: a save path that regenerates the whole file from memory and silently destroys whatever it doesn't model.
 
