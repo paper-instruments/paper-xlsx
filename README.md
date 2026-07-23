@@ -148,7 +148,7 @@ The import name `openpyxl` is **frozen forever**. `import openpyxl` appears in m
 - Fork sentinel: `openpyxl.__paper_version__` (`"0.1.3"`)
 - Upstream base: openpyxl **3.1.5** (tag `paper-base`; upstream releases are merged, not rebased)
 
-Note the two version numbers: `paper-xlsx` is versioned independently (currently **0.1.3**, early and pre-1.0) while `openpyxl.__version__` reports the upstream base (**3.1.5**) it wraps. pandas flows through this fork automatically — preserve-by-default covers files pandas opens for editing, and fresh `ExcelWriter` output is untouched stock behavior. Python **3.8–3.13** are supported and tested in CI, on Linux and Windows, with and without lxml.
+Note the two version numbers: `paper-xlsx` is versioned independently (currently **0.1.3**, early and pre-1.0) while `openpyxl.__version__` reports the upstream base (**3.1.5**) it wraps. pandas flows through this fork automatically — preserve-by-default covers files pandas opens for editing, and fresh `ExcelWriter` output is untouched stock behavior. Python **3.9–3.13** are supported and tested in CI, on Linux and Windows, with and without lxml.
 
 Everything upstream openpyxl documents still works, unchanged. The additions are a strict superset; the only behavioral deltas are the two sanctioned ones above (preserve-by-default and loud lossy-save warnings), both reversible per load with `preserve=False`.
 

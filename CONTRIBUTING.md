@@ -40,7 +40,7 @@ pytest -q
 
 The LibreOffice-dependent tests (`lo_smoke` and the oracle suite) skip
 automatically when `soffice` is not on your PATH; install `libreoffice-calc`
-to run them locally. CI runs the full matrix: Python 3.8–3.13, a LibreOffice
+to run them locally. CI runs the full matrix: Python 3.9–3.13, a LibreOffice
 leg, a default-dependency leg (no lxml), a stdlib-XML leg, Windows, a Sphinx
 docs build, and a build/install/twine-check leg — see
 [`.github/workflows/test.yml`](.github/workflows/test.yml).
