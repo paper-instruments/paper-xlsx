@@ -10,7 +10,23 @@ paper-xlsx: agent-first editing of Excel files
 :Version: |release|
 
 
-.. include:: ../README.rst
+``paper-xlsx`` is an agent-first Python library for safely inspecting, editing,
+and verifying existing Excel (``.xlsx``) workbooks. It is a strict-superset hard
+fork of ``openpyxl`` 3.1.5 and a drop-in replacement: the distribution is
+renamed, and the import name stays ``openpyxl``, so existing imports do not
+change.
+
+Under the default preserve mode the original package bytes are the source of
+truth. Edits are spliced into the original parts, untouched content survives
+byte-identical, and operations that cannot be performed safely raise a typed
+refusal instead of guessing. Formula calculation is delegated to a LibreOffice
+oracle; the library itself never computes.
+
+Start with the preserve-mode guide at :doc:`paper` for loading and saving,
+perception, editing, the oracle, delivery, and the refusal taxonomy. The
+project overview and quick start live in the repository ``README.md`` at
+https://github.com/paper-instruments/paper-xlsx. Everything inherited from
+openpyxl works as documented in the remaining upstream documentation.
 
 
 Source and support

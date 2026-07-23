@@ -5,5 +5,7 @@ prune scratchpad
 prune doc
 
 include *.rst
+include README.md
+include CONTRIBUTING.md
 include FIXTURE-REQUESTS.md
 include doc/paper.rst
