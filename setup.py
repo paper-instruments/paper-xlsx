@@ -85,6 +85,7 @@ setup(
     project_urls={
         'Source': 'https://github.com/paper-instruments/paper-xlsx',
         'Tracker': 'https://github.com/paper-instruments/paper-xlsx/issues',
+        'Changelog': 'https://github.com/paper-instruments/paper-xlsx/releases',
         'Upstream': 'https://foss.heptapod.net/openpyxl/openpyxl',
     },
     classifiers=[
