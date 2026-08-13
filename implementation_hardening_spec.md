@@ -151,23 +151,68 @@ Measured on a minimal loaded workbook:
 The rising per-write cost is the important result; absolute time varies by
 machine.
 
+The current broad snapshot is also not fully accurate. `_CellBindTransaction`
+retains `cell._style` by reference. Automatic date/time formatting mutates that
+shared `StyleArray` in place. A failure injected after the ledger mark produced
+this state:
+
+```text
+value/type restored: 1, "n"
+style before: numFmtId=0
+style after:  numFmtId=164
+number-format registry restored to empty
+cell.number_format: IndexError
+```
+
+The registry rollback removed format 164, but the cell still referenced it.
+Whole-ledger copying is therefore both slow and insufficient as an atomicity
+mechanism.
+
 #### Required change
 
-Replace whole-ledger snapshots with a cell-local transaction.
+Replace whole-ledger snapshots with a cell-local undo journal. The journal must
+record each mutation as it occurs and execute undo actions in reverse order on
+failure. It must support savepoints or equivalent nesting because assigning a
+hyperlink to an empty cell invokes the value setter inside the hyperlink
+setter.
 
-Capture only:
+Journal only state the operation can change:
 
-- the target cell's value, type, style, hyperlink, and comment state;
-- whether the target coordinate was already present in each relevant ledger
-  set;
-- the prior coordinate-local cache value, if any;
+- the target cell's value and data type;
+- the target cell's style **by value**, not by reference;
+- hyperlink and comment identity, parent, and reference state, including state
+  on caller-supplied objects;
+- for each relevant ledger mapping, whether the worksheet key existed, the
+  original container object, whether the coordinate existed, and its prior
+  value when the mapping holds values rather than membership;
 - the prior `formulas_changed` flag;
 - the prior protection-warning membership for the target sheet; and
-- number-format registry state only when the assignment can add a number
-  format.
+- the exact number-format registry delta when automatic date/time formatting
+  can add an entry. Explicit number-format setters need the same local-journal
+  rule at their style-descriptor chokepoint; they must not rely on a cell-bind
+  transaction that they do not enter.
+
+Rollback must preserve mapping and container identity. If the operation made a
+new worksheet key, remove that key. If the key already existed, restore the
+original set or dictionary in place rather than replacing or clearing
+unrelated entries.
+
+Number-format rollback must restore the registry list, `_dict`, and `clean`
+state together and restore the cell's copied `StyleArray` before any caller can
+observe it. It must be impossible to leave a cell pointing at a truncated
+format index.
+
+Treat `ledger.cache_writes` as a separate correctness decision, not incidental
+snapshot state. A successful direct edit of a cell with a staged oracle cache
+must either invalidate that coordinate's staged cache or refuse with an
+intentional public error; it must not reach the current internal
+dirty-cell/cache-write overlap refusal at save. If the edit later rolls back,
+restore the prior coordinate-local cache entry exactly.
 
 Rollback must restore those exact deltas. It must not copy unrelated dirty
-coordinates.
+coordinates, registries, sheets, or cache entries. A local journal is also
+safer under unexpected re-entrancy because it cannot revert an unrelated edit
+that occurred after the transaction began.
 
 Do not weaken atomic refusal to gain speed.
 
@@ -175,6 +220,20 @@ Do not weaken atomic refusal to gain speed.
 
 - Existing atomicity tests still pass.
 - A refused mutation restores model and ledger state exactly.
+- Inject failure after automatic datetime and time number-format registration;
+  prove the cell style, registry list, registry index, and `clean` flag match
+  their pre-operation values and `cell.number_format` remains readable.
+- Inject failure at each mutation boundary for value, direct `data_type`,
+  formula lint, protection warnings-as-errors, comment binding, hyperlink
+  binding, and hyperlink-to-empty-cell nested value binding.
+- Cover both pre-existing and newly created worksheet keys in `cells`,
+  `value_overwrites`, and `cache_writes`; prove rollback preserves container
+  identity and unrelated coordinates.
+- Cover a pre-existing staged oracle cache entry on both successful edit and
+  rollback paths.
+- Run the atomicity matrix for `Exception` and representative `BaseException`
+  interruption paths because the public setter currently promises rollback
+  for both.
 - 5k, 10k, and 20k value-write timings scale linearly within normal benchmark
   noise.
 - A 20k-write preserve run is no more than 10x the `preserve=False` write loop
