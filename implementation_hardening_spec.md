@@ -263,22 +263,66 @@ pays for Paper's rollback behavior.
 
 #### Required change
 
-- Restore the upstream fast path exactly when no armed Paper ledger exists.
+- Use an append-local transaction in both modes. When no armed Paper ledger
+  exists, keep an upstream-like hot path that records only target coordinates,
+  `_current_row`, and caller-supplied `Cell` bindings; it must perform no
+  Paper-ledger or whole-sheet snapshot work. This preserves the fork's current
+  atomic append behavior without retaining its quadratic cost.
 - In preserve mode, validate the iterable and pre-built `Cell` bindings before
   committing the row where possible.
-- Track only cells added by the current append, the prior `_current_row`, the
-  prior bindings of caller-supplied `Cell` objects, and coordinate-local ledger
-  deltas.
-- On failure, remove only the cells added by the attempted append and restore
-  those local values.
+- Do not materialize an arbitrary generator merely to preflight it. Consume it
+  lazily and journal each append-owned mutation before it occurs.
+- For each target coordinate, capture its pre-operation entry only the first
+  time it is touched. This covers duplicate normalized dictionary keys such as
+  `{"A": 1, 1: 2}` without treating an intermediate value as the baseline.
+- Snapshot each caller-supplied `Cell` object only once by identity. The same
+  object may appear more than once in the iterable; rollback must restore its
+  original parent, row, and column rather than an intermediate binding.
+- Refuse a caller-supplied `Cell` that is already materialized in a worksheet's
+  `_cells` mapping. Moving that object would leave two coordinates pointing to
+  one mutable cell whose own coordinate no longer matches one mapping.
+- In preserve mode, journal coordinate-local changes to `cells`,
+  `value_overwrites`, `cache_writes`, `formulas_changed`, protection-warning
+  state, and any style registry extended while binding the row.
+- On failure, execute undo actions in reverse order. Restore overwritten
+  coordinate entries, remove newly created entries, reset `_current_row`,
+  restore supplied-cell bindings, and restore ledger deltas without touching
+  unrelated workbook state.
+- Detect re-entrant `append()` on the same worksheet. The first implementation
+  should refuse the inner append before it mutates anything; supporting it
+  later would require nested append savepoints and a defined row-order
+  contract. Appends on other worksheets and unrelated edits performed by a
+  generator are outside the outer append's rollback scope.
 - Do not call `_capture_structural_state()` for a simple row append.
+
+The atomicity boundary covers mutations performed by `append()`. It cannot
+undo external side effects performed by caller generator code, and it cannot
+un-emit a warning already delivered to Python's warning machinery. It must,
+however, restore Paper's warning-membership state when that warning is promoted
+to an exception.
 
 #### Acceptance criteria
 
 - The `preserve=False` append implementation has no Paper snapshot or ledger
-  work in its hot path.
+  work in its hot path and retains append-local atomic rollback.
 - Preserve and stock append loops scale linearly through at least 20k rows.
-- Invalid generators and cross-sheet `Cell` objects remain atomic.
+- A generator that raises after several values leaves no append-owned changes.
+- Invalid, cross-sheet, already-materialized, and repeated `Cell` objects have
+  explicit tested behavior; every refusal is atomic.
+- Duplicate dictionary targets retain upstream final-write-wins behavior on
+  success and restore the original coordinate on failure.
+- Re-entrant same-sheet append refuses before mutation. Generator edits to a
+  different sheet survive an outer append failure because they are unrelated
+  operations.
+- Existing coordinate and ledger membership is restored rather than removed;
+  mapping, set, and caller-supplied object identities remain stable.
+- Failure injection covers value/type binding, automatic number-format
+  registration, formula lint, protection warnings-as-errors, ledger marking,
+  `Exception`, and `BaseException` interruption points.
+- Exceeding Excel's row or column bounds after partial generator consumption is
+  atomic.
+- When the generator performs no deliberate unrelated edit, serializing before
+  and after each refused append produces equivalent package state.
 - Existing append, ledger, style, and formula-lint tests continue to pass.
 
 ### P0.3 Refuse unsafe inferred delivery protection
