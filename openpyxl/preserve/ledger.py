@@ -49,7 +49,7 @@ class DirtyLedger:
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag", "cache_writes", "pivot_refresh_requests",
-                 "derived_effects", "image_replacements")
+                 "image_replacements")
 
     def __init__(self):
         self.armed = False
@@ -87,7 +87,6 @@ class DirtyLedger:
         self.cache_writes = {}         # ws -> {(row, col): computed value}
                                        # (oracle write-back)
         self.pivot_refresh_requests = set()
-        self.derived_effects = []
         self.image_replacements = {}
 
     # -- arming --------------------------------------------------------

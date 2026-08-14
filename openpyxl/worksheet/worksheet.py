@@ -30,6 +30,7 @@ from openpyxl.workbook.defined_name import (
 )
 
 from openpyxl.formula.translate import Translator
+from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW
 
 from .datavalidation import DataValidationList
 from .page import (
@@ -947,10 +948,24 @@ class Worksheet(_WorkbookChild):
 
         """
         row_idx = self._current_row + 1
+        if row_idx > MAX_ROW:
+            from openpyxl.errors import BoundaryViolationError
+
+            raise BoundaryViolationError(
+                "append() would write row {0}, past Excel's {1}-row "
+                "worksheet limit. Nothing was changed.".format(
+                    row_idx, MAX_ROW))
 
         if (isinstance(iterable, (list, tuple, range))
             or isgenerator(iterable)):
             for col_idx, content in enumerate(iterable, 1):
+                if col_idx > MAX_COLUMN:
+                    from openpyxl.errors import BoundaryViolationError
+
+                    raise BoundaryViolationError(
+                        "append() would write column {0}, past Excel's "
+                        "{1}-column worksheet limit. Nothing was changed."
+                        .format(col_idx, MAX_COLUMN))
                 coordinate = (row_idx, col_idx)
                 if transaction is not None:
                     transaction.capture_coordinate(coordinate)
@@ -978,6 +993,14 @@ class Worksheet(_WorkbookChild):
             for col_idx, content in iterable.items():
                 if isinstance(col_idx, str):
                     col_idx = column_index_from_string(col_idx)
+                if not isinstance(col_idx, int) or not 1 <= col_idx <= \
+                        MAX_COLUMN:
+                    from openpyxl.errors import BoundaryViolationError
+
+                    raise BoundaryViolationError(
+                        "append() column keys must be integers from 1 to "
+                        "{0}; got {1!r}. Nothing was changed.".format(
+                            MAX_COLUMN, col_idx))
                 coordinate = (row_idx, col_idx)
                 if transaction is not None:
                     transaction.capture_coordinate(coordinate)

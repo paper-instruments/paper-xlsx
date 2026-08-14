@@ -102,7 +102,9 @@ def _patch_relationship(payload, request, new_part):
         raise UnsupportedStructureError(
             "the image relationship target changed since load",
             kind="image-relationship-drift")
-    target = _relative_target(owner, new_part)
+    original_target = relationship.attrs.get("Target", "")
+    target = "/" + new_part if original_target.startswith("/") \
+        else _relative_target(owner, new_part)
     start, end, head = crosspart._patch_attr(
         payload, relationship, "Target", target)
     return payload[:start] + head + payload[end:]
@@ -124,7 +126,6 @@ def plan_replacements(zin, requests, part_plan, names, plan):
     """Add fresh media parts and compose exact relationship retargets."""
     taken = set(names) | set(part_plan.added)
     next_media = _next_number(taken, r"xl/media/image(\d+)\.\w+$")
-    effects = []
     for offset, (_key, request) in enumerate(sorted(
             requests.items(), key=lambda item: (item[0][0].title,
                                                 item[0][1]))):
@@ -141,10 +142,3 @@ def plan_replacements(zin, requests, part_plan, names, plan):
                     kind="unresolved-image-relationship")
             base = zin.read(rels_part)
         plan[rels_part] = _patch_relationship(base, request, part)
-        effects.append({
-            "kind": "relationship_retargeted",
-            "part": rels_part,
-            "cause": "image_replaced",
-            "target_part": part,
-        })
-    return effects

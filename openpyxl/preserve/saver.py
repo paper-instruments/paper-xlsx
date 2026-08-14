@@ -248,15 +248,8 @@ def _expected_delivery_identity(workbook, target):
     return current
 
 
-def _plan_preserved(workbook, *, allow_formula_loss=False,
-                    expected_identity=None, target_is_source=False):
-    """Validate the model and return an immutable, non-writing save plan."""
-    led = workbook._paper_ledger
-    source = workbook._paper_source
-    if led is None or source is None:
-        _refuse("preserve-mode save requires a workbook loaded with "
-                "preserve=True.")
-
+def _validate_preserve_model(workbook, led, allow_formula_loss):
+    """Validate workbook-wide invariants and arm recalculation metadata."""
     if workbook.data_only and not allow_formula_loss:
         _refuse(
             "this workbook was loaded with data_only=True: its cells hold "
@@ -268,22 +261,14 @@ def _plan_preserved(workbook, *, allow_formula_loss=False,
             "the edited cells.")
 
     led.check_style_registry(workbook)
-
-    force_calcpr = False
-    if led.formulas_changed or _dirty_feeds_formulas(workbook, led):
-        # honesty organ: a human
-        # opener's Excel must always compute fresh numbers — stale cached
-        # values can never masquerade as current. That holds for formula
-        # TEXT edits and equally for the most common agent edit of all: a
-        # VALUE write into cells that formulas read. The model's
-        # CalcProperties defaults the flag to True, so the arm-vs-save
-        # diff cannot see this change: calcPr is forced into the
-        # workbook.xml plan (sanctioned collateral) and
-        # re-rendered from the fully-modeled object.
+    force_calcpr = led.formulas_changed \
+        or _dirty_feeds_formulas(workbook, led)
+    if force_calcpr:
+        # A human opener must compute fresh numbers. This applies both to
+        # formula text edits and writes to cells that formulas read.
         workbook.calculation.calcMode = "auto"
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True
-        force_calcpr = True
 
     for cs, snap in led.chartsheet_snapshots.items():
         if _render_chartsheet(cs) != snap:
@@ -308,6 +293,190 @@ def _plan_preserved(workbook, *, allow_formula_loss=False,
                 "parts are preserved verbatim, so the edits cannot be "
                 "saved faithfully. Reopen without preserve=True to "
                 "rewrite the workbook lossily instead.")
+    return force_calcpr
+
+
+def _plan_added_sheets(workbook, led, zin, names, wb_part, wb_rels_part,
+                       translator, part_plan):
+    """Plan model-owned parts and registrations for newly added sheets."""
+    added = [ws for ws in workbook._sheets if ws in led.added_sheets]
+    if added:
+        tail = workbook._sheets[-len(added):]
+        if set(tail) != set(added):
+            _refuse("sheets added in-session must come after all loaded "
+                    "sheets (insertion at other positions would reorder the "
+                    "preserved sheet list).")
+    new_sheet_parts = []
+    new_rels_parts = []
+    new_sheet_entries = []
+    ct_appends = []
+    wb_rels_appends = []
+    if not added:
+        return (new_sheet_parts, new_rels_parts, new_sheet_entries,
+                ct_appends, wb_rels_appends)
+
+    original_wb_rels = zin.read(wb_rels_part)
+    next_part_num = _next_sheet_number(names)
+    next_sheet_id = _next_sheet_id(zin.read(wb_part))
+    for index, ws in enumerate(added):
+        _check_added_sheet_supported(ws)
+        part_name = "xl/worksheets/sheet{0}.xml".format(
+            next_part_num + index)
+        ws._id = next_part_num + index
+        payload, rel_entries = _generate_sheet_part(ws)
+        payload = _rewrite_added_sheet_styles(payload, workbook, translator)
+        rel_entries = drawings_mod.plan_added_sheet_drawing(
+            workbook, ws, part_plan, names, rel_entries)
+        sheet_rels = crosspart.render_rels_document(rel_entries) \
+            if rel_entries else None
+        sheet_rels = _plan_added_sheet_comments(
+            workbook, ws, part_plan, names, sheet_rels)
+        new_sheet_parts.append((part_name, payload))
+        if sheet_rels is not None:
+            new_rels_parts.append((_rels_path(part_name), sheet_rels))
+        rid = part_plan.reserve_rid(wb_rels_part, original_wb_rels)
+        new_sheet_entries.append(
+            (ws.title, next_sheet_id + index, rid, ws.sheet_state))
+        wb_rels_appends.append(
+            (rid, "{0}/{1}".format(REL_NS, ws._rel_type),
+             _relative_target(wb_part, part_name), None))
+        ct_appends.append((part_name, WORKSHEET_TYPE))
+    return (new_sheet_parts, new_rels_parts, new_sheet_entries,
+            ct_appends, wb_rels_appends)
+
+
+def _plan_removed_sheets(led, zin, names, sheet_parts, wb_rels_part,
+                         part_plan):
+    """Register the exclusive package-part cascade for removed sheets."""
+    for removed_title in led.removed_sheets:
+        removed_part = sheet_parts.get(removed_title)
+        if removed_part is None or removed_part not in names:
+            _refuse("cannot locate the package part for removed sheet "
+                    "{0!r}.".format(removed_title))
+        closure = _exclusive_closure(zin, names, removed_part)
+        part_plan.remove_part(
+            removed_part, referencing_rels=[(wb_rels_part, removed_part)])
+        for child_part in closure:
+            if child_part not in part_plan.dropped:
+                part_plan.remove_part(child_part)
+
+
+def _plan_chart_rename_cascade(workbook, led, zin, plan):
+    """Compose all sheet-title changes over affected chart parts once."""
+    rename_map = {orig: ws_obj.title
+                  for ws_obj, orig in led.renames.items()
+                  if ws_obj.title != orig}
+    if not rename_map:
+        return
+    from .chartpatch import patch_chart_renames
+    from .structural import _charts_referencing
+
+    chart_targets = set()
+    for original_title in rename_map:
+        chart_targets |= set(_charts_referencing(
+            workbook, original_title))
+    for chart_part in sorted(chart_targets):
+        payload = plan.get(chart_part, zin.read(chart_part))
+        patched = patch_chart_renames(payload, rename_map)
+        if patched is not None:
+            plan[chart_part] = patched
+
+
+def _plan_workbook_metadata(workbook, led, zin, names, wb_part,
+                            new_sheet_entries, force_calcpr, part_plan):
+    """Plan workbook XML plus modeled core, custom, and theme metadata."""
+    force_tags = ["calcPr"] if force_calcpr else []
+    order_now = [led.renames.get(sheet, sheet.title)
+                 for sheet in workbook._sheets]
+    removed = set(led.removed_sheets)
+    armed_minus_removed = [title for title in led.sheet_order
+                           if title not in removed]
+    loaded_titles = set(led.sheet_order)
+    loaded_now = [title for title in order_now if title in loaded_titles]
+    if led.removed_sheets or loaded_now != armed_minus_removed:
+        if workbook.chartsheets and any(
+                ws.defined_names for ws in workbook.worksheets):
+            _refuse("sheet removal/reorder on a workbook with chartsheets "
+                    "AND sheet-scoped defined names would mis-scope the "
+                    "names (writer numbering skew).")
+        force_tags += ["definedNames", "bookViews"]
+    wb_xml_plan = crosspart.plan_workbook_xml(
+        workbook, led, zin.read(wb_part), new_sheet_entries,
+        force_tags=tuple(force_tags))
+
+    core_changed = render_core_model(workbook) != led.core_snapshot
+    if core_changed and ARC_CORE not in names:
+        _refuse("document properties changed but the package has no "
+                "docProps/core.xml part; part creation is not supported "
+                "in v0.")
+    custom_render = render_custom_model(workbook)
+    custom_delta = custom_render != led.custom_snapshot
+    custom_changed = (custom_delta and ARC_CUSTOM in names
+                      and custom_render is not None)
+    if custom_delta and custom_render is not None and ARC_CUSTOM not in names:
+        from openpyxl.xml.constants import CPROPS_TYPE
+
+        part_plan.add_part(
+            ARC_CUSTOM, custom_render, content_type=CPROPS_TYPE,
+            relate_from="", rel_type=REL_NS + "/custom-properties")
+    if custom_delta and custom_render is None and ARC_CUSTOM in names:
+        part_plan.remove_part(
+            ARC_CUSTOM,
+            referencing_rels=[("_rels/.rels", "docProps/custom.xml")])
+
+    theme_changed = workbook.loaded_theme is not None \
+        and ARC_THEME in names \
+        and workbook.loaded_theme != zin.read(ARC_THEME)
+    return (wb_xml_plan, core_changed, custom_render, custom_changed,
+            theme_changed)
+
+
+def _compose_package_registries(zin, names, wb_rels_part, wb_rels_appends,
+                                ct_appends, part_plan, plan,
+                                sheet_rels_updates):
+    """Compose lifecycle registrations after every part planner has run."""
+    engine_rels = part_plan.touched_rels_parts()
+    wb_rels_plan = None
+    if wb_rels_appends or wb_rels_part in engine_rels:
+        payload = zin.read(wb_rels_part)
+        payload = part_plan.apply_rels(wb_rels_part, payload)
+        if wb_rels_appends:
+            payload = crosspart.rels_append(payload, wb_rels_appends)
+        wb_rels_plan = payload
+    extra_rels_updates = {}
+    for rels_part in engine_rels:
+        if rels_part == wb_rels_part:
+            continue
+        if rels_part in sheet_rels_updates:
+            existing = sheet_rels_updates.pop(rels_part)
+        else:
+            existing = plan.pop(rels_part, None)
+            if existing is None:
+                existing = zin.read(rels_part) if rels_part in names else None
+        extra_rels_updates[rels_part] = part_plan.apply_rels(
+            rels_part, existing)
+
+    ct_plan = None
+    if ct_appends or part_plan:
+        payload = zin.read("[Content_Types].xml")
+        payload = part_plan.apply_content_types(payload)
+        if ct_appends:
+            payload = crosspart.ct_append_overrides(payload, ct_appends)
+        ct_plan = payload
+    return wb_rels_plan, extra_rels_updates, ct_plan
+
+
+def _plan_preserved(workbook, *, allow_formula_loss=False,
+                    expected_identity=None, target_is_source=False):
+    """Validate the model and return an immutable, non-writing save plan."""
+    led = workbook._paper_ledger
+    source = workbook._paper_source
+    if led is None or source is None:
+        _refuse("preserve-mode save requires a workbook loaded with "
+                "preserve=True.")
+
+    force_calcpr = _validate_preserve_model(
+        workbook, led, allow_formula_loss)
 
     zin = zipfile.ZipFile(io.BytesIO(source))
     names = set(zin.namelist())
@@ -325,66 +494,22 @@ def _plan_preserved(workbook, *, allow_formula_loss=False,
         from .styletrans import StyleTranslator
         translator = StyleTranslator(workbook, zin.read(ARC_STYLE))
 
-    # ---- added sheets ----------------------------------------------------
-    added = [ws for ws in workbook._sheets if ws in led.added_sheets]
-    if added:
-        tail = workbook._sheets[-len(added):]
-        if set(tail) != set(added):
-            _refuse("sheets added in-session must come after all loaded "
-                    "sheets (insertion at other positions would reorder the "
-                    "preserved sheet list).")
-    new_sheet_parts = []      # [(part_name, payload)]
-    new_rels_parts = []       # [(part_name, payload)]
-    new_sheet_entries = []    # [(title, sheetId, rId, state)]
-    ct_appends = []
-    wb_rels_appends = []
-    if added:
-        original_wb_rels = zin.read(wb_rels_part)
-        next_part_num = _next_sheet_number(names)
-        next_sheet_id = _next_sheet_id(zin.read(wb_part))
-        for i, ws in enumerate(added):
-            _check_added_sheet_supported(ws)
-            part_name = "xl/worksheets/sheet{0}.xml".format(next_part_num + i)
-            ws._id = next_part_num + i    # keeps ws.path consistent
-            payload, rel_entries = _generate_sheet_part(ws)
-            payload = _rewrite_added_sheet_styles(payload, workbook,
-                                                  translator)
-            rel_entries = drawings_mod.plan_added_sheet_drawing(
-                workbook, ws, part_plan, names, rel_entries)
-            sheet_rels = crosspart.render_rels_document(rel_entries) \
-                if rel_entries else None
-            sheet_rels = _plan_added_sheet_comments(
-                workbook, ws, part_plan, names, sheet_rels)
-            new_sheet_parts.append((part_name, payload))
-            if sheet_rels is not None:
-                new_rels_parts.append((_rels_path(part_name), sheet_rels))
-            # rIds reserved through the ENGINE's shared allocator: an
-            # engine append to workbook rels in the same save (styles.xml
-            # creation) must never collide (duplicate rId4)
-            rid = part_plan.reserve_rid(wb_rels_part, original_wb_rels)
-            new_sheet_entries.append(
-                (ws.title, next_sheet_id + i, rid, ws.sheet_state))
-            wb_rels_appends.append(
-                (rid, "{0}/{1}".format(REL_NS, ws._rel_type),
-                 _relative_target(wb_part, part_name), None))
-            ct_appends.append((part_name, WORKSHEET_TYPE))
+    (new_sheet_parts, new_rels_parts, new_sheet_entries, ct_appends,
+     wb_rels_appends) = _plan_added_sheets(
+         workbook, led, zin, names, wb_part, wb_rels_part, translator,
+         part_plan)
 
     # ---- loaded-sheet plans ----------------------------------------------
     plan = {}
     if led.image_replacements:
         from .images import plan_replacements
 
-        led.derived_effects.extend(plan_replacements(
-            zin, led.image_replacements, part_plan, names, plan))
+        plan_replacements(
+            zin, led.image_replacements, part_plan, names, plan)
     if led.pivot_refresh_requests:
         from .pivots import plan_refresh
 
-        patched = plan_refresh(zin, led.pivot_refresh_requests, plan)
-        led.derived_effects.extend({
-            "kind": "pivot_refresh_on_load_enabled",
-            "part": part,
-            "cause": "explicit_request",
-        } for part in patched)
+        plan_refresh(zin, led.pivot_refresh_requests, plan)
     # Structural chart/drawing remaps own the first transformation of each
     # part. Explicit chart property edits then compose on these bytes.
     if led.shifts:
@@ -472,7 +597,7 @@ def _plan_preserved(workbook, *, allow_formula_loss=False,
                 chart_prop_parts[part_name] = \
                     chartpatch_mod.plan_property_edits(
                         workbook, ws, key, armed_render, current_render,
-                        base, part_name=part_name,
+                        base,
                         allow_composed_formula_baseline=composed)
             plan.update(chart_prop_parts)
             changed_objects = [
@@ -797,38 +922,9 @@ def _plan_preserved(workbook, *, allow_formula_loss=False,
         region_claims[part] = claims
         row_claims[part] = set(row_changes)
 
-    # ---- removed sheets: the part cascade ----------------------------
-    for removed_title in led.removed_sheets:
-        removed_part = sheet_parts.get(removed_title)
-        if removed_part is None or removed_part not in names:
-            _refuse("cannot locate the package part for removed sheet "
-                    "{0!r}.".format(removed_title))
-        closure = _exclusive_closure(zin, names, removed_part)
-        part_plan.remove_part(
-            removed_part, referencing_rels=[(wb_rels_part, removed_part)])
-        for child_part in closure:
-            if child_part in part_plan.dropped:
-                continue
-            part_plan.remove_part(child_part)
-
-    # ---- rename cascade: chart parts, ONE simultaneous mapping ------------
-    # (sequential pairwise patching merges reference classes on title
-    # SWAPS)
-    rename_map = {orig: ws_obj.title
-                  for ws_obj, orig in led.renames.items()
-                  if ws_obj.title != orig}
-    if rename_map:
-        from .chartpatch import patch_chart_renames
-        from .structural import _charts_referencing
-
-        chart_targets = set()
-        for orig in rename_map:
-            chart_targets |= set(_charts_referencing(workbook, orig))
-        for chart_part in sorted(chart_targets):
-            payload = plan.get(chart_part, zin.read(chart_part))
-            patched = patch_chart_renames(payload, rename_map)
-            if patched is not None:
-                plan[chart_part] = patched
+    _plan_removed_sheets(
+        led, zin, names, sheet_parts, wb_rels_part, part_plan)
+    _plan_chart_rename_cascade(workbook, led, zin, plan)
 
     # ---- calcChain cascade (D13), on the lifecycle engine ------------------
     drop_calcchain = led.formulas_changed and _CALC_CHAIN in names
@@ -858,90 +954,14 @@ def _plan_preserved(workbook, *, allow_formula_loss=False,
                 relate_from=wb_part,
                 rel_type=REL_NS + "/styles")
 
-    # ---- workbook.xml plan -------------------------------------------------
-    force_tags = ["calcPr"] if force_calcpr else []
-    order_now = []
-    for sheet_obj in workbook._sheets:
-        order_now.append(led.renames.get(sheet_obj, sheet_obj.title))
-    armed_minus_removed = [t for t in led.sheet_order
-                           if t not in set(led.removed_sheets)]
-    loaded_now = [t for t in order_now if t in set(led.sheet_order)]
-    if led.removed_sheets or loaded_now != armed_minus_removed:
-        # localSheetId and activeTab are position-derived: re-render both
-        # workbook elements whenever positions changed
-        if workbook.chartsheets and any(
-                ws_.defined_names for ws_ in workbook.worksheets):
-            # upstream's writer numbers localSheetId over WORKSHEETS only
-            # while readers index the full sheet list: a forced re-render
-            # on a chartsheet-bearing book mis-scopes every local name
-            # — refuse until the writer is fixed
-            _refuse("sheet removal/reorder on a workbook with chartsheets "
-                    "AND sheet-scoped defined names would mis-scope the "
-                    "names (writer numbering skew).")
-        force_tags += ["definedNames", "bookViews"]
-    wb_xml_plan = crosspart.plan_workbook_xml(
-        workbook, led, zin.read(wb_part), new_sheet_entries,
-        force_tags=tuple(force_tags))
-
-    # ---- workbook rels + content types -------------------------------------
-    core_changed = render_core_model(workbook) != led.core_snapshot
-    if core_changed and ARC_CORE not in names:
-        _refuse("document properties changed but the package has no "
-                "docProps/core.xml part; part creation is not supported "
-                "in v0.")
-    custom_render = render_custom_model(workbook)
-    custom_delta = custom_render != led.custom_snapshot
-    custom_changed = (custom_delta and ARC_CUSTOM in names
-                      and custom_render is not None)
-    if custom_delta and custom_render is not None \
-            and ARC_CUSTOM not in names:
-        from openpyxl.xml.constants import CPROPS_TYPE
-
-        part_plan.add_part(
-            ARC_CUSTOM, custom_render, content_type=CPROPS_TYPE,
-            relate_from="",
-            rel_type=REL_NS + "/custom-properties")
-    if custom_delta and custom_render is None and ARC_CUSTOM in names:
-        part_plan.remove_part(
-            ARC_CUSTOM,
-            referencing_rels=[("_rels/.rels", "docProps/custom.xml")])
-
-    theme_changed = False
-    if workbook.loaded_theme is not None and ARC_THEME in names:
-        theme_changed = workbook.loaded_theme != zin.read(ARC_THEME)
-
-    # ---- ct/rels composition: AFTER every engine registration ------------
-    engine_rels = part_plan.touched_rels_parts()
-    wb_rels_plan = None
-    if wb_rels_appends or wb_rels_part in engine_rels:
-        payload = zin.read(wb_rels_part)
-        payload = part_plan.apply_rels(wb_rels_part, payload)
-        if wb_rels_appends:
-            payload = crosspart.rels_append(payload, wb_rels_appends)
-        wb_rels_plan = payload
-    extra_rels_updates = {}
-    for rels_part in engine_rels:
-        if rels_part == wb_rels_part:
-            continue
-        # compose ON TOP of the hyperlink planner's output when both touch
-        # one rels part (the engine payload shadowed the
-        # hyperlink rel — dangling r:id in the saved sheet)
-        if rels_part in sheet_rels_updates:
-            existing = sheet_rels_updates.pop(rels_part)
-        else:
-            existing = plan.pop(rels_part, None)
-            if existing is None:
-                existing = zin.read(rels_part) if rels_part in names else None
-        extra_rels_updates[rels_part] = part_plan.apply_rels(
-            rels_part, existing)
-
-    ct_plan = None
-    if ct_appends or part_plan:
-        payload = zin.read("[Content_Types].xml")
-        payload = part_plan.apply_content_types(payload)
-        if ct_appends:
-            payload = crosspart.ct_append_overrides(payload, ct_appends)
-        ct_plan = payload
+    (wb_xml_plan, core_changed, custom_render, custom_changed,
+     theme_changed) = _plan_workbook_metadata(
+         workbook, led, zin, names, wb_part, new_sheet_entries,
+         force_calcpr, part_plan)
+    wb_rels_plan, extra_rels_updates, ct_plan = \
+        _compose_package_registries(
+            zin, names, wb_rels_part, wb_rels_appends, ct_appends,
+            part_plan, plan, sheet_rels_updates)
 
 
     # ---- assemble -----------------------------------------------------------

@@ -210,7 +210,58 @@ def test_image_replacement_retargets_one_relationship_and_keeps_old_media(
         assert archive.read("xl/media/image2.png") == old_media
         new_rels = archive.read("xl/drawings/_rels/drawing1.xml.rels")
     assert new_rels != old_rels
-    assert b"../media/image2.png" in new_rels
+    assert b'Target="/xl/media/image2.png"' in new_rels
+
+
+def test_image_replacement_preserves_relative_relationship_form(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    relative = tmp_path / "relative-image.xlsx"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(relative, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == "xl/drawings/_rels/drawing1.xml.rels":
+                payload = payload.replace(
+                    b'Target="/xl/media/image1.png"',
+                    b'Target="../media/image1.png"')
+            zout.writestr(info, payload)
+
+    with zipfile.ZipFile(relative) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement-relative.png"
+    with open(replacement, "wb") as handle:
+        handle.write(media)
+
+    workbook = load_workbook(relative, preserve=True)
+    workbook["Model"].replace_image("H20", replacement)
+    output = tmp_path / "relative-replaced.xlsx"
+    workbook.save(output)
+
+    with zipfile.ZipFile(output) as archive:
+        rels = archive.read("xl/drawings/_rels/drawing1.xml.rels")
+    assert b'Target="../media/image2.png"' in rels
+
+
+def test_image_replacement_receipt_reports_specific_cause(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    with zipfile.ZipFile(source) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement.png"
+    replacement.write_bytes(media)
+
+    workbook = load_workbook(source, preserve=True)
+    workbook["Model"].replace_image("H20", replacement)
+    receipt = workbook.save(tmp_path / "replaced.xlsx", receipt=True)
+
+    assert any(
+        effect == {
+            "kind": "relationship_changed",
+            "part": "xl/drawings/_rels/drawing1.xml.rels",
+            "cause": "image_replaced",
+        }
+        for effect in receipt.derived_effects
+    )
 
 
 def test_receipt_reports_deterministic_derived_effects(

@@ -20,7 +20,8 @@ paper-xlsx 0.1.3 (2026-07-14)
 * Invalidate retained formula caches and request automatic full recalculation
   when formula-affecting edits could otherwise leave plausible stale values.
 * Remove the package-wide workbook manifest API in favor of targeted inspection
-  through standard workbook objects and validation.
+  through standard workbook objects, search, locate, validation, findings, and
+  optional model-map analysis.
 * Enable preserve mode by default for editable OOXML workbooks and remove the
   process-wide ``PAPER_PRESERVE_DEFAULT`` environment switch. Use
   ``preserve=False`` for an explicit stock openpyxl round trip.

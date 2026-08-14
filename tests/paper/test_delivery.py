@@ -7,6 +7,77 @@ import zipfile
 import pytest
 
 from openpyxl import load_workbook
+from openpyxl.errors import AmbiguousTargetError, TargetNotFoundError
+
+
+def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False):
+    """Attach a small relationship-complete pivot graph to source bytes.
+
+    The preservation API indexes package relationships, not openpyxl's pivot
+    model. Keeping the fixture at the package layer makes each resolution
+    contract explicit without relying on the upstream pivot deserializer.
+    ``pivots`` is an iterable of ``(name, cache_id)`` pairs.
+    """
+    workbook_xml = (
+        b'<pivotCaches xmlns:r="http://schemas.openxmlformats.org/office'
+        b'Document/2006/relationships">'
+        + b"".join(
+            b'<pivotCache cacheId="%s" r:id="rIdCache%s"/>'
+            % (cache_id.encode("ascii"), cache_id.encode("ascii"))
+            for cache_id in sorted({cache_id for _name, cache_id in pivots})
+        )
+        + b"</pivotCaches>"
+    )
+    workbook_rels = b"".join(
+        b'<Relationship Id="rIdCache%s" Type="http://schemas.openxml'
+        b'formats.org/officeDocument/2006/relationships/'
+        b'pivotCacheDefinition" Target="pivotCache/'
+        b'pivotCacheDefinition%s.xml"/>'
+        % (cache_id.encode("ascii"), cache_id.encode("ascii"))
+        for cache_id in sorted({cache_id for _name, cache_id in pivots})
+    )
+    sheet_rels = b"".join(
+        b'<Relationship Id="rIdPivot%s" Type="http://schemas.openxml'
+        b'formats.org/officeDocument/2006/relationships/pivotTable" '
+        b'Target="../pivotTables/pivotTable%s.xml"/>'
+        % (str(index).encode("ascii"), str(index).encode("ascii"))
+        for index, _pivot in enumerate(pivots, 1)
+    )
+    cache_ids = sorted({cache_id for _name, cache_id in pivots})
+    source = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(workbook._paper_source)) as zin, \
+            zipfile.ZipFile(source, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == "xl/workbook.xml":
+                payload = payload.replace(b"</workbook>",
+                                          workbook_xml + b"</workbook>")
+            elif info.filename == "xl/_rels/workbook.xml.rels":
+                payload = payload.replace(b"</Relationships>",
+                                          workbook_rels
+                                          + b"</Relationships>")
+            zout.writestr(info, payload)
+        zout.writestr(
+            "xl/worksheets/_rels/sheet1.xml.rels",
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/'
+            b'package/2006/relationships">' + sheet_rels
+            + b"</Relationships>")
+        for index, (name, cache_id) in enumerate(pivots, 1):
+            zout.writestr(
+                "xl/pivotTables/pivotTable%s.xml" % index,
+                b'<pivotTableDefinition xmlns="http://schemas.openxml'
+                b'formats.org/spreadsheetml/2006/main" name="'
+                + name.encode("utf-8") + b'" cacheId="'
+                + cache_id.encode("ascii") + b'"/>')
+        refresh = b' refreshOnLoad="1"' if refresh_on_load else b""
+        for cache_id in cache_ids:
+            zout.writestr(
+                "xl/pivotCache/pivotCacheDefinition%s.xml" % cache_id,
+                b'<pivotCacheDefinition xmlns="http://schemas.openxml'
+                b'formats.org/spreadsheetml/2006/main" recordCount="0"'
+                + refresh + b'><cacheSource type="worksheet"/>'
+                b'</pivotCacheDefinition>')
+    workbook._paper_source = source.getvalue()
 
 
 def test_copy_format_through_the_splice(fixture_copy, tmp_path):
@@ -56,6 +127,55 @@ def test_all_pivot_refresh_patches_only_root_attribute(
         payload = archive.read("xl/pivotCache/pivotCacheDefinition1.xml")
     assert payload == cache.replace(
         b' recordCount="2"', b' recordCount="2" refreshOnLoad="1"')
+
+
+def test_targeted_pivots_follow_relationships_and_deduplicate_shared_cache(
+        fixture_copy, tmp_path):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(wb, [("SalesPivot", "1"), ("MarginPivot", "1")])
+
+    assert wb.set_pivot_refresh_on_load(
+        pivots=["Sheet1!SalesPivot", "MarginPivot"]
+    ) == ["xl/pivotCache/pivotCacheDefinition1.xml"]
+    receipt = wb.save(tmp_path / "targeted-pivots.xlsx", receipt=True)
+
+    assert [effect for effect in receipt.derived_effects
+            if effect["kind"] == "pivot_refresh_on_load_enabled"] == [{
+                "kind": "pivot_refresh_on_load_enabled",
+                "part": "xl/pivotCache/pivotCacheDefinition1.xml",
+                "cause": "explicit_request",
+            }]
+
+
+def test_targeted_pivot_reports_ambiguity_and_missing_names(fixture_copy):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(wb, [("Duplicate", "1"), ("Duplicate", "2")])
+
+    with pytest.raises(AmbiguousTargetError, match="sheet-qualified"):
+        wb.set_pivot_refresh_on_load(pivots=["Duplicate"])
+    with pytest.raises(TargetNotFoundError, match="Missing"):
+        wb.set_pivot_refresh_on_load(pivots=["Missing"])
+
+
+def test_targeted_pivot_is_idempotent_when_refresh_is_already_enabled(
+        fixture_copy, tmp_path):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(wb, [("ReadyPivot", "1")], refresh_on_load=True)
+    original = wb._paper_source
+
+    assert wb.set_pivot_refresh_on_load(pivots=["ReadyPivot"]) == [
+        "xl/pivotCache/pivotCacheDefinition1.xml"]
+    receipt = wb.save(tmp_path / "already-enabled.xlsx", receipt=True)
+
+    with zipfile.ZipFile(io.BytesIO(original)) as before, \
+            zipfile.ZipFile(tmp_path / "already-enabled.xlsx") as after:
+        part = "xl/pivotCache/pivotCacheDefinition1.xml"
+        assert after.read(part) == before.read(part)
+    assert not any(effect["kind"] == "pivot_refresh_on_load_enabled"
+                   for effect in receipt.derived_effects)
 
 
 def test_pivot_refresh_requires_preserve(fixture_copy):

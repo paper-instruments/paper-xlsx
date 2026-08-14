@@ -124,6 +124,44 @@ def test_append_failure_restores_partial_row_and_ledger():
     assert after_package.getvalue() == before_package.getvalue()
 
 
+def test_append_past_last_row_refuses_without_consuming_generator():
+    from openpyxl.errors import BoundaryViolationError
+
+    workbook = _preserved_workbook()
+    sheet = workbook["Data"]
+    sheet._current_row = 1048576
+    consumed = []
+
+    def values():
+        consumed.append(True)
+        yield 1
+
+    with pytest.raises(BoundaryViolationError, match="1048577"):
+        sheet.append(values())
+
+    assert consumed == []
+    assert sheet._current_row == 1048576
+    assert (1048577, 1) not in sheet._cells
+
+
+@pytest.mark.parametrize("column", [0, -1, 16385, 1.5])
+def test_append_invalid_numeric_column_rolls_back_partial_dict(column):
+    from openpyxl.errors import BoundaryViolationError
+
+    workbook = _preserved_workbook()
+    sheet = workbook["Data"]
+    before_cells = dict(sheet._cells)
+    before_row = sheet._current_row
+    before_ledger = _ledger_state(workbook)
+
+    with pytest.raises(BoundaryViolationError, match="column keys"):
+        sheet.append({1: "partial", column: "invalid"})
+
+    assert sheet._cells == before_cells
+    assert sheet._current_row == before_row
+    assert _ledger_state(workbook) == before_ledger
+
+
 def test_append_failure_restores_prebuilt_cell_binding():
     from openpyxl.cell import Cell
 

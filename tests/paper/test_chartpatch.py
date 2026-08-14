@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import zipfile
 
 import pytest
 
@@ -12,6 +13,43 @@ from .support.partdiff import part_payloads
 
 
 class TestChartShift:
+
+    def test_known_non_reference_extension_does_not_block_shift(
+            self, fixture_copy):
+        from openpyxl.preserve.chartpatch import patch_chart
+
+        source = fixture_copy("features/lo_authored.xlsx")
+        with zipfile.ZipFile(source) as archive:
+            payload = archive.read("xl/charts/chart1.xml")
+        assert b"c15:showLeaderLines" in payload
+
+        patched, changed, blockers = patch_chart(
+            payload, "Model", "insert_rows", 2, 1)
+
+        assert changed is True
+        assert blockers == []
+        assert b"c15:showLeaderLines" in patched
+        assert b"Model!$B$3" in patched
+
+    def test_unknown_extension_content_blocks_shift(self):
+        from openpyxl.preserve.chartpatch import patch_chart
+
+        payload = (
+            b'<chartSpace xmlns="http://schemas.openxmlformats.org/'
+            b'drawingml/2006/chart"><chart><plotArea><barChart><ser>'
+            b'<val><numRef><f>Model!$B$2</f></numRef></val></ser>'
+            b'</barChart></plotArea></chart><extLst><ext uri="vendor">'
+            b'<v:formula xmlns:v="urn:vendor:opaque">Model!$B$2</v:formula>'
+            b'</ext></extLst></chartSpace>')
+
+        unchanged, changed, blockers = patch_chart(
+            payload, "Model", "insert_rows", 2, 1)
+
+        assert unchanged == payload
+        assert changed is False
+        assert blockers == [
+            "the chart carries unrecognized extension content formula "
+            "in urn:vendor:opaque"]
 
     def test_insert_rows_patches_series_and_anchors(self, fixture_copy, tmp_path):
         src = fixture_copy("features/chart_image.xlsx")

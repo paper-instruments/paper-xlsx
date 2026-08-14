@@ -82,6 +82,10 @@ def _cell_formula_cache_state(payload):
 
 def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
     effects = []
+    image_rels = {
+        request["rels_part"]
+        for request in getattr(ledger, "image_replacements", {}).values()
+    }
     cause = "formula_changed" if getattr(ledger, "formulas_changed", False) \
         else "input_changed"
     if "xl/calcChain.xml" in names_a and "xl/calcChain.xml" not in names_b:
@@ -124,8 +128,10 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
                     "cause": "explicit_request",
                 })
         if name.endswith(".rels"):
+            rel_cause = "image_replaced" if name in image_rels \
+                else "supported_lifecycle_edit"
             effects.append({"kind": "relationship_changed", "part": name,
-                            "cause": "supported_lifecycle_edit"})
+                            "cause": rel_cause})
         elif name == "[Content_Types].xml":
             effects.append({"kind": "content_type_changed", "part": name,
                             "cause": "supported_lifecycle_edit"})

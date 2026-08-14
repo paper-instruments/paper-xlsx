@@ -23,6 +23,18 @@ from .xmlscan import ScanRefusal, _find_tag_end, _scan_name_end, _ATTR_RE
 CHART_NS = b"http://schemas.openxmlformats.org/drawingml/2006/chart"
 XDR_NS = b"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
 
+_CHART_NS_TEXT = CHART_NS.decode("ascii")
+_SAFE_EXTENSION_ELEMENTS = frozenset({
+    # Base chart wrappers carry no worksheet references themselves.
+    (_CHART_NS_TEXT, "ext"),
+    (_CHART_NS_TEXT, "extLst"),
+    (_CHART_NS_TEXT, "pivotOptions"),
+    # This Office 2012 flag controls label rendering only. It is emitted by
+    # LibreOffice and has no range or formula payload.
+    ("http://schemas.microsoft.com/office/drawing/2012/chart",
+     "showLeaderLines"),
+})
+
 
 def _extension_blockers(payload):
     """Return blockers from parsed extension markup, not byte substrings."""
@@ -44,17 +56,20 @@ def _extension_blockers(payload):
             blockers.append("the chart carries an alternate-content block")
         if local == "extLst":
             for descendant in element.iter():
-                if descendant is element or not descendant.tag.startswith("{"):
+                if descendant is element:
                     continue
-                ext_namespace, ext_local = descendant.tag[1:].split("}", 1)
-                if "drawingml/2006/chart" == ext_namespace:
+                if descendant.tag.startswith("{"):
+                    ext_namespace, ext_local = \
+                        descendant.tag[1:].split("}", 1)
+                else:
+                    ext_namespace, ext_local = "", descendant.tag
+                if (ext_namespace, ext_local) in _SAFE_EXTENSION_ELEMENTS:
                     continue
-                if "chart" in ext_namespace.lower() and ext_local not in (
-                        "pivotOptions",):
-                    blockers.append(
-                        "the chart carries extension chart content in {0}"
-                        .format(ext_namespace))
-                    break
+                blockers.append(
+                    "the chart carries unrecognized extension content "
+                    "{0} in {1}".format(
+                        ext_local, ext_namespace or "no namespace"))
+                break
     return sorted(set(blockers))
 
 
@@ -456,7 +471,7 @@ def _cache_span_for_formula(payload, formula_start, formula_end):
 
 
 def plan_property_edits(wb, ws, key, armed, current, original,
-                        part_name=None, allow_composed_formula_baseline=False):
+                        allow_composed_formula_baseline=False):
     """A loaded chart's model drifted since arm: express the drift as byte
     patches on the ORIGINAL part bytes, or refuse naming the first
     property chartpatch cannot express. Expressible:
@@ -601,12 +616,4 @@ def plan_property_edits(wb, ws, key, armed, current, original,
     edits.extend((start, end, b"") for start, end in cache_spans)
     for start, end, replacement in sorted(edits, reverse=True):
         original = original[:start] + replacement + original[end:]
-    if cache_spans:
-        ledger = getattr(wb, "_paper_ledger", None)
-        if ledger is not None:
-            ledger.derived_effects.append({
-                "kind": "chart_cache_removed",
-                "part": part_name,
-                "cause": "chart_repointed",
-            })
     return original
