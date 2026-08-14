@@ -225,9 +225,12 @@ spreadsheet skill.
   image replacement, receipt effects, chart cache removal, rename/hyperlink
   composition, omitted validation defaults, and extension-bearing tables.
 - The local LibreOffice executable aborts even for the untouched smoke fixture.
-  Oracle and independent-loader tests must therefore be rerun in the known-good
-  LibreOffice CI environment; the local abort is not counted as a package pass
-  or failure.
+  The same oracle and independent-loader tier passes in the Linux GitHub
+  Actions environment. The local abort is therefore recorded as a machine
+  limitation, not counted as a package pass or regression.
+- GitHub Actions passes on Windows, Python 3.9--3.13, the stdlib XML backend,
+  the default dependency set, LibreOffice, documentation, and build/install
+  checks for both distributions.
 
 Real-producer fixtures from desktop Excel, LibreOffice, and Google Sheets, plus
 fixed-identity evals for image replacement, structural edits,

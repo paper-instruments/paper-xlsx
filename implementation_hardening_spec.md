@@ -98,8 +98,9 @@ tests passed, 23 skipped, 25 LibreOffice-tier tests were deselected, and 7 were
 expected failures. The isolated LibreOffice tier still invokes a locally
 installed executable that aborts with exit code 134 even for its untouched
 smoke fixture. This is an environment or LibreOffice failure, not evidence
-that those package behaviors pass. The independent-loader and oracle gate must
-be rerun in the known-good LibreOffice CI environment.
+that those package behaviors pass. The independent-loader and oracle gate was
+rerun in the Linux GitHub Actions environment and passed, along with Windows,
+Python 3.9--3.13, stdlib XML, documentation, and distribution-build jobs.
 
 ## Fork inventory and decision
 
