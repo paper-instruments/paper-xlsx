@@ -21,16 +21,10 @@ class TestDriverRules:
         with pytest.raises(OracleUnavailableError):
             oracle.certify(fixture_copy("features/schedule_calc.xlsx"))
 
-    def test_output_path_and_in_place_are_exclusive(self, fixture_copy):
-        with pytest.raises(ValueError, match="not both"):
-            oracle.recalc(fixture_copy("features/schedule.xlsx"),
-                          output_path="/tmp/x.xlsx", in_place=True)
+    def test_in_place_surface_is_removed(self):
+        import inspect
 
-    def test_in_place_requires_a_path(self, fixture_copy):
-        with open(fixture_copy("features/schedule.xlsx"), "rb") as f:
-            data = f.read()
-        with pytest.raises(ValueError, match="path"):
-            oracle.recalc(data, in_place=True)
+        assert "in_place" not in inspect.signature(oracle.recalc).parameters
 
     @pytest.mark.lo_smoke
     def test_original_path_never_reaches_libreoffice(
@@ -76,12 +70,6 @@ class TestRecalc:
         wb = load_workbook(out, data_only=True)
         assert wb["Schedule"]["B12"].value == 6500
         assert wb["Summary"]["B1"].value == 6500
-
-    def test_in_place_replaces_atomically(self, lo, fixture_copy):
-        src = fixture_copy("features/schedule.xlsx")
-        oracle.recalc(src, in_place=True)
-        wb = load_workbook(src, data_only=True)
-        assert wb["Schedule"]["B12"].value == 6500
 
     def test_error_scan_finds_tokens(self, lo, tmp_path):
         wb = Workbook()

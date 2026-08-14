@@ -211,13 +211,6 @@ class TestMiscRefusalsAndCrashes:
         if not len(wb.custom_doc_props):
             pytest.skip("fixture has no custom properties")
 
-    def test_mark_dirty_full_column_range(self, fixture_copy, tmp_path):
-        src = fixture_copy("features/schedule.xlsx")
-        wb = load_workbook(src, preserve=True)
-        wb.mark_dirty("Schedule!A:B")            # was: TypeError
-        led = wb._paper_ledger
-        assert (12, 2) in led.dirty_coordinates(wb["Schedule"])
-
     def test_create_chartsheet_refuses(self, fixture_copy):
         wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"),
                            preserve=True)
@@ -272,8 +265,6 @@ class TestOracleRegressions:
         from openpyxl import oracle
 
         src = fixture_copy("features/macro_stub.xlsm")
-        with pytest.raises(UnsupportedStructureError, match="VBA"):
-            oracle.recalc(src, in_place=True)
         with pytest.raises(UnsupportedStructureError, match="VBA"):
             oracle.recalc(src, output_path=str(tmp_path / "o.xlsx"))
 

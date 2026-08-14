@@ -10,12 +10,6 @@ from collections import Counter
 from openpyxl.errors import UnsupportedStructureError
 
 
-MAX_ENTRIES = 10000
-MAX_PART_BYTES = 256 * 1024 * 1024
-MAX_TOTAL_BYTES = 512 * 1024 * 1024
-RATIO_CAP = 500
-RATIO_FLOOR = 64 * 1024 * 1024
-
 _LOCAL_HEADER = struct.Struct("<4s5H3L2H")
 _LOCAL_SIGNATURE = b"PK\x03\x04"
 _ALLOWED_FLAGS = 0x000E | 0x0800  # deflate options, descriptor, UTF-8 name
@@ -65,29 +59,6 @@ def _check_names(infos, context):
             kind="case-colliding-opc-part",
         )
     return names
-
-
-def _check_declared_limits(infos, context):
-    if len(infos) > MAX_ENTRIES:
-        _refuse(context, "the archive declares {0} entries, past the "
-                "{1}-entry cap.".format(len(infos), MAX_ENTRIES),
-                kind="zip-entry-limit")
-    total = sum(info.file_size for info in infos)
-    if total > MAX_TOTAL_BYTES:
-        _refuse(context, "the archive declares {0} aggregate uncompressed "
-                "bytes, past the {1}-byte cap.".format(
-                    total, MAX_TOTAL_BYTES), kind="zip-size-limit")
-    for info in infos:
-        if info.file_size > MAX_PART_BYTES:
-            _refuse(context, "part {0!r} declares {1} uncompressed bytes, "
-                    "past the {2}-byte part cap.".format(
-                        info.filename, info.file_size, MAX_PART_BYTES),
-                    kind="zip-size-limit", anchor=info.filename)
-        if (info.file_size > RATIO_FLOOR and info.compress_size > 0
-                and info.file_size / info.compress_size > RATIO_CAP):
-            _refuse(context, "part {0!r} declares an inflation ratio past "
-                    "the {1}x cap.".format(info.filename, RATIO_CAP),
-                    kind="zip-ratio-limit", anchor=info.filename)
 
 
 def _read_entry_layout(archive, info, context):
@@ -154,7 +125,7 @@ def _read_entry_layout(archive, info, context):
 def _consume_output(info, output, state, context):
     total, crc = state
     total += len(output)
-    if total > info.file_size or total > MAX_PART_BYTES:
+    if total > info.file_size:
         _refuse(context, "part {0!r} inflates past its declared size."
                 .format(info.filename), anchor=info.filename)
     return total, binascii.crc32(output, crc)
@@ -213,7 +184,6 @@ def validate_archive(archive, *, context="preserve-mode package"):
     """Validate one ZIP before any workbook model is constructed."""
     infos = archive.infolist()
     names = _check_names(infos, context)
-    _check_declared_limits(infos, context)
 
     layouts = []
     original_position = archive.fp.tell()
@@ -231,14 +201,8 @@ def validate_archive(archive, *, context="preserve-mode package"):
                         .format(info.filename), anchor=info.filename)
             previous_end = data_end
 
-        actual_total = 0
         for _start, _end, info, data_start, method in layouts:
-            actual_total += _verify_payload(
-                archive, info, data_start, method, context)
-            if actual_total > MAX_TOTAL_BYTES:
-                _refuse(context, "actual aggregate inflation exceeds the "
-                        "{0}-byte cap.".format(MAX_TOTAL_BYTES),
-                        kind="zip-size-limit")
+            _verify_payload(archive, info, data_start, method, context)
     finally:
         archive.fp.seek(original_position)
     return names
@@ -250,7 +214,7 @@ def validate_package_bytes(data, *, context="workbook package"):
             return validate_archive(archive, context=context)
     except UnsupportedStructureError:
         raise
-    except (zipfile.BadZipFile, LargeZipFile, RuntimeError,
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError,
             NotImplementedError) as exc:
         _refuse(context, "invalid ZIP structure ({0}).".format(exc))
 

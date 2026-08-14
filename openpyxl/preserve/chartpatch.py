@@ -24,6 +24,40 @@ CHART_NS = b"http://schemas.openxmlformats.org/drawingml/2006/chart"
 XDR_NS = b"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
 
 
+def _extension_blockers(payload):
+    """Return blockers from parsed extension markup, not byte substrings."""
+    from xml.etree import ElementTree as ET
+
+    if b"<!DOCTYPE" in payload:
+        return ["the chart carries a document type declaration"]
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        return ["the chart XML is malformed ({0})".format(exc)]
+    blockers = []
+    for element in root.iter():
+        if element.tag.startswith("{"):
+            namespace, local = element.tag[1:].split("}", 1)
+        else:
+            namespace, local = "", element.tag
+        if local == "AlternateContent" and "markup-compatibility" in namespace:
+            blockers.append("the chart carries an alternate-content block")
+        if local == "extLst":
+            for descendant in element.iter():
+                if descendant is element or not descendant.tag.startswith("{"):
+                    continue
+                ext_namespace, ext_local = descendant.tag[1:].split("}", 1)
+                if "drawingml/2006/chart" == ext_namespace:
+                    continue
+                if "chart" in ext_namespace.lower() and ext_local not in (
+                        "pivotOptions",):
+                    blockers.append(
+                        "the chart carries extension chart content in {0}"
+                        .format(ext_namespace))
+                    break
+    return sorted(set(blockers))
+
+
 def _walk_leaf_texts(data):
     """Yield (clark_ns, local, parent_local, text_start, text_end,
     ancestor_path) for every
@@ -126,13 +160,7 @@ def patch_chart(payload, sheet_title, operation, index, amount):
     referencing ``sheet_title`` per the shift."""
     from .rewrite import shift_name_value
 
-    blockers = []
-    for marker, label in ((b"c15:", "c15 filtered-series machinery"),
-                          (b"AlternateContent", "alternate-content blocks"),
-                          (b"extLst", "chart extension lists")):
-        if marker in payload:
-            blockers.append("the chart carries {0}, whose references the "
-                            "patch cannot see".format(label))
+    blockers = _extension_blockers(payload)
     if blockers:
         return payload, False, blockers
 
@@ -282,13 +310,11 @@ def patch_chart_renames(payload, mapping):
                       _escape(new_text[1:].encode("utf-8"))))
     if not hit:
         return None
-    for marker, label in ((b"c15:", "c15 filtered-series machinery"),
-                          (b"AlternateContent", "alternate-content blocks")):
-        if marker in payload:
-            raise UnsupportedStructureError(
-                "renaming sheets: a chart referencing them carries {0}, "
-                "whose references the rename patch cannot see. Nothing "
-                "was written.".format(label))
+    blockers = _extension_blockers(payload)
+    if blockers:
+        raise UnsupportedStructureError(
+            "renaming sheets: {0}. Nothing was written.".format(
+                "; ".join(blockers)))
     from .crosspart import apply_edits
 
     return apply_edits(payload, edits)
@@ -320,13 +346,11 @@ def patch_chart_rename(payload, old_title, new_title):
                       _escape(new_text[1:].encode("utf-8"))))
     if not hit:
         return None
-    for marker, label in ((b"c15:", "c15 filtered-series machinery"),
-                          (b"AlternateContent", "alternate-content blocks")):
-        if marker in payload:
-            raise UnsupportedStructureError(
-                "renaming sheet {0!r}: a chart referencing it carries "
-                "{1}, whose references the rename patch cannot see. "
-                "Nothing was written.".format(old_title, label))
+    blockers = _extension_blockers(payload)
+    if blockers:
+        raise UnsupportedStructureError(
+            "renaming sheet {0!r}: {1}. Nothing was written.".format(
+                old_title, "; ".join(blockers)))
     from .crosspart import apply_edits
 
     return apply_edits(payload, edits)
@@ -401,7 +425,38 @@ def parse_series_range(text):
     return sheet, m.group(3)
 
 
-def plan_property_edits(wb, ws, key, armed, current, original):
+def _cache_span_for_formula(payload, formula_start, formula_end):
+    """Locate the cache sibling owned by the formula's reference node."""
+    opens = list(re.finditer(
+        br"<(?:(?:[A-Za-z_][\w.-]*):)?(?:numRef|strRef)\b[^>]*>",
+        payload[:formula_start]))
+    if not opens:
+        return None
+    opening = opens[-1]
+    local_match = re.match(
+        br"<(?:(?:[A-Za-z_][\w.-]*):)?(numRef|strRef)\b",
+        opening.group(0))
+    closing_re = re.compile(
+        br"</(?:(?:[A-Za-z_][\w.-]*):)?" + local_match.group(1) + br"\s*>")
+    closing = closing_re.search(payload, formula_end)
+    if closing is None:
+        raise ScanRefusal("unterminated chart reference element")
+    region_start, region_end = opening.end(), closing.start()
+    cache = re.search(
+        br"<(?:(?:[A-Za-z_][\w.-]*):)?(?:numCache|strCache)\b[^>]*>.*?"
+        br"</(?:(?:[A-Za-z_][\w.-]*):)?(?:numCache|strCache)\s*>",
+        payload[region_start:region_end], re.S)
+    if cache is None:
+        cache = re.search(
+            br"<(?:(?:[A-Za-z_][\w.-]*):)?(?:numCache|strCache)\b[^>]*/>",
+            payload[region_start:region_end], re.S)
+    if cache is None:
+        return None
+    return region_start + cache.start(), region_start + cache.end()
+
+
+def plan_property_edits(wb, ws, key, armed, current, original,
+                        part_name=None, allow_composed_formula_baseline=False):
     """A loaded chart's model drifted since arm: express the drift as byte
     patches on the ORIGINAL part bytes, or refuse naming the first
     property chartpatch cannot express. Expressible:
@@ -507,6 +562,7 @@ def plan_property_edits(wb, ws, key, armed, current, original):
         return original_group[armed_group.index(i)]
 
     edits = []
+    cache_spans = []
     if f_changes:
         of_groups, af_groups = _groups(original_f), _groups(armed_f)
         for i, (old, new) in f_changes.items():
@@ -517,13 +573,16 @@ def plan_property_edits(wb, ws, key, armed, current, original):
                 matches = _unescape(o_text) == _unescape(old)
             except ScanRefusal as exc:
                 _refuse(str(exc))
-            if not matches:
+            if not matches and not allow_composed_formula_baseline:
                 _refuse("formula reference {0} in the original part "
                         "({1!r}) does not match the model's arm state "
                         "({2!r}) — another edit already rewrote it this "
                         "session; do these edits in separate "
                         "sessions".format(i, o_text, old))
             edits.append((o_start, o_end, _escape(_unescape(new))))
+            cache_span = _cache_span_for_formula(original, o_start, o_end)
+            if cache_span is not None:
+                cache_spans.append(cache_span)
     if t_changes:
         ot_groups, at_groups = _groups(original_t), _groups(armed_t)
         for i, (old, new) in t_changes.items():
@@ -539,6 +598,15 @@ def plan_property_edits(wb, ws, key, armed, current, original):
                         "the model's arm state".format(i))
             edits.append((o_start, o_end, _escape(_unescape(new))))
 
+    edits.extend((start, end, b"") for start, end in cache_spans)
     for start, end, replacement in sorted(edits, reverse=True):
         original = original[:start] + replacement + original[end:]
+    if cache_spans:
+        ledger = getattr(wb, "_paper_ledger", None)
+        if ledger is not None:
+            ledger.derived_effects.append({
+                "kind": "chart_cache_removed",
+                "part": part_name,
+                "cause": "chart_repointed",
+            })
     return original

@@ -5,31 +5,26 @@
 
 import io
 import hashlib
+import re
 import zipfile
 from collections import Counter
 
 from openpyxl.errors import UnsupportedStructureError
 
-from .zipguard import (
-    MAX_ENTRIES as _MAX_ZIP_ENTRIES,
-    MAX_PART_BYTES as _MAX_ZIP_PART,
-    MAX_TOTAL_BYTES as _MAX_ZIP_UNCOMPRESSED,
-)
-
-
 class EditReceipt:
 
     SCHEMA = "edit_receipt"
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, cells_changed, parts_changed, parts_added,
-                 parts_removed, confession, recalc):
+                 parts_removed, confession, recalc, derived_effects=()):
         self.cells_changed = cells_changed    # {part: {ref: kind}}
         self.parts_changed = parts_changed
         self.parts_added = parts_added
         self.parts_removed = parts_removed
         self.confession = confession          # loss-inventory style dicts
         self.recalc = recalc                  # dict or None
+        self.derived_effects = list(derived_effects)
 
     def to_dict(self):
         return {
@@ -42,6 +37,8 @@ class EditReceipt:
             "parts_removed": list(self.parts_removed),
             "confession": list(self.confession),
             "recalc": self.recalc,
+            "derived_effects_version": 1,
+            "derived_effects": list(self.derived_effects),
         }
 
     def __repr__(self):
@@ -68,27 +65,97 @@ def _validated_names(archive):
             "archive contains duplicate ZIP entry names ({0}); receipt "
             "generation refuses because choosing one copy could produce a "
             "false-clean receipt.".format(", ".join(duplicates)))
-    if len(infos) > _MAX_ZIP_ENTRIES:
-        raise UnsupportedStructureError(
-            "archive declares {0} entries, past the {1}-entry cap; refusing "
-            "before inflation.".format(len(infos), _MAX_ZIP_ENTRIES))
-    oversized = next(
-        (info for info in infos if info.file_size > _MAX_ZIP_PART), None)
-    if oversized is not None:
-        raise UnsupportedStructureError(
-            "archive part {0!r} declares {1} uncompressed bytes, past the "
-            "{2}-byte receipt cap; refusing before inflation.".format(
-                oversized.filename, oversized.file_size, _MAX_ZIP_PART))
-    total = sum(info.file_size for info in infos)
-    if total > _MAX_ZIP_UNCOMPRESSED:
-        raise UnsupportedStructureError(
-            "archive declares {0} aggregate uncompressed bytes, past the "
-            "{1}-byte cap; refusing before inflation.".format(
-                total, _MAX_ZIP_UNCOMPRESSED))
     return names
 
 
-def receipt(before, after, *, recalc=None):
+def _cell_formula_cache_state(payload):
+    out = {}
+    for match in re.finditer(
+            br"<c\b([^>]*)\br=(?:\"([A-Za-z]+\d+)\"|'([A-Za-z]+\d+)')"
+            br"([^>]*)>(.*?)</c>", payload, re.S):
+        ref = (match.group(2) or match.group(3)).decode("ascii")
+        body = match.group(5)
+        out[ref] = (bool(re.search(br"<(?:\w+:)?f\b", body)),
+                    bool(re.search(br"<(?:\w+:)?v\b", body)))
+    return out
+
+
+def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
+    effects = []
+    cause = "formula_changed" if getattr(ledger, "formulas_changed", False) \
+        else "input_changed"
+    if "xl/calcChain.xml" in names_a and "xl/calcChain.xml" not in names_b:
+        effects.append({"kind": "calc_chain_removed",
+                        "part": "xl/calcChain.xml", "cause": cause})
+    for name in sorted(names_a & names_b):
+        before = za.read(name)
+        after = zb.read(name)
+        if before == after:
+            continue
+        if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+            old = _cell_formula_cache_state(before)
+            new = _cell_formula_cache_state(after)
+            for ref in sorted(set(old) & set(new)):
+                if old[ref] == (True, True) and new[ref] == (True, False):
+                    effects.append({
+                        "kind": "formula_cache_removed", "part": name,
+                        "cell": ref, "cause": cause,
+                    })
+        elif name.startswith("xl/charts/") and name.endswith(".xml"):
+            old_count = len(re.findall(
+                br"<(?:(?:\w+):)?(?:numCache|strCache)\b", before))
+            new_count = len(re.findall(
+                br"<(?:(?:\w+):)?(?:numCache|strCache)\b", after))
+            for _ in range(max(0, old_count - new_count)):
+                effects.append({
+                    "kind": "chart_cache_removed", "part": name,
+                    "cause": "chart_repointed",
+                })
+        elif name.startswith("xl/pivotCache/pivotCacheDefinition"):
+            old_enabled = re.search(
+                br"<pivotCacheDefinition\b[^>]*\brefreshOnLoad=(?:\"1\"|'1')",
+                before)
+            new_enabled = re.search(
+                br"<pivotCacheDefinition\b[^>]*\brefreshOnLoad=(?:\"1\"|'1')",
+                after)
+            if not old_enabled and new_enabled:
+                effects.append({
+                    "kind": "pivot_refresh_on_load_enabled", "part": name,
+                    "cause": "explicit_request",
+                })
+        if name.endswith(".rels"):
+            effects.append({"kind": "relationship_changed", "part": name,
+                            "cause": "supported_lifecycle_edit"})
+        elif name == "[Content_Types].xml":
+            effects.append({"kind": "content_type_changed", "part": name,
+                            "cause": "supported_lifecycle_edit"})
+    for name in sorted(names_b - names_a):
+        if name.endswith(".rels"):
+            effects.append({"kind": "relationship_added", "part": name,
+                            "cause": "supported_lifecycle_edit"})
+    # calcPr is workbook-level recalculation metadata. Resolve the workbook
+    # part rather than assuming xl/workbook.xml.
+    try:
+        from .saver import _package_info
+
+        workbook_part, _sheets = _package_info(za)
+        if workbook_part in names_b \
+                and za.read(workbook_part) != zb.read(workbook_part):
+            before_calc = re.search(
+                br"<(?:(?:\w+):)?calcPr\b[^>]*/?>", za.read(workbook_part))
+            after_calc = re.search(
+                br"<(?:(?:\w+):)?calcPr\b[^>]*/?>", zb.read(workbook_part))
+            if before_calc != after_calc:
+                effects.append({
+                    "kind": "recalculation_metadata_changed",
+                    "part": workbook_part, "cause": cause,
+                })
+    except (KeyError, ValueError):
+        pass
+    return effects
+
+
+def receipt(before, after, *, recalc=None, _ledger=None):
     """Build an :class:`EditReceipt` from two package states (paths,
     bytes, or binary file-likes). ``recalc``: an oracle result
     (RecalcResult/CertificationResult/Evaluation/WriteBackResult) whose
@@ -131,6 +198,8 @@ def receipt(before, after, *, recalc=None):
                             refs[ref] = "changed"
                 if refs:
                     cells_changed[name] = refs
+        derived_effects = _derived_effects(
+            za, zb, names_a, names_b, ledger=_ledger)
 
     from .inventory import scan_archive
 
@@ -166,4 +235,5 @@ def receipt(before, after, *, recalc=None):
                 "different workbook (artifact SHA-256 does not match the "
                 "receipt output)")
     return EditReceipt(cells_changed, parts_changed, parts_added,
-                       parts_removed, confession, recalc_dict)
+                       parts_removed, confession, recalc_dict,
+                       derived_effects)

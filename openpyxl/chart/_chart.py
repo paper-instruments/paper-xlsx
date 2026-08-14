@@ -217,9 +217,9 @@ class ChartBase(Serialisable):
                 "series {0} has no numeric reference to repoint".format(
                     series_index))
         target.numRef.f = new_range
-        # the cached values are now stale, but they stay: Excel re-reads
-        # series from cells when it renders, and dropping the cache would
-        # be whole-element surgery under preserve mode
+        # Preserve save removes the corresponding serialized cache. The
+        # in-memory cache remains available only as arm-state evidence for
+        # the byte planner; it is never emitted beside the new range.
 
 
     @property

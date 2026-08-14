@@ -1,6 +1,18 @@
 Unreleased
 ==========
 
+* Replace whole-ledger and whole-sheet mutation snapshots with local rollback
+  journals for cell binding and ``Worksheet.append()``.
+* Add atomic ``Worksheet.append_table_row()``, isolated
+  ``Worksheet.replace_image()``, and explicitly scoped pivot refresh requests.
+* Compose structural and chart edits, remove stale chart caches, and report
+  safety-derived changes in version 2 edit receipts.
+* Make ``validate()`` run the save planner without assembling an archive.
+* Restore ``preserve=False`` compatibility and remove Paper-defined archive
+  eligibility caps while retaining ZIP integrity validation.
+* Remove heuristic, delivery-convenience, raw-part, workbook-evaluation, and
+  formula-lint APIs that do not have a closed preservation contract.
+
 
 paper-xlsx 0.1.3 (2026-07-14)
 ===============================
@@ -8,8 +20,7 @@ paper-xlsx 0.1.3 (2026-07-14)
 * Invalidate retained formula caches and request automatic full recalculation
   when formula-affecting edits could otherwise leave plausible stale values.
 * Remove the package-wide workbook manifest API in favor of targeted inspection
-  through standard workbook objects, search, locate, validation, findings, and
-  optional model-map analysis.
+  through standard workbook objects and validation.
 * Enable preserve mode by default for editable OOXML workbooks and remove the
   process-wide ``PAPER_PRESERVE_DEFAULT`` environment switch. Use
   ``preserve=False`` for an explicit stock openpyxl round trip.

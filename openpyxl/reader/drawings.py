@@ -72,5 +72,13 @@ def find_images(archive, path):
                 warn(msg)
                 continue
             image.anchor = rel.anchor
+            image._paper_part = dep.target
+            image._paper_drawing_part = path
+            image._paper_rel_id = rel.embed
+            frame = rel.anchor.pic or (
+                rel.anchor.groupShape and rel.anchor.groupShape.pic)
+            image._paper_name = getattr(
+                getattr(getattr(frame, "nvPicPr", None), "cNvPr", None),
+                "name", None)
             images.append(image)
     return charts, images

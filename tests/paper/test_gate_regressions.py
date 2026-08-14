@@ -217,8 +217,9 @@ class TestBatch1InputHonestyGaps:
             _w.simplefilter("ignore")
             flat = load_workbook(rich)
             modeled = load_workbook(rich, rich_text=True)
-        assert "rich-text" in flat._paper_loss_inventory.kinds()
-        assert "rich-text" not in modeled._paper_loss_inventory.kinds()
+        # Stock loading no longer pays for a Paper-only loss inventory.
+        assert not hasattr(flat, "_paper_loss_inventory")
+        assert not hasattr(modeled, "_paper_loss_inventory")
 
 
 class TestBatch1RemapAndCertifyGaps:
@@ -321,31 +322,6 @@ class TestBatch2EngineGaps:
         assert not ws2.tables
         assert ws2["D1"].hyperlink.target == "https://example.org/x"
 
-    def test_replace_part_conflicts_refuse(self, fixture_copy, tmp_path):
-        from openpyxl.errors import RelationshipPolicyError
-        from openpyxl.errors import UnsupportedStructureError
-        from openpyxl.packaging.custom import StringProperty
-
-        # table parts joined the managed set: raw swaps refuse at CALL time
-        src = fixture_copy("features/tables.xlsx")
-        wb = load_workbook(src, preserve=True)
-        with pytest.raises(RelationshipPolicyError, match="managed"):
-            wb.replace_part("xl/tables/table1.xml", b"<table/>")
-
-        # a swap of an unmanaged part conflicting with a lifecycle removal
-        # refuses at SAVE (the payload must never vanish silently)
-        src2 = fixture_copy("minimal/minimal_clean.xlsx")
-        wb2 = load_workbook(src2, preserve=True)
-        wb2.custom_doc_props.append(StringProperty(name="Tmp", value="x"))
-        staged = str(tmp_path / "staged.xlsx")
-        wb2.save(staged)
-        wb3 = load_workbook(staged, preserve=True)
-        wb3.replace_part("docProps/custom.xml", b"<Properties/>")
-        del wb3.custom_doc_props["Tmp"]
-        with pytest.raises(UnsupportedStructureError, match="conflicts"):
-            wb3.save(str(tmp_path / "o.xlsx"))
-
-
 class TestBatch2TableGaps:
 
     def _with_table_extlst(self, fixture_copy, tmp_path):
@@ -364,19 +340,23 @@ class TestBatch2TableGaps:
                 zout.writestr(name, payload)
         return out
 
-    def test_table_with_extlst_refuses_mutation(self, fixture_copy,
-                                                tmp_path):
-        # to_tree drops extLst (alt text!) — mutation must refuse, never
-        # silently strip accessibility metadata
-        from openpyxl.errors import UnsupportedStructureError
-        from openpyxl.preserve.tables import append_row
-
+    def test_table_with_extlst_preserves_extension_on_local_mutation(
+            self, fixture_copy, tmp_path):
+        # The lexical table patch changes only modeled values, so an
+        # extension child that openpyxl does not model survives verbatim.
         src = self._with_table_extlst(fixture_copy, tmp_path)
         wb = load_workbook(src, preserve=True)
         ws = wb.worksheets[0]
-        append_row(ws, "RegionTable", ["West2", 99])
-        with pytest.raises(UnsupportedStructureError, match="extension"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        ws.append_table_row("RegionTable", ["West2", 99])
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        with zipfile.ZipFile(src) as before, zipfile.ZipFile(out) as after:
+            old = before.read("xl/tables/table1.xml")
+            new = after.read("xl/tables/table1.xml")
+        extension = old[old.index(b"<extLst"):old.index(b"</extLst>") + 9]
+        assert extension in new
+        assert b'altText="alt"' in new
+        assert b'ref="A1:B6"' in new
 
     def test_sibling_basename_survives_removal(self, fixture_copy,
                                                tmp_path):
@@ -452,7 +432,6 @@ class TestBatch2TableGaps:
 
     def test_append_row_refusal_is_atomic(self, fixture_copy, tmp_path):
         from openpyxl.errors import UnsupportedStructureError
-        from openpyxl.preserve.tables import append_row
         from openpyxl.worksheet.table import TableFormula
 
         src = fixture_copy("features/tables.xlsx")
@@ -463,7 +442,7 @@ class TestBatch2TableGaps:
         tbl.tableColumns[1].calculatedColumnFormula.attr_text = "1*2"
         cells_before = dict(ws._cells)
         with pytest.raises(UnsupportedStructureError, match="calculated"):
-            append_row(ws, "RegionTable", ["X", 42])
+            ws.append_table_row("RegionTable", ["X", 42])
         assert dict(ws._cells) == cells_before      # nothing mutated
 
     def test_two_sheets_two_new_tables_one_save(self, fixture_copy,
@@ -1089,13 +1068,15 @@ class TestBatch4GateMajors:
                      if n.startswith("xl/charts/chart"))
         assert b"Edited" in chart
 
-        # the RELATED combination still refuses (double-shift hazard)
+        # Related chart and structural edits compose in the same part plan.
         wb2 = load_workbook(src, preserve=True)
         wb2["Data"]._charts[0].title = "Edited"
         wb2["Data"].insert_rows(1)
-        with pytest.raises(UnsupportedStructureError,
-                           match="separate sessions"):
-            wb2.save(str(tmp_path / "o2.xlsx"))
+        out2 = str(tmp_path / "o2.xlsx")
+        wb2.save(out2)
+        chart2 = next(p for n, p in part_payloads(out2).items()
+                      if n.startswith("xl/charts/chart"))
+        assert b"Edited" in chart2
 
     def test_charref_in_original_title_refuses_typed(self, tmp_path):
         src = _two_sheet_chart_fixture(tmp_path)
@@ -1112,66 +1093,6 @@ class TestBatch4GateMajors:
         wb["Data"]._charts[0].title = "New"
         with pytest.raises(UnsupportedStructureError, match="character"):
             wb.save(str(tmp_path / "o.xlsx"))
-
-
-class TestBatch5LintGaps:
-
-    def test_quoted_external_refs_never_judged(self, fixture_copy):
-        # the quoted storage form of external-workbook references was
-        # flagged unknown-sheet; refuse mode blocked legitimate binds
-        #
-        from openpyxl.formula.lint import lint_formula
-
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        for f in ("='[Budget.xlsx]Sheet One'!A1", "='[1]Extern'!A1",
-                  r"='C:\path\[Budget.xlsx]Sheet1'!A1"):
-            assert lint_formula(f, workbook=wb) == []
-
-    def test_in_session_table_columns_unknowable(self, fixture_copy):
-        # in-session tables have no tableColumns until save: every
-        # structured ref against them was falsely refused
-        from openpyxl.formula.lint import lint_formula
-        from openpyxl.worksheet.table import Table
-
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        ws = wb["Summary"]
-        ws["E1"] = "Hdr"
-        ws["E2"] = 5
-        ws.add_table(Table(displayName="TNew", ref="E1:E2"))
-        assert lint_formula("=SUM(TNew[Hdr])", workbook=wb) == []
-
-    def test_escaped_column_names_unknowable(self, fixture_copy):
-        # Excel's ' escape in column specs needs a full parser: such
-        # specs are unknowable, never unknown
-        from openpyxl.formula.lint import lint_formula
-
-        wb = load_workbook(fixture_copy("features/tables.xlsx"))
-        table_name = next(iter(next(
-            ws for ws in wb.worksheets if ws.tables).tables))
-        f = "=SUM({0}[Col'[1']])".format(table_name)
-        assert lint_formula(f, workbook=wb) == []
-
-    def test_modern_functions_and_eta_refs_lint_clean(self, fixture_copy):
-        from openpyxl.formula.lint import lint_formula
-
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        assert lint_formula('=REGEXTEST(A1,"x")') == []
-        assert lint_formula("=GROUPBY(A1:A2,B1:B2,SUM)") == []
-        assert lint_formula("=SUM(_xlfn.ANCHORARRAY(A1))") == []
-        assert lint_formula("=REDUCE(0,A1:A3,SUM)", workbook=wb) == []
-
-    def test_array_formula_binds_are_linted(self, fixture_copy):
-        # ArrayFormula objects carried their text past the chokepoint:
-        # garbage landed in the file under refuse mode
-        from openpyxl.worksheet.formula import ArrayFormula
-
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           preserve=True)
-        wb.formula_lint = "refuse"
-        ws = wb["Summary"]
-        with pytest.raises(UnsupportedStructureError, match="pre-flight"):
-            ws["D5"] = ArrayFormula("D5:D6", "=SUMM(Nowhere!A1")
-        assert ws["D5"].value is None                 # atomic
 
 
 class TestBatch5OracleGaps:
@@ -1267,52 +1188,6 @@ class TestBatch5OracleGaps:
 
 class TestBatch6LocateGaps:
 
-    def test_merged_label_interior_never_a_target(self):
-        # locate returned the unwritable MergedCell interior of the
-        # label's OWN merge as "the value"
-        wb = Workbook()
-        ws = wb.active
-        ws["A1"] = "Growth rate"
-        ws.merge_cells("A1:B1")
-        ws["C1"] = 0.05
-        assert ws.locate("Growth rate").coordinate == "C1"
-
-    def test_adjacent_string_with_competitor_is_ambiguous(self):
-        # the walk silently jumped over a string (a text value, a cached
-        # formula string, or a number-stored-as-text) to a farther cell:
-        # competition now refuses typed
-        from openpyxl.errors import AmbiguousTargetError
-
-        wb = Workbook()
-        ws = wb.active
-        ws["A1"] = "Status"
-        ws["B1"] = "pending"
-        ws["C1"] = 42
-        with pytest.raises(AmbiguousTargetError) as exc:
-            ws.locate("Status")
-        assert exc.value.kind == "ambiguous-value-cell"
-        assert set(exc.value.options) == {"Sheet!B1", "Sheet!C1"}
-        # a lone adjacent string IS the value (text values are real)
-        wb2 = Workbook()
-        ws2 = wb2.active
-        ws2["A1"] = "Status"
-        ws2["B1"] = "pending"
-        assert ws2.locate("Status").value == "pending"
-
-    def test_error_cell_is_a_value(self):
-        wb = Workbook()
-        ws = wb.active
-        ws["A1"] = "Check"
-        ws["B1"] = "#DIV/0!"
-        ws["C1"] = 1
-        assert ws.locate("Check").value == "#DIV/0!"
-
-    def test_prefer_validated_first(self):
-        wb = Workbook()
-        wb.active["A1"] = "L"
-        with pytest.raises(ValueError, match="prefer"):
-            wb.active.locate("Anything", prefer="left")
-
     def test_allowed_values_whole_column_and_reversed(self):
         from openpyxl.worksheet.datavalidation import DataValidation
 
@@ -1388,169 +1263,3 @@ class TestBatch6InstrumentGaps:
         hits = wb.search("SUM")
         assert [h["address"] for h in hits] == ["Sheet!B1"]
         assert wb.search(r"0x[0-9a-f]+", regex=True) == []
-
-    def test_perception_verbs_guard_readonly_writeonly(self, fixture_copy):
-        from openpyxl.preserve import findings, scan_errors
-
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           read_only=True)
-        for call in (lambda: wb.search("x"), lambda: wb.model_map(),
-                     lambda: scan_errors(wb), lambda: findings(wb)):
-            with pytest.raises(ValueError, match="materialized"):
-                call()
-        wo = Workbook(write_only=True)
-        ws = wo.create_sheet()
-        ws.append(["Growth rate"])
-        with pytest.raises(ValueError, match="materialized"):
-            wo.search("Growth")
-
-    def test_model_map_sees_cross_sheet_inputs(self):
-        wb = Workbook()
-        data = wb.active
-        data.title = "Data"
-        data["B1"] = 7                        # referenced from Calc
-        calc = wb.create_sheet("Calc")
-        calc["A1"] = "=Data!B1*2"
-        mm = wb.model_map()
-        assert "B1" in mm.sheets["Data"]["inputs"]
-        assert mm.inputs("Data") == ["B1"]
-
-    def test_merged_hazard_fires_from_preserved_bytes(self, fixture_copy,
-                                                      tmp_path):
-        # the model discards shadowed interior values at load, so the
-        # detector could never fire: byte-level view now
-        from openpyxl.preserve import findings
-
-        src = fixture_copy("features/merged.xlsx")
-        crafted = str(tmp_path / "shadow.xlsx")
-        # plant a shadowed value INSIDE the first merge
-        wb0 = load_workbook(src)
-        rng = next(iter(wb0.active.merged_cells.ranges))
-        interior = "{0}{1}".format(
-            chr(ord("A") + rng.min_col), rng.min_row) \
-            if rng.max_col > rng.min_col else "{0}{1}".format(
-                chr(ord("A") + rng.min_col - 1), rng.min_row + 1)
-        with zipfile.ZipFile(src) as zin, \
-                zipfile.ZipFile(crafted, "w") as zout:
-            for name in zin.namelist():
-                payload = zin.read(name)
-                if name.startswith("xl/worksheets/sheet1"):
-                    payload = payload.replace(
-                        b"</sheetData>",
-                        '<row r="{0}"><c r="{1}"><v>777</v></c></row>'
-                        .format(rng.min_row if rng.max_col > rng.min_col
-                                else rng.min_row + 1,
-                                interior).encode()
-                        + b"</sheetData>", 1)
-                zout.writestr(name, payload)
-        wb = load_workbook(crafted, preserve=True)
-        kinds = {f.kind for f in findings(wb)}
-        assert "merged-hazard" in kinds
-
-
-class TestBatch7DeliveryGaps:
-
-    def test_scrub_preserved_comment_is_honest_and_saveable(
-            self, fixture_copy, tmp_path):
-        # scrub nulled a PRESERVED comment, reported it "removed", and
-        # bricked the save: it must skip preserved
-        # machinery, report it truthfully, and stay saveable
-        from openpyxl.comments import Comment
-
-        src = fixture_copy("features/schedule.xlsx")
-        wb0 = load_workbook(src)
-        wb0["Schedule"]["A2"].comment = Comment("preserved", "auth")
-        wb0.save(src)
-        wb = load_workbook(src, preserve=True)
-        report = wb.scrub()
-        assert not any("comment at" in r for r in report["removed"])
-        assert any("preserved comment machinery" in s
-                   for s in report["skipped"])
-        assert wb["Schedule"]["A2"].comment is not None   # not nulled
-        out = str(tmp_path / "o.xlsx")
-        wb.save(out)                                      # still saveable
-        assert load_workbook(out)["Schedule"]["A2"].comment is not None
-
-    def test_scrub_removes_session_comment_on_clean_sheet(self,
-                                                          fixture_copy):
-        from openpyxl.comments import Comment
-
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           preserve=True)
-        wb["Summary"]["A9"].comment = Comment("session", "me")
-        report = wb.scrub(remove=("comments",))
-        assert any("Summary!A9" in r for r in report["removed"])
-
-    def test_protect_for_delivery_actively_locks_non_inputs(self,
-                                                            tmp_path):
-        # relying on the OOXML default left author-unlocked outputs
-        # editable under a "protected" sheet
-        from openpyxl.styles import Protection
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Model"
-        ws["A1"] = 10
-        ws["A2"] = 20
-        ws["B1"] = "=A1+A2"
-        ws["C1"] = "=B1*2"
-        for c in ("A1", "A2", "B1", "C1"):
-            ws[c].protection = Protection(locked=False)
-        src = str(tmp_path / "src.xlsx")
-        wb.save(src)
-        wb = load_workbook(src, preserve=True)
-        report = wb.protect_for_delivery()
-        assert report["locked_cells"] >= 2
-        out = str(tmp_path / "o.xlsx")
-        wb.save(out)
-        r = load_workbook(out)["Model"]
-        assert r["C1"].protection.locked is True     # output locked
-        assert r["B1"].protection.locked is True     # calculation locked
-        assert r["A1"].protection.locked is False    # input stays open
-
-    def test_protection_edits_preserve_hidden_flag(self, tmp_path):
-        # apply_profile/protect built a fresh Protection, dropping hidden:
-        # the hidden bit must survive a locked-only change
-        from openpyxl.preserve import apply_profile
-        from openpyxl.styles import Protection
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "M"
-        ws["A1"] = 10
-        ws["A2"] = 20
-        ws["B1"] = "=A1+A2"
-        ws["A1"].protection = Protection(locked=True, hidden=True)
-        src = str(tmp_path / "s.xlsx")
-        wb.save(src)
-        wb = load_workbook(src, preserve=True)
-        apply_profile(wb["M"], {"inputs": {"locked": False}})
-        assert wb["M"]["A1"].protection.hidden is True
-
-    def test_set_input_range_name_refuses_typed(self, fixture_copy):
-        from openpyxl.errors import AmbiguousTargetError
-        from openpyxl.workbook.defined_name import DefinedName
-
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           preserve=True)
-        wb.defined_names["Rng"] = DefinedName(
-            "Rng", attr_text="Schedule!$B$2:$B$4")
-        with pytest.raises(AmbiguousTargetError, match="RANGE"):
-            wb.set_input("Rng", 5)
-
-    def test_set_input_merged_interior_refuses_typed(self, fixture_copy):
-        from openpyxl.utils import get_column_letter
-        from openpyxl.workbook.defined_name import DefinedName
-
-        wb = load_workbook(fixture_copy("features/merged.xlsx"),
-                           preserve=True)
-        ws = next(w for w in wb.worksheets if w.merged_cells.ranges)
-        rng = next(iter(ws.merged_cells.ranges))
-        if rng.max_col <= rng.min_col:
-            pytest.skip("fixture merge is single-column")
-        interior = "'{0}'!${1}${2}".format(
-            ws.title, get_column_letter(rng.min_col + 1), rng.min_row)
-        wb.defined_names["Int"] = DefinedName("Int", attr_text=interior)
-        with pytest.raises(UnsupportedStructureError,
-                           match="merged range"):
-            wb.set_input("Int", 5)

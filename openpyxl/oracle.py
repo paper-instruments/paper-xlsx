@@ -334,23 +334,15 @@ class RecalcResult:
             self.status, len(self.errors))
 
 
-def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
+def recalc(source, *, output_path=None, timeout=120.0):
     """Recalculate every cell with LibreOffice and scan for error tokens.
 
-    ``source``: path, bytes, or binary file-like. The source is NEVER
-    handed to LibreOffice or modified — unless ``in_place=True``, in which
-    case the recalculated bytes replace the source path atomically after a
-    successful run. ``output_path`` writes them elsewhere instead. At most
-    one of the two may be given.
+    ``source`` is never handed to LibreOffice or modified. ``output_path``
+    may receive a separate recalculated candidate.
     """
-    if output_path is not None and in_place:
-        raise ValueError("pass either output_path or in_place=True, not both")
-    if in_place and not isinstance(source, (str, os.PathLike)):
-        raise ValueError("in_place=True requires a filesystem path source")
-
     data, source_identity = _read_source_with_custody(source)
 
-    destination = source if in_place else output_path
+    destination = output_path
     if destination is not None and os.path.splitext(
             os.fspath(destination))[1].lower() in (".xltx", ".xltm"):
         from openpyxl.errors import UnsupportedStructureError
@@ -363,10 +355,10 @@ def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
     if destination is not None:
         from openpyxl.preserve import zipio
 
-        expected_identity = source_identity if in_place else \
-            zipio.path_identity(output_path, allow_missing=True)
+        expected_identity = zipio.path_identity(output_path,
+                                                allow_missing=True)
 
-    if output_path is not None or in_place:
+    if output_path is not None:
         # LibreOffice converts to plain xlsx: writing that output over a
         # macro workbook would strip the entire VBA project silently
         with zipfile.ZipFile(io.BytesIO(data)) as z:
@@ -376,7 +368,7 @@ def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
                 raise UnsupportedStructureError(
                     "recalc output for a macro-enabled workbook would strip "
                     "its VBA project (LibreOffice converts to plain .xlsx). "
-                    "Run recalc() without output_path/in_place for the "
+                    "Run recalc() without output_path for the "
                     "error scan, or use certify() for value checking. "
                     "Nothing was written.")
     recalculated = _recalculate_bytes(data, timeout)
@@ -411,13 +403,6 @@ def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
         zipio.deliver(
             recalculated, output_path, expected_identity=expected_identity,
             precommit=validate_source, postcommit=validate_source)
-    elif in_place:
-        from openpyxl.preserve import zipio
-        zipio.deliver(
-            recalculated, os.fspath(source),
-            expected_identity=expected_identity,
-            precommit=validate_source)
-
     return RecalcResult(cells_scanned, formula_cells, errors,
                         _artifact_sha256(recalculated))
 

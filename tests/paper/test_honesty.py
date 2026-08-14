@@ -9,11 +9,7 @@ import zipfile
 import pytest
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.errors import (
-    LossySaveWarning,
-    PaperRefusal,
-    UnsupportedStructureError,
-)
+from openpyxl.errors import PaperRefusal, UnsupportedStructureError
 from openpyxl.utils.exceptions import InvalidFileException
 
 from .support.partdiff import part_payloads
@@ -52,11 +48,15 @@ class TestDataOnlyTrap:
         wb.save(out, allow_formula_loss=True)
         assert diff_package(src, out).clean
 
-    def test_stock_data_only_save_warns(self, fixture_copy, tmp_path):
+    def test_stock_data_only_save_emits_no_paper_warning(
+            self, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule_calc.xlsx")
         wb = load_workbook(src, data_only=True, preserve=False)
-        with pytest.warns(LossySaveWarning, match="PERMANENTLY replaces"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             wb.save(str(tmp_path / "o.xlsx"))
+        assert not [w for w in caught
+                    if w.message.__class__.__module__ == "openpyxl.errors"]
 
     def test_stock_data_only_warning_silenced_by_override(
             self, fixture_copy, tmp_path):
@@ -66,8 +66,7 @@ class TestDataOnlyTrap:
             warnings.simplefilter("always")
             wb.save(str(tmp_path / "o.xlsx"), allow_formula_loss=True)
         assert not [w for w in caught
-                    if isinstance(w.message, LossySaveWarning)
-                    and "PERMANENTLY" in str(w.message)]
+                    if w.message.__class__.__module__ == "openpyxl.errors"]
 
 
 class TestRecalcOnLoad:
@@ -304,10 +303,8 @@ class TestFormatRefusals:
             load_workbook(fixture_copy("legacy/binary.xlsb"))
 
 
-class TestLossInventoryCompleteness:
-    """The damage classes the v0 scan provably missed —
-    each was verified silently damaged by a stock save with zero warnings
-    in the post-v0 review."""
+class TestUnmodeledContentPreservation:
+    """Preserve mode keeps content outside the stock object model."""
 
     def _surgical(self, fixture_copy, tmp_path):
         import zipfile
@@ -337,35 +334,6 @@ class TestLossInventoryCompleteness:
             zout.writestr("xl/threadedComments/threadedComment1.xml",
                           b'<?xml version="1.0"?><ThreadedComments/>')
         return out
-
-    def test_previously_missed_classes_are_inventoried(
-            self, fixture_copy, tmp_path):
-        src = self._surgical(fixture_copy, tmp_path)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            wb = load_workbook(src)
-        kinds = wb._paper_loss_inventory.kinds()
-        assert "rich-text" in kinds
-        assert "workbook-content" in kinds       # fileSharing
-        assert "worksheet-content" in kinds      # protectedRanges
-        assert "threaded-comments" in kinds
-        details = " ".join(l["detail"]
-                           for l in wb._paper_loss_inventory.losses)
-        assert "fileSharing" in details
-        assert "protected ranges" in details
-
-    def test_chart_auxiliary_parts_are_inventoried(self, fixture_copy):
-        # colors1.xml/style1.xml: the v0 endswith("colors.xml") never
-        # matched real producers' numbered names (dead code, verified —
-        # the stock save drops both parts)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            wb = load_workbook(
-                fixture_copy("features/lo_authored.xlsx"))
-        aux = [l["location"] for l in wb._paper_loss_inventory.losses
-               if l["kind"] == "chart-auxiliary"]
-        assert "xl/charts/colors1.xml" in aux
-        assert "xl/charts/style1.xml" in aux
 
     def test_preserve_keeps_every_missed_class_verbatim(
             self, fixture_copy, tmp_path):

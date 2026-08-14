@@ -102,32 +102,6 @@ class TestStylesPartCreation:
         assert wb2["Sheet1"]["B2"].value == 42
 
 
-class TestReplacePart:
-
-    def test_media_swap_lands_and_guards_hold(self, fixture_copy, tmp_path):
-        src = fixture_copy("features/chart_image.xlsx")
-        wb = load_workbook(src, preserve=True)
-        new_png = part_payloads(src)["xl/media/image1.png"] + b"\x00"
-        wb.replace_part("xl/media/image1.png", new_png)
-        out = str(tmp_path / "o.xlsx")
-        wb.save(out)
-        assert part_payloads(out)["xl/media/image1.png"] == new_png
-
-        wb2 = load_workbook(src, preserve=True)
-        with pytest.raises(TargetNotFoundError):
-            wb2.replace_part("xl/media/nope.png", b"x")
-        with pytest.raises(RelationshipPolicyError, match="managed"):
-            wb2.replace_part("xl/workbook.xml", b"x")
-        with pytest.raises(RelationshipPolicyError, match="managed"):
-            wb2.replace_part("xl/worksheets/sheet1.xml", b"x")
-
-    def test_replace_part_meaningless_on_stock(self, fixture_copy):
-        wb = load_workbook(
-            fixture_copy("features/chart_image.xlsx"), preserve=False)
-        with pytest.raises(ValueError, match="preserve"):
-            wb.replace_part("xl/media/image1.png", b"x")
-
-
 class TestEnginePrimitive:
 
     def test_add_part_refuses_existing_names(self):
@@ -212,9 +186,7 @@ class TestTableLifecycle:
 
         wb2 = load_workbook(staged, preserve=True)
         ws2 = wb2.worksheets[0]
-        from openpyxl.preserve.tables import append_row
-
-        append_row(ws2, "RegionTable", ["Central", 60])
+        ws2.append_table_row("RegionTable", ["Central", 60])
         out = str(tmp_path / "o.xlsx")
         wb2.save(out)
         wb3 = load_workbook(out)
@@ -226,14 +198,12 @@ class TestTableLifecycle:
 
     def test_append_refuses_content_below(self, fixture_copy, tmp_path):
         from openpyxl.errors import UnsupportedStructureError
-        from openpyxl.preserve.tables import append_row
-
         src = fixture_copy("features/tables.xlsx")
         wb = load_workbook(src, preserve=True)
         ws = wb.worksheets[0]
         ws["A8"] = "in the way"
         with pytest.raises(UnsupportedStructureError, match="below"):
-            append_row(ws, "RegionTable", ["X", 1])
+            ws.append_table_row("RegionTable", ["X", 1])
 
 
 class TestCommentCreation:

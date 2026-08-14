@@ -7,11 +7,6 @@ from collections import Counter
 from xml.etree import ElementTree as ET
 
 from openpyxl.errors import UnsupportedStructureError
-from openpyxl.preserve.zipguard import (
-    MAX_ENTRIES as _MAX_ZIP_ENTRIES,
-    MAX_PART_BYTES as _MAX_ZIP_PART,
-    MAX_TOTAL_BYTES as _MAX_ZIP_UNCOMPRESSED,
-)
 
 
 _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
@@ -177,24 +172,6 @@ def _payloads(source):
                 "archive contains duplicate ZIP entry names ({0}); package "
                 "diff refuses because choosing one copy could produce a "
                 "false-clean result.".format(", ".join(duplicates)))
-        if len(infos) > _MAX_ZIP_ENTRIES:
-            raise UnsupportedStructureError(
-                "archive declares {0} entries, past the {1}-entry cap; "
-                "refusing before inflation.".format(len(infos),
-                                                     _MAX_ZIP_ENTRIES))
-        oversized = next(
-            (info for info in infos if info.file_size > _MAX_ZIP_PART), None)
-        if oversized is not None:
-            raise UnsupportedStructureError(
-                "archive part {0!r} declares {1} uncompressed bytes, past "
-                "the {2}-byte diff cap; refusing before inflation.".format(
-                    oversized.filename, oversized.file_size, _MAX_ZIP_PART))
-        total = sum(info.file_size for info in infos)
-        if total > _MAX_ZIP_UNCOMPRESSED:
-            raise UnsupportedStructureError(
-                "archive declares {0} aggregate uncompressed bytes, past "
-                "the {1}-byte cap; refusing before inflation.".format(
-                    total, _MAX_ZIP_UNCOMPRESSED))
         return {info.filename: zf.read(info) for info in infos}
 
 

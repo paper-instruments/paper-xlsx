@@ -1,5 +1,4 @@
-"""The structural-edit guard — reference-aware refusals under
-preserve, loud warning on the stock path."""
+"""The structural-edit guard — reference-aware preserve behavior."""
 from __future__ import annotations
 
 import warnings
@@ -7,7 +6,7 @@ import warnings
 import pytest
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.errors import StructuralShiftWarning, UnsupportedStructureError
+from openpyxl.errors import UnsupportedStructureError
 
 
 class TestPreserveRefusals:
@@ -55,13 +54,16 @@ class TestPreserveRefusals:
         assert ws.max_row == 2
 
 
-class TestStockWarning:
+class TestStockCompatibility:
 
-    def test_loaded_workbook_warns_on_shift(self, fixture_copy):
+    def test_loaded_workbook_shift_emits_no_paper_warning(self, fixture_copy):
         wb = load_workbook(
             fixture_copy("features/schedule.xlsx"), preserve=False)
-        with pytest.warns(StructuralShiftWarning, match="updates NOTHING"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             wb["Schedule"].insert_rows(5)
+        assert not [w for w in caught
+                    if w.message.__class__.__module__ == "openpyxl.errors"]
         # stock behavior unchanged: the shift still happened
         assert wb["Schedule"]["B13"].value == "=SUM(B2:B11)"
 
@@ -73,7 +75,7 @@ class TestStockWarning:
             warnings.simplefilter("always")
             ws.insert_rows(1)
         assert not [w for w in caught
-                    if isinstance(w.message, StructuralShiftWarning)]
+                    if w.message.__class__.__module__ == "openpyxl.errors"]
 
 
 class TestAddressRemap:
@@ -111,8 +113,7 @@ class TestAddressRemap:
     def test_stock_path_keeps_returning_none(self, fixture_copy):
         wb = load_workbook(
             fixture_copy("features/schedule.xlsx"), preserve=False)
-        with pytest.warns(StructuralShiftWarning):
-            assert wb["Schedule"].insert_rows(3) is None
+        assert wb["Schedule"].insert_rows(3) is None
 
 
 class TestBoundaryViolation:

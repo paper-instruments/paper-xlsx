@@ -229,9 +229,7 @@ def test_append_totals_moves_hyperlink_without_residue(tmp_path):
     wb = _preserved(tmp_path, wb)
     ws = wb.active
     ws["A3"].hyperlink = "https://example.com/total"
-    from openpyxl.preserve.tables import append_row
-
-    append_row(ws, "T", ["East", 20])
+    ws.append_table_row("T", ["East", 20])
     assert ws["A4"].hyperlink.target == "https://example.com/total"
     assert ws["A4"].hyperlink.ref == "A4"
     assert ws["A3"].hyperlink is None
@@ -258,10 +256,8 @@ def test_append_totals_with_preserved_comment_refuses_before_mutation(
 
     wb = _preserved(tmp_path, wb, "totals-comment.xlsx")
     ws = wb.active
-    from openpyxl.preserve.tables import append_row
-
     with pytest.raises(PaperRefusal, match="comment/VML anchor"):
-        append_row(ws, "T", ["East", 20])
+        ws.append_table_row("T", ["East", 20])
     assert ws.tables["T"].ref == "A1:B3"
     assert ws["A3"].value == "Total"
     assert ws["A3"].comment.text == "totals note"
@@ -282,10 +278,8 @@ def test_append_totals_with_preserved_hyperlink_refuses_before_mutation(
 
     wb = _preserved(tmp_path, wb, "totals-link.xlsx")
     ws = wb.active
-    from openpyxl.preserve.tables import append_row
-
     with pytest.raises(PaperRefusal, match="hyperlink relationship"):
-        append_row(ws, "T", ["East", 20])
+        ws.append_table_row("T", ["East", 20])
     assert ws.tables["T"].ref == "A1:B3"
     assert ws["A3"].value == "Total"
     assert ws["A3"].hyperlink.target == "https://example.com/total"
@@ -574,7 +568,7 @@ def test_three_d_formula_blocks_single_sheet_shift(tmp_path):
     assert wb["Summary"]["A1"].value == "=SUM(First:Last!A2)"
 
 
-def test_append_preflights_inherited_formula_grid_boundary(tmp_path):
+def test_table_append_does_not_guess_an_inherited_formula(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.append(["Value", "Formula"])
@@ -583,13 +577,10 @@ def test_append_preflights_inherited_formula_grid_boundary(tmp_path):
 
     wb = _preserved(tmp_path, wb, "append-boundary.xlsx")
     ws = wb.active
-    from openpyxl.preserve.tables import append_row
-
-    with pytest.raises(BoundaryViolationError, match="outside Excel"):
-        append_row(ws, "T", [2])
-    assert ws.tables["T"].ref == "A1:B2"
-    assert (3, 1) not in ws._cells
-    assert (3, 2) not in ws._cells
+    ws.append_table_row("T", [2])
+    assert ws.tables["T"].ref == "A1:B3"
+    assert ws["A3"].value == 2
+    assert ws["B3"].value is None
 
 
 def test_append_preflights_all_values_before_writing_any_cell(tmp_path):
@@ -601,10 +592,8 @@ def test_append_preflights_all_values_before_writing_any_cell(tmp_path):
 
     wb = _preserved(tmp_path, wb, "append-invalid.xlsx")
     ws = wb.active
-    from openpyxl.preserve.tables import append_row
-
     with pytest.raises(ValueError, match="Cannot convert"):
-        append_row(ws, "T", [3, object()])
+        ws.append_table_row("T", [3, object()])
     assert ws.tables["T"].ref == "A1:B2"
     assert (3, 1) not in ws._cells
     assert (3, 2) not in ws._cells

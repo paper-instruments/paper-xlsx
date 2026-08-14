@@ -399,7 +399,7 @@ def analyze_shift(ws, kind, index):
                     if _intersects(dest_bounds, *_norm(bounds)):
                         stranded_names.append(name)
                         break
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 continue
     if stranded_names:
         impacts.append(
@@ -470,7 +470,7 @@ def _ref_hit(ref, bounds):
 
     try:
         return _intersects(range_boundaries(ref.replace("$", "")), *bounds)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return True   # unparseable: assume affected (conservative)
 
 
@@ -662,11 +662,14 @@ def shift_blockers(ws, operation, index, amount=1):
 def _three_d_formula_references_sheet(wb, formula, target_title):
     """Whether a 3-D operand's sheet interval contains ``target_title``."""
     from openpyxl.formula import Tokenizer
+    from openpyxl.formula.tokenizer import TokenizerError
     from .rewrite import _RENAME_PREFIX_RE
 
     try:
         tokens = Tokenizer(formula).items
-    except Exception:
+    except (IndexError, TypeError, ValueError, TokenizerError):
+        # The main formula-rewrite preflight owns malformed-token refusals;
+        # this helper answers only the narrower 3-D-reference question.
         return False
     order = {sheet.title.casefold(): index
              for index, sheet in enumerate(wb.worksheets)}
@@ -829,12 +832,7 @@ def apply_model_shift(ws, operation, index, amount, reference_rewrites=None):
 
     rewrites = (plan_shift(wb, ws, operation, index, amount)
                 if reference_rewrites is None else reference_rewrites)
-    _saved_lint = getattr(wb, "formula_lint", "warn")
-    wb.formula_lint = "off"
-    try:
-        apply_rewrites(rewrites)
-    finally:
-        wb.formula_lint = _saved_lint
+    apply_rewrites(rewrites)
 
     # 3. sheet-internal regions (fully modeled; the splice re-renders them)
     from collections import OrderedDict

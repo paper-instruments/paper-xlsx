@@ -244,17 +244,17 @@ class TestChartPropertyEdits:
                            match="added or removed"):
             wb.save(str(tmp_path / "o.xlsx"))
 
-    def test_shift_plus_property_edit_refuses(self, fixture_copy,
-                                              tmp_path):
-        # the shift already rewrote the chart's <c:f> texts; a same-session
-        # property edit cannot verify against the arm state — refuse, never
-        # guess (separate sessions compose fine)
+    def test_shift_plus_property_edit_composes(self, fixture_copy,
+                                               tmp_path):
         src = fixture_copy("features/chart_image.xlsx")
         wb = load_workbook(src, preserve=True)
         ws = wb["Model"]
         chart = ws._charts[0]
         ws.insert_rows(1)
         chart.repoint(0, "Model!$D$1:$D$4")
-        with pytest.raises(UnsupportedStructureError,
-                           match="separate sessions"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        chart_xml = next(
+            payload for name, payload in part_payloads(out).items()
+            if name.startswith("xl/charts/chart"))
+        assert b"Model!$D$1:$D$4" in chart_xml

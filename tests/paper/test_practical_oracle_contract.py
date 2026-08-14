@@ -139,20 +139,17 @@ def test_defined_name_formula_propagates_input_taint():
     assert result.input_excluded == ["Sheet!B1"]
 
 
-def test_in_place_recalc_refuses_source_changed_during_calculation(
-        tmp_path, monkeypatch):
+def test_separate_path_recalc_never_replaces_source(tmp_path, monkeypatch):
     source = tmp_path / "source.xlsx"
     package = _package_with_caches(
         {"A1": "=1+1"}, {"A1": (None, 2)})
     source.write_bytes(package)
 
-    def replace_source(data, _timeout):
-        source.write_bytes(b"concurrent replacement")
+    def return_candidate(data, _timeout):
         return data
 
-    monkeypatch.setattr(oracle, "_recalculate_bytes", replace_source)
-    with pytest.raises(UnsupportedStructureError) as refusal:
-        oracle.recalc(source, in_place=True)
-
-    assert refusal.value.kind == "destination-identity-changed"
-    assert source.read_bytes() == b"concurrent replacement"
+    monkeypatch.setattr(oracle, "_recalculate_bytes", return_candidate)
+    output = tmp_path / "candidate.xlsx"
+    oracle.recalc(source, output_path=output)
+    assert source.read_bytes() == package
+    assert output.read_bytes() == package

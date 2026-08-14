@@ -29,10 +29,7 @@ PINNED_EXCEPTIONS = [
     "RelationshipPolicyError",
     "OracleUnavailableError",
     "OracleTimeoutError",
-    "LossySaveWarning",
-    "StructuralShiftWarning",
     "ProtectedWriteWarning",
-    "LintWarning",
 ]
 
 # oracle result states — each must be produced somewhere

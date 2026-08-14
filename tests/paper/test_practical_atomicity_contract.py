@@ -192,30 +192,7 @@ def test_sheet_create_and_remove_failures_restore_workbook(monkeypatch):
     assert _ledger_state(workbook) == before_ledger
 
 
-def test_mark_dirty_failure_restores_existing_claims(monkeypatch):
-    workbook = _preserved_workbook()
-    ledger = workbook._paper_ledger
-    before = _ledger_cells(workbook)
-    calls = 0
-    real_mark = type(ledger).mark_cell
-
-    def fail_second(self, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        real_mark(self, *args, **kwargs)
-        if calls == 2:
-            raise RuntimeError("injected claim failure")
-
-    monkeypatch.setattr(type(ledger), "mark_cell", fail_second)
-    with pytest.raises(RuntimeError, match="claim failure"):
-        workbook.mark_dirty("Data!A1:B1")
-
-    assert _ledger_cells(workbook) == before
-
-
-def test_table_append_lint_failure_happens_before_commit(tmp_path):
-    from openpyxl.errors import LintWarning
-    from openpyxl.preserve.tables import append_row
+def test_table_append_invalid_value_happens_before_commit(tmp_path):
     from openpyxl.worksheet.table import Table
 
     workbook = Workbook()
@@ -229,10 +206,8 @@ def test_table_append_lint_failure_happens_before_commit(tmp_path):
     before = io.BytesIO()
     workbook.save(before)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", LintWarning)
-        with pytest.raises(LintWarning):
-            append_row(workbook.active, "Inputs", [3, "=SUMM(A1)"])
+    with pytest.raises(ValueError, match="Cannot convert"):
+        workbook.active.append_table_row("Inputs", [3, object()])
 
     after = io.BytesIO()
     workbook.save(after)

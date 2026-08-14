@@ -21,7 +21,8 @@ from . import crosspart
 _TABLE_REL_TYPE_SUFFIX = "/table"
 _DISPLAY_NAME_RE = re.compile(
     br'displayName=(?:"([^"]*)"|\'([^\']*)\')')
-_REF_RE = re.compile(br'<table[^>]*\sref=(?:"([^"]*)"|\'([^\']*)\')')
+_REF_RE = re.compile(
+    br'<(?:(?:\w+):)?table(?=[\s>])[^>]*\sref=(?:"([^"]*)"|\'([^\']*)\')')
 
 
 def _refuse(msg):
@@ -60,7 +61,7 @@ def validate_table(tbl, original_ref):
     """Geometry guards, against the ORIGINAL ref."""
     try:
         min_col, min_row, max_col, max_row = range_boundaries(tbl.ref)
-    except Exception:
+    except (TypeError, ValueError):
         _refuse("table {0!r}: ref {1!r} is not a rectangular "
                 "range.".format(tbl.displayName, tbl.ref))
     o_min_col, o_min_row, _oc, _or = range_boundaries(original_ref)
@@ -85,19 +86,23 @@ def validate_table(tbl, original_ref):
         try:
             a_min_col, a_min_row, a_max_col, a_max_row = \
                 range_boundaries(tbl.autoFilter.ref)
-        except Exception:
+        except (TypeError, ValueError):
             _refuse("table {0!r}: autoFilter ref {1!r} is not a "
                     "range.".format(tbl.displayName, tbl.autoFilter.ref))
         if (a_min_col < min_col or a_max_col > max_col
                 or a_min_row < min_row or a_max_row > max_row):
             _refuse("table {0!r}: autoFilter ref {1!r} lies outside the "
-                    "table ref {2!r}; sync it (the append_row verb does "
+                    "table ref {2!r}; sync it (append_table_row() does "
                     "this automatically).".format(
                         tbl.displayName, tbl.autoFilter.ref, tbl.ref))
 
 
-def plan_table_mutations(wb, ws, sheet_part, zin, changed_names, plan):
-    """Re-render each changed loaded table into its ORIGINAL part."""
+def plan_table_mutations(wb, ws, sheet_part, zin, changed_names, plan,
+                         armed_tables=None):
+    """Patch each changed loaded table into its ORIGINAL part."""
+    from .lexical import patch_xml
+
+    armed_tables = armed_tables or {}
     parts = sheet_table_parts(zin, sheet_part)
     for name in changed_names:
         if name not in ws.tables:
@@ -109,13 +114,6 @@ def plan_table_mutations(wb, ws, sheet_part, zin, changed_names, plan):
                     "the original package (displayName not found in the "
                     "sheet rels).".format(name, ws.title))
         part_name, original = parts[name]
-        if b"<extLst" in original or b"xr:uid" in original \
-                or b"xmlns:xr" in original:
-            _refuse("table {0!r} on sheet {1!r} carries extension content "
-                    "(extLst / xr revision ids) the model cannot "
-                    "re-serialize; editing it would silently drop that "
-                    "content (e.g. alt text). Recreate the table or edit "
-                    "without preserve=True.".format(name, ws.title))
         m = _REF_RE.search(original)
         if m:
             raw = m.group(1) if m.group(1) is not None else m.group(2)
@@ -129,10 +127,20 @@ def plan_table_mutations(wb, ws, sheet_part, zin, changed_names, plan):
                     "run.".format(name))
         validate_table(tbl, original_ref)
         _check_display_name(wb, ws, tbl, original_names=set(parts))
-        payload = tostring(tbl.to_tree())
-        if not payload.startswith(b"<?xml"):
-            payload = (b'<?xml version="1.0" encoding="UTF-8" '
-                       b'standalone="yes"?>\n' + payload)
+        rendered = tostring(tbl.to_tree())
+        payload = patch_xml(
+            original, armed_tables.get(name), rendered, "table")
+        if payload is None:
+            if b"<extLst" in original or b"xr:uid" in original \
+                    or b"xmlns:xr" in original:
+                _refuse("table {0!r} on sheet {1!r} carries extension "
+                        "content that cannot survive this structural table "
+                        "edit. Recreate the table or edit without "
+                        "preserve=True.".format(name, ws.title))
+            payload = rendered
+            if not payload.startswith(b"<?xml"):
+                payload = (b'<?xml version="1.0" encoding="UTF-8" '
+                           b'standalone="yes"?>\n' + payload)
         plan[part_name] = payload
 
 
@@ -169,12 +177,13 @@ def _check_display_name(wb, ws, tbl, original_names):
 def _validate_formula_grid(formula, table_name):
     """Refuse formula references outside Excel's physical grid."""
     from openpyxl.formula import Tokenizer
+    from openpyxl.formula.tokenizer import TokenizerError
     from openpyxl.utils.cell import range_boundaries
     from openpyxl.errors import BoundaryViolationError
 
     try:
         tokens = Tokenizer(formula).items
-    except Exception:
+    except (IndexError, TypeError, ValueError, TokenizerError):
         return
     for token in tokens:
         if token.type != "OPERAND" or token.subtype != "RANGE" \
@@ -194,7 +203,7 @@ def _validate_formula_grid(formula, table_name):
         if any(value > 16384 for value in cols) or any(
                 value > 1048576 for value in rows):
             raise BoundaryViolationError(
-                "append_row would generate formula {0!r} outside Excel's "
+                "append_table_row() would generate formula {0!r} outside Excel's "
                 "row/column limits for table {1!r}. Nothing was changed."
                 .format(formula, table_name))
 
@@ -230,20 +239,6 @@ def _normalize_append_value(ws, row, col, value, table_name):
         else getattr(value, "text", None)
     if isinstance(formula, str) and formula.startswith("="):
         _validate_formula_grid(formula, table_name)
-        if getattr(ws.parent, "formula_lint", "warn") == "refuse":
-            from openpyxl.formula.lint import lint_formula
-            findings = lint_formula(formula, workbook=ws.parent, sheet=ws)
-            if findings:
-                from openpyxl.errors import UnsupportedStructureError
-
-                summary = "; ".join(
-                    "[{0}] {1}".format(item["code"], item["message"])
-                    for item in findings[:6])
-                raise UnsupportedStructureError(
-                    "formula planned for {0}!{1}{2} failed the pre-flight "
-                    "lint and wb.formula_lint is 'refuse': {3}. Nothing "
-                    "was changed.".format(
-                        ws.title, get_column_letter(col), row, summary))
     return value
 
 
@@ -259,13 +254,169 @@ def _preflight_append_protection(ws, coordinates):
         cell = ws._cells.get((row, col))
         if cell is None or cell.protection.locked:
             raise UnsupportedStructureError(
-                "append_row would write locked cell {0}{1} on protected "
+                "append_table_row() would write locked cell {0}{1} on protected "
                 "sheet {2!r}, and strict_protection is enabled. Unlock the "
                 "target cells or unprotect the sheet. Nothing was changed."
                 .format(get_column_letter(col), row, ws.title))
 
 
-def append_row(ws, table_name, values):
+class _TableAppendTransaction:
+    """Bounded rollback journal for one table-row append."""
+
+    def __init__(self, ws, table_name):
+        from copy import copy
+
+        self.ws = ws
+        self.table = ws.tables[table_name]
+        min_col, _min_row, max_col, max_row = range_boundaries(self.table.ref)
+        totals = self.table.totalsRowCount or 0
+        new_data_row = max_row - totals + 1
+        rows = {new_data_row}
+        if totals:
+            rows.update((max_row, max_row + 1))
+        self.coordinates = {}
+        for row in rows:
+            for col in range(min_col, max_col + 1):
+                coordinate = (row, col)
+                cell = ws._cells.get(coordinate)
+                if cell is None:
+                    self.coordinates[coordinate] = (False, None, None)
+                    continue
+                hyperlink = cell._hyperlink
+                comment = cell._comment
+                state = (
+                    cell._value,
+                    cell._data_type,
+                    copy(cell._style) if cell._style is not None else None,
+                    hyperlink,
+                    getattr(hyperlink, "ref", None),
+                    comment,
+                    getattr(comment, "_parent", None),
+                )
+                self.coordinates[coordinate] = (True, cell, state)
+        self.current_row = ws._current_row
+        self.table_ref = self.table.ref
+        self.filter_ref = self.table.autoFilter.ref \
+            if self.table.autoFilter is not None else None
+        self.ledger = getattr(ws.parent, "_paper_ledger", None)
+        if self.ledger is not None and not self.ledger.armed:
+            self.ledger = None
+        self.ledger_states = {}
+        if self.ledger is not None:
+            for coordinate in self.coordinates:
+                self.ledger_states[coordinate] = tuple(
+                    self._capture(mapping, coordinate, bucket_type)
+                    for mapping, bucket_type in (
+                        (self.ledger.cells, set),
+                        (self.ledger.value_overwrites, set),
+                        (self.ledger.cache_writes, dict),
+                    ))
+            self.formulas_changed = self.ledger.formulas_changed
+            self.was_warned = ws in self.ledger.protection_warned
+        registry = ws.parent._number_formats
+        self.number_formats = (registry, len(registry), registry.clean)
+        self.active = True
+
+    def _capture(self, mapping, coordinate, bucket_type):
+        bucket = mapping.get(self.ws)
+        if bucket is None:
+            return False, None, False, None, bucket_type
+        present = coordinate in bucket
+        value = bucket.get(coordinate) if bucket_type is dict else None
+        return True, bucket, present, value, bucket_type
+
+    def _restore(self, mapping, coordinate, state):
+        existed, original, present, value, bucket_type = state
+        current = mapping.get(self.ws)
+        if existed:
+            if current is not original:
+                mapping[self.ws] = original
+            bucket = original
+        else:
+            bucket = current
+            if bucket is None:
+                return
+        if bucket_type is set:
+            bucket.add(coordinate) if present else bucket.discard(coordinate)
+        elif present:
+            bucket[coordinate] = value
+        else:
+            bucket.pop(coordinate, None)
+        if not existed and not bucket:
+            mapping.pop(self.ws, None)
+
+    def commit(self):
+        self.active = False
+
+    def rollback(self):
+        if not self.active:
+            return
+        for coordinate, (existed, cell, state) in reversed(
+                list(self.coordinates.items())):
+            current = self.ws._cells.get(coordinate)
+            if not existed:
+                self.ws._cells.pop(coordinate, None)
+                continue
+            self.ws._cells[coordinate] = cell
+            value, data_type, style, hyperlink, hyperlink_ref, comment, \
+                comment_parent = state
+            current_comment = getattr(current, "_comment", None)
+            if current is not cell and current_comment is not None \
+                    and getattr(current_comment, "_parent", None) is current:
+                current_comment._parent = None
+            cell._value = value
+            cell._data_type = data_type
+            cell._style = style
+            cell._hyperlink = hyperlink
+            if hyperlink is not None:
+                hyperlink.ref = hyperlink_ref
+            cell._comment = comment
+            if comment is not None:
+                comment._parent = comment_parent
+        self.ws._current_row = self.current_row
+        self.table.ref = self.table_ref
+        if self.table.autoFilter is not None:
+            self.table.autoFilter.ref = self.filter_ref
+        if self.ledger is not None:
+            for coordinate, states in reversed(list(self.ledger_states.items())):
+                self._restore(self.ledger.cells, coordinate, states[0])
+                self._restore(self.ledger.value_overwrites,
+                              coordinate, states[1])
+                self._restore(self.ledger.cache_writes, coordinate, states[2])
+            self.ledger.formulas_changed = self.formulas_changed
+            if self.was_warned:
+                self.ledger.protection_warned.add(self.ws)
+            else:
+                self.ledger.protection_warned.discard(self.ws)
+        registry, length, clean = self.number_formats
+        if len(registry) != length:
+            del registry[length:]
+            for key, position in list(registry._dict.items()):
+                if position >= length:
+                    del registry._dict[key]
+            registry.clean = clean
+        self.active = False
+
+
+def append_table_row(ws, table_name, values):
+    """Atomically append one row to a named worksheet table."""
+    if table_name not in ws.tables:
+        from openpyxl.errors import TargetNotFoundError
+
+        raise TargetNotFoundError(
+            "no table named {0!r} on sheet {1!r}.".format(
+                table_name, ws.title))
+    transaction = _TableAppendTransaction(ws, table_name)
+    try:
+        result = _append_table_row(ws, table_name, values)
+    except BaseException:
+        transaction.rollback()
+        raise
+    transaction.commit()
+    return result
+
+
+def _append_table_row(ws, table_name, values):
     """Append one row of ``values`` below the table's last data row: writes
     the cells, extends ``tbl.ref``,
     keeps the totals row last (its cells move down one row), re-derives
@@ -277,15 +428,8 @@ def append_row(ws, table_name, values):
     that disagree with the column formula; non-preserve workbooks are
     fine too (the model edit works the same everywhere).
     """
-    from openpyxl.formula.translate import Translator
     from openpyxl.utils import get_column_letter
 
-    if table_name not in ws.tables:
-        from openpyxl.errors import TargetNotFoundError
-
-        raise TargetNotFoundError(
-            "no table named {0!r} on sheet {1!r}.".format(
-                table_name, ws.title))
     tbl = ws.tables[table_name]
     min_col, min_row, max_col, max_row = range_boundaries(tbl.ref)
     totals = tbl.totalsRowCount or 0
@@ -299,14 +443,14 @@ def append_row(ws, table_name, values):
     if totals and any((max_row, col) in original_comments
                       for col in range(min_col, max_col + 1)):
         _refuse(
-            "append_row: table {0!r} has a totals-row comment from the "
+            "append_table_row(): table {0!r} has a totals-row comment from the "
             "original package; preserve mode cannot rewrite its existing "
             "comment/VML anchor yet. Remove or relocate the comment in "
             "Excel before appending".format(table_name))
     if totals and any((max_row, col) in original_links
                       for col in range(min_col, max_col + 1)):
         _refuse(
-            "append_row: table {0!r} has a totals-row hyperlink from the "
+            "append_table_row(): table {0!r} has a totals-row hyperlink from the "
             "original package; preserve mode cannot move an existing "
             "hyperlink relationship. Remove or relocate the hyperlink in "
             "Excel before appending".format(table_name))
@@ -315,7 +459,7 @@ def append_row(ws, table_name, values):
         from openpyxl.errors import BoundaryViolationError
 
         raise BoundaryViolationError(
-            "append_row would extend table {0!r} past row 1048576, Excel's "
+            "append_table_row() would extend table {0!r} past row 1048576, Excel's "
             "hard sheet limit. Nothing was changed.".format(table_name))
 
     # normalize values
@@ -324,13 +468,13 @@ def append_row(ws, table_name, values):
         cols = [c.name for c in tbl.tableColumns]
         unknown = set(by_name) - set(cols)
         if unknown:
-            _refuse("append_row: unknown column(s) {0} for table "
+            _refuse("append_table_row(): unknown column(s) {0} for table "
                     "{1!r}.".format(sorted(unknown), table_name))
         row_values = [by_name.get(c) for c in cols]
     else:
         row_values = list(values)
         if len(row_values) > n_cols:
-            _refuse("append_row: {0} values for a {1}-column "
+            _refuse("append_table_row(): {0} values for a {1}-column "
                     "table.".format(len(row_values), n_cols))
         row_values += [None] * (n_cols - len(row_values))
 
@@ -342,7 +486,7 @@ def append_row(ws, table_name, values):
                 and (cell._value is not None or cell.has_style
                      or cell._comment is not None
                      or cell._hyperlink is not None):
-            _refuse("append_row: sheet {0!r} has content at or below row "
+            _refuse("append_table_row(): sheet {0!r} has content at or below row "
                     "{1} under table {2!r}; appending would need to shift "
                     "it. Move that content, or restructure the "
                     "edit.".format(ws.title, below, table_name))
@@ -355,49 +499,19 @@ def append_row(ws, table_name, values):
         calc = getattr(tc, "calculatedColumnFormula", None) if tc else None
         if calc is not None and getattr(calc, "attr_text", None) \
                 and row_values[i] is not None:
-            _refuse("append_row: column {0!r} is a calculated column; "
+            _refuse("append_table_row(): column {0!r} is a calculated column; "
                     "its value derives from the column formula "
                     "(={1}).".format(tc.name, calc.attr_text))
 
     planned_values = []
-    try:
-        from openpyxl.formula.translate import TranslatorError
-
-        for i, col in enumerate(range(min_col, max_col + 1)):
-            tc = tbl.tableColumns[i] if i < len(tbl.tableColumns) else None
-            calc = getattr(tc, "calculatedColumnFormula", None) if tc else None
-            given = row_values[i]
-            planned = given
-            if calc is not None and getattr(calc, "attr_text", None):
-                planned = "=" + calc.attr_text
-            elif calc is None and given is None \
-                    and new_data_row - 1 > min_row:
-                above = ws._cells.get((new_data_row - 1, col))
-                if above is not None and above.data_type == "f" \
-                        and isinstance(above.value, str):
-                    planned = Translator(
-                        above.value,
-                        origin="{0}{1}".format(
-                            get_column_letter(col), new_data_row - 1)
-                    ).translate_formula(
-                        "{0}{1}".format(
-                            get_column_letter(col), new_data_row))
-            planned_values.append(_normalize_append_value(
-                ws, new_data_row, col, planned, table_name))
-    except TranslatorError as exc:
-        from openpyxl.errors import BoundaryViolationError
-
-        raise BoundaryViolationError(
-            "append_row cannot translate an inherited formula within "
-            "Excel's grid for table {0!r}. Nothing was changed."
-            .format(table_name)) from exc
-
-    from openpyxl.cell import Cell
-    from openpyxl.formula.lint import lint_on_bind
-
-    for col, planned in zip(range(min_col, max_col + 1), planned_values):
-        if isinstance(planned, str) and planned.startswith("="):
-            lint_on_bind(Cell(ws, row=new_data_row, column=col), planned)
+    for i, col in enumerate(range(min_col, max_col + 1)):
+        tc = tbl.tableColumns[i] if i < len(tbl.tableColumns) else None
+        calc = getattr(tc, "calculatedColumnFormula", None) if tc else None
+        planned = row_values[i]
+        if calc is not None and getattr(calc, "attr_text", None):
+            planned = "=" + calc.attr_text
+        planned_values.append(_normalize_append_value(
+            ws, new_data_row, col, planned, table_name))
     affected = [(new_data_row, col)
                 for col in range(min_col, max_col + 1)]
     planned_totals = {}
@@ -412,9 +526,6 @@ def append_row(ws, table_name, values):
             (row, col)
             for row in (max_row, max_row + 1)
             for col in range(min_col, max_col + 1))
-    for col, planned in planned_totals.items():
-        if isinstance(planned, str) and planned.startswith("="):
-            lint_on_bind(Cell(ws, row=max_row + 1, column=col), planned)
     _preflight_append_protection(ws, affected)
 
     # totals row moves down one: rewrite its cells at +1 first
@@ -543,12 +654,16 @@ def plan_table_lifecycle(wb, ws, sheet_part, zin, armed_names, plan,
     # the package, not just this sheet's (duplicate id=1)
     for n in names:
         if n.startswith("xl/tables/") and n.endswith(".xml"):
-            m = re.search(br'<table[^>]*\sid="(\d+)"', zin.read(n))
+            m = re.search(
+                br'<(?:(?:\w+):)?table(?=[\s>])[^>]*\sid="(\d+)"',
+                zin.read(n))
             if m:
                 existing_ids.add(int(m.group(1)))
     for payload in part_plan.added.values():
         if isinstance(payload, bytes):
-            m = re.search(br'<table[^>]*\sid="(\d+)"', payload)
+            m = re.search(
+                br'<(?:(?:\w+):)?table(?=[\s>])[^>]*\sid="(\d+)"',
+                payload)
             if m:
                 existing_ids.add(int(m.group(1)))
     next_part_num = max(existing_numbers, default=0) + 1

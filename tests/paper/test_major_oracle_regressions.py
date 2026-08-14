@@ -293,7 +293,7 @@ def test_oracle_input_assignment_never_overwrites_formula():
     assert ws["A1"].value == "=1+1"
 
 
-def test_set_input_resolves_unique_local_name_and_refuses_ambiguity():
+def test_oracle_resolver_refuses_ambiguous_local_names():
     wb = Workbook()
     first = wb.active
     first.title = "First"
@@ -301,24 +301,19 @@ def test_set_input_resolves_unique_local_name_and_refuses_ambiguity():
     first.defined_names.add(DefinedName(
         "LocalInput", attr_text="'First'!$A$1"))
 
-    assert wb.set_input("LocalInput", 7) is first["A1"]
-    assert first["A1"].value == 7
-
     second.defined_names.add(DefinedName(
         "LocalInput", attr_text="'Second'!$A$1"))
-    with pytest.raises(AmbiguousTargetError, match="exists on 2 sheets"):
-        wb.set_input("LocalInput", 9)
     with pytest.raises(AmbiguousTargetError, match="exists on 2 sheets"):
         oracle._resolve_single_cell(wb, "LocalInput")
 
 
-def test_set_input_missing_defined_name_sheet_is_typed():
+def test_oracle_resolver_missing_defined_name_sheet_is_typed():
     wb = Workbook()
     wb.defined_names.add(DefinedName(
         "Missing", attr_text="'Gone'!$A$1"))
 
-    with pytest.raises(TargetNotFoundError, match="missing sheet"):
-        wb.set_input("Missing", 1)
+    with pytest.raises(TargetNotFoundError, match="does not exist"):
+        oracle._resolve_single_cell(wb, "Missing")
 
 
 def test_data_table_result_range_is_excluded_as_one_unsupported_unit(

@@ -7,6 +7,7 @@
 from zipfile import ZipFile, ZIP_DEFLATED
 from io import BytesIO
 import os.path
+import zipfile
 import warnings
 
 from openpyxl.pivot.table import TableDefinition
@@ -37,7 +38,6 @@ from openpyxl.comments.comment_sheet import CommentSheet
 
 from .strings import read_string_table, read_rich_text
 from .workbook import WorkbookParser
-from openpyxl.preserve.inventory import scan_archive
 from openpyxl.preserve.ledger import DirtyLedger
 from openpyxl.styles.stylesheet import apply_stylesheet
 
@@ -87,58 +87,6 @@ def _check_extension(filename):
             raise InvalidFileException(msg)
 
 
-# Stock loads retain the fork-point safeguards. Preserve mode keeps the full
-# package in memory, so it applies tighter package-wide limits before reading
-# any member data. The preserve-mode values must stay equal to
-# openpyxl.preserve.zipguard's MAX_ENTRIES / MAX_PART_BYTES /
-# MAX_TOTAL_BYTES (kept as literals here because this module must not
-# import the preserve package at module scope).
-_DECOMPRESSION_MAX_PART = 2 * 1024 * 1024 * 1024      # 2 GiB per part
-_DECOMPRESSION_RATIO_CAP = 500                        # zip bombs: >>1000x
-_DECOMPRESSION_RATIO_FLOOR = 64 * 1024 * 1024         # ratio checked >64MB
-_PRESERVE_DECOMPRESSION_MAX_PART = 256 * 1024 * 1024  # 256 MiB per part
-_DECOMPRESSION_MAX_ENTRIES = 10000
-_DECOMPRESSION_MAX_TOTAL = 512 * 1024 * 1024           # 512 MiB aggregate
-
-
-def _check_decompression_caps(archive, *, preserve=False):
-    from openpyxl.errors import UnsupportedStructureError
-
-    infos = archive.infolist()
-    if preserve:
-        if len(infos) > _DECOMPRESSION_MAX_ENTRIES:
-            raise UnsupportedStructureError(
-                "archive declares {0} entries, past the {1}-entry cap; "
-                "refusing before inflation. Nothing was loaded.".format(
-                    len(infos), _DECOMPRESSION_MAX_ENTRIES))
-        total = sum(info.file_size for info in infos)
-        if total > _DECOMPRESSION_MAX_TOTAL:
-            raise UnsupportedStructureError(
-                "archive declares {0} aggregate uncompressed bytes, past "
-                "the {1}-byte cap; refusing before inflation. Nothing was "
-                "loaded.".format(total, _DECOMPRESSION_MAX_TOTAL))
-    max_part = (_PRESERVE_DECOMPRESSION_MAX_PART if preserve
-                else _DECOMPRESSION_MAX_PART)
-    for info in infos:
-        if info.file_size > max_part:
-            raise UnsupportedStructureError(
-                "part {0!r} declares {1} bytes uncompressed, past the "
-                "{2}-byte cap; refusing to inflate it. Nothing was "
-                "loaded.".format(info.filename, info.file_size,
-                                 max_part))
-        if (info.file_size > _DECOMPRESSION_RATIO_FLOOR
-                and info.compress_size > 0
-                and info.file_size / info.compress_size
-                > _DECOMPRESSION_RATIO_CAP):
-            raise UnsupportedStructureError(
-                "part {0!r} inflates {1}x (from {2} to {3} bytes) — "
-                "no real spreadsheet compresses like that; refusing to "
-                "inflate it. Nothing was loaded.".format(
-                    info.filename,
-                    info.file_size // max(info.compress_size, 1),
-                    info.compress_size, info.file_size))
-
-
 def _validate_archive(filename, *, preserve=False):
     """
     Does a first check whether filename is a string or a file-like
@@ -159,10 +107,7 @@ def _validate_archive(filename, *, preserve=False):
         if preserve:
             from openpyxl.preserve.zipguard import validate_archive
 
-            _check_decompression_caps(archive, preserve=True)
             validate_archive(archive, context="preserve-mode workbook")
-        else:
-            _check_decompression_caps(archive, preserve=False)
         return archive
     except Exception as exc:
         if archive is not None:
@@ -546,13 +491,6 @@ class ExcelReader:
             action = "assign names"
             self.parser.assign_names()
             if not self.read_only:
-                # content-level loss inventory for the lossy-save warning:
-                # built now because the archive is gone by save time on the
-                # stock path
-                action = "scan for unpreservable content"
-                self.wb._paper_loss_inventory = scan_archive(
-                    self.archive, self.valid_files, keep_vba=self.keep_vba,
-                    rich_text=self.rich_text)
                 self.archive.close()
                 if self.preserve:
                     # the ledger arms only now: everything the loader itself
@@ -569,25 +507,40 @@ class ExcelReader:
 
 
 def _preserve_by_default(filename, read_only):
-    """Choose preserve mode without changing stock source validation.
-
-    Filesystem paths need a supported OOXML suffix. File-like sources are
-    validated from their bytes, so only names identifying legacy Excel
-    formats disable preserve mode.
-    """
+    """Choose preserve mode, sniffing file-like OOXML by content."""
     if read_only:
         return False
 
     is_file_like = hasattr(filename, "read")
+    if is_file_like:
+        if not hasattr(filename, "seek") or not hasattr(filename, "tell"):
+            return False
+        try:
+            position = filename.tell()
+        except (OSError, ValueError):
+            return False
+        try:
+            filename.seek(0)
+            with ZipFile(filename, "r") as archive:
+                if ARC_CONTENT_TYPES not in archive.namelist():
+                    return False
+                manifest = Manifest.from_tree(
+                    fromstring(archive.read(ARC_CONTENT_TYPES)))
+                return any(manifest.find(content_type) is not None for
+                           content_type in (XLTM, XLTX, XLSM, XLSX))
+        except (OSError, ValueError, KeyError, RuntimeError,
+                zipfile.BadZipFile):
+            return False
+        finally:
+            filename.seek(position)
+
     name = getattr(filename, "name", None) if is_file_like else filename
     try:
         name = os.fsdecode(os.fspath(name))
     except TypeError:
-        return is_file_like
+        return False
 
     suffix = os.path.splitext(name)[-1].lower()
-    if is_file_like:
-        return suffix not in (".xls", ".xlsb")
     return suffix in SUPPORTED_FORMATS
 
 

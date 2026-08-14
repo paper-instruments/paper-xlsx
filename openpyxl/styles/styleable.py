@@ -43,16 +43,27 @@ class NumberFormatDescriptor:
     collection = '_number_formats'
 
     def __set__(self, instance, value):
-        coll = getattr(instance.parent.parent, self.collection)
-        if value in BUILTIN_FORMATS_REVERSE:
-            idx = BUILTIN_FORMATS_REVERSE[value]
-        else:
-            idx = coll.add(value) + BUILTIN_FORMATS_MAX_SIZE
+        transaction = None
+        if hasattr(instance, "row") and hasattr(instance, "column"):
+            from openpyxl.cell.cell import _CellBindTransaction
 
-        if not getattr(instance, "_style"):
-            instance._style = StyleArray()
-        setattr(instance._style, self.key, idx)
-        _mark_styleable_dirty(instance)
+            transaction = _CellBindTransaction(
+                instance, capture_number_formats=True)
+        try:
+            coll = getattr(instance.parent.parent, self.collection)
+            if value in BUILTIN_FORMATS_REVERSE:
+                idx = BUILTIN_FORMATS_REVERSE[value]
+            else:
+                idx = coll.add(value) + BUILTIN_FORMATS_MAX_SIZE
+
+            if not getattr(instance, "_style"):
+                instance._style = StyleArray()
+            setattr(instance._style, self.key, idx)
+            _mark_styleable_dirty(instance)
+        except BaseException:
+            if transaction is not None:
+                transaction.rollback()
+            raise
 
 
     def __get__(self, instance, cls):

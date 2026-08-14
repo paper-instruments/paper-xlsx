@@ -13,16 +13,19 @@ Still refused in v0 (typed, never silent): comment changes on loaded sheets;
 table add/remove; charts/images/comments/tables on ADDED sheets (partially
 deferred); custom-property part creation; workbook.xml
 elements outside {sheets, definedNames, calcPr, bookViews}; chartsheet
-changes; mark_dirty on non-worksheet parts.
+changes; unsupported edits to preserved object parts.
 """
 
 import io
 import os
 import re
 import zipfile
+from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from openpyxl.errors import UnsupportedStructureError
 from openpyxl.xml.constants import ARC_CORE, ARC_CUSTOM, ARC_THEME, ARC_STYLE, REL_NS, WORKSHEET_TYPE
+from openpyxl.xml.functions import tostring
 
 from . import crosspart, zipio
 from . import drawings as drawings_mod
@@ -126,6 +129,62 @@ class _PlanningState:
                 setattr(self.ledger, slot, value)
 
 
+@dataclass(frozen=True)
+class _PreservePlan:
+    """Immutable handoff from complete preflight to archive delivery."""
+
+    changed_parts: tuple
+    added_parts: tuple
+    dropped_parts: tuple
+    build: object = field(repr=False, compare=False)
+    source: bytes = field(repr=False, compare=False)
+    source_identity: object = field(repr=False, compare=False)
+    expected_identity: object = field(repr=False, compare=False)
+    target_is_source: bool = field(repr=False, compare=False)
+    crosscheck: bool = field(repr=False, compare=False)
+    dirty_by_part: object = field(repr=False, compare=False)
+    baselines: object = field(repr=False, compare=False)
+    region_claims: object = field(repr=False, compare=False)
+    row_claims: object = field(repr=False, compare=False)
+
+
+def _frozen_mapping(mapping, *, set_values=False):
+    values = {
+        key: frozenset(value) if set_values else value
+        for key, value in mapping.items()
+    }
+    return MappingProxyType(values)
+
+
+def _commit_preserve_plan(save_plan, target):
+    """Perform the only output-producing phase after planning succeeds."""
+    def validate_source():
+        if save_plan.source_identity is not None:
+            zipio._assert_path_identity(save_plan.source_identity)
+
+    if save_plan.crosscheck:
+        data = zipio.build_archive_bytes(save_plan.build)
+        from .crosscheck import verify_splice
+
+        verify_splice(
+            save_plan.source, data, save_plan.dirty_by_part,
+            baselines=save_plan.baselines,
+            region_claims=save_plan.region_claims,
+            row_claims=save_plan.row_claims)
+        return zipio.deliver(
+            data, target, expected_identity=save_plan.expected_identity,
+            precommit=validate_source,
+            postcommit=(None if save_plan.target_is_source
+                        else validate_source))
+
+    return zipio.build_and_deliver(
+        save_plan.build, target,
+        expected_identity=save_plan.expected_identity,
+        precommit=validate_source,
+        postcommit=(None if save_plan.target_is_source
+                    else validate_source))
+
+
 def save_preserved(workbook, target, *, allow_formula_loss=False):
     """Plan and deliver without retaining serializer side effects."""
     zipio.validate_target(target)
@@ -139,16 +198,34 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
              or zipio._same_occupant(expected_identity, source_identity))
     state = _PlanningState(workbook)
     try:
-        committed_identity = _save_preserved(
-            workbook, target, allow_formula_loss=allow_formula_loss,
+        save_plan = _plan_preserved(
+            workbook, allow_formula_loss=allow_formula_loss,
             expected_identity=expected_identity,
             target_is_source=target_is_source)
+        committed_identity = _commit_preserve_plan(save_plan, target)
         if source_identity is not None and expected_identity is not None \
                 and (expected_identity.requested == source_identity.requested
                      or zipio._same_occupant(
                          expected_identity, source_identity)):
             workbook._paper_source_identity = committed_identity
         return True
+    finally:
+        state.restore()
+
+
+def validate_preserved(workbook, *, allow_formula_loss=False):
+    """Run the exact preserve save planner without assembling an archive.
+
+    Serializer helpers used during planning can mutate model registries, so
+    validation uses the same planning-state guard as delivery and restores the
+    workbook before returning or raising.
+    """
+    source_identity = workbook._paper_source_identity
+    if source_identity is not None:
+        zipio._assert_path_identity(source_identity)
+    state = _PlanningState(workbook)
+    try:
+        _plan_preserved(workbook, allow_formula_loss=allow_formula_loss)
     finally:
         state.restore()
 
@@ -171,10 +248,9 @@ def _expected_delivery_identity(workbook, target):
     return current
 
 
-def _save_preserved(workbook, target, *, allow_formula_loss=False,
+def _plan_preserved(workbook, *, allow_formula_loss=False,
                     expected_identity=None, target_is_source=False):
-    """Save a preserve-mode workbook to ``target`` (path or binary
-    file-like). Validates fully, then writes atomically."""
+    """Validate the model and return an immutable, non-writing save plan."""
     led = workbook._paper_ledger
     source = workbook._paper_source
     if led is None or source is None:
@@ -209,13 +285,6 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         workbook.calculation.forceFullCalc = True
         force_calcpr = True
 
-    if led.parts:
-        for part in led.parts:
-            _refuse("mark_dirty({0!r}): part-level re-serialization of "
-                    "non-worksheet parts is not supported in v0 (the part "
-                    "has no faithful model source). For raw byte swaps of "
-                    "unmanaged parts (media), use "
-                    "wb.replace_part(name, payload).".format(part))
     for cs, snap in led.chartsheet_snapshots.items():
         if _render_chartsheet(cs) != snap:
             _refuse("chartsheet {0!r} changed; chartsheet splicing is not "
@@ -302,6 +371,37 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
 
     # ---- loaded-sheet plans ----------------------------------------------
     plan = {}
+    if led.image_replacements:
+        from .images import plan_replacements
+
+        led.derived_effects.extend(plan_replacements(
+            zin, led.image_replacements, part_plan, names, plan))
+    if led.pivot_refresh_requests:
+        from .pivots import plan_refresh
+
+        patched = plan_refresh(zin, led.pivot_refresh_requests, plan)
+        led.derived_effects.extend({
+            "kind": "pivot_refresh_on_load_enabled",
+            "part": part,
+            "cause": "explicit_request",
+        } for part in patched)
+    # Structural chart/drawing remaps own the first transformation of each
+    # part. Explicit chart property edits then compose on these bytes.
+    if led.shifts:
+        from .chartpatch import plan_chart_updates
+
+        for shifted_ws in workbook.worksheets:
+            for operation, op_index, op_amount in led.shifts.get(
+                    shifted_ws, ()):
+                chart_plans, chart_blockers = plan_chart_updates(
+                    workbook, led.renames.get(shifted_ws, shifted_ws.title),
+                    operation, op_index, op_amount, overrides=plan)
+                if chart_blockers:
+                    _refuse("chart parts referencing sheet {0!r} cannot be "
+                            "patched: {1}.".format(
+                                shifted_ws.title,
+                                "; ".join(chart_blockers)))
+                plan.update(chart_plans)
     dirty_by_part = {}
     region_claims = {}        # part -> region tags knowingly rewritten
     row_claims = {}           # part -> row indices with claimed attr edits
@@ -337,25 +437,10 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
             if kind == "chart" and key in armed_snap.get("chart", {})
             and key < len(getattr(ws, "_charts", []) or [])]
         if chart_mutations:
-            from openpyxl.xml.functions import tostring
-
             from . import chartpatch as chartpatch_mod
-            from .structural import _charts_referencing
-
-            # a shift rewrites chart <c:f> texts itself; composing a
-            # property edit on top would shift the NEW range too (silent
-            # double-shift). Refuse — but ONLY for chart parts a shift
-            # actually patches (a shift on an unrelated
-            # sheet false-refused every chart edit)
-            shift_affected = set()
-            for shifted_ws, ops in led.shifts.items():
-                if ops:
-                    shift_affected |= set(_charts_referencing(
-                        workbook,
-                        led.renames.get(shifted_ws, shifted_ws.title)))
             for key in chart_mutations:
                 chart = ws._charts[key]
-                armed_render, armed_anchor = armed_snap["chart"][key]
+                armed_render, armed_anchor = armed_snap["chart"][key][:2]
                 part_name = getattr(chart, "_paper_part", None)
                 if part_name is None or part_name not in names:
                     _refuse("chart {0} on sheet {1!r} was modified but its "
@@ -363,13 +448,6 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
                             "cannot be expressed. Reopen without "
                             "preserve=True to rewrite the workbook "
                             "lossily.".format(key, ws.title))
-                if part_name in shift_affected:
-                    _refuse("chart {0} on sheet {1!r} was edited in the "
-                            "same session as a row/column shift that "
-                            "patches the same chart part; the two "
-                            "rewrites cannot be composed faithfully — do "
-                            "these edits in separate sessions.".format(
-                                key, ws.title))
                 if ledger_mod._anchor_fingerprint(chart) != armed_anchor:
                     _refuse("chart {0} on sheet {1!r}: the anchor "
                             "(position/size) changed; anchors live in the "
@@ -384,6 +462,7 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
                             "impure, so the edit cannot be expressed "
                             "faithfully.".format(key, ws.title))
                 base = chart_prop_parts.get(part_name)
+                composed = base is not None or part_name in plan
                 if base is None:
                     # compose over an earlier shift's chart patch, never
                     # over the raw source (later overrides must stack)
@@ -393,7 +472,8 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
                 chart_prop_parts[part_name] = \
                     chartpatch_mod.plan_property_edits(
                         workbook, ws, key, armed_render, current_render,
-                        base)
+                        base, part_name=part_name,
+                        allow_composed_formula_baseline=composed)
             plan.update(chart_prop_parts)
             changed_objects = [
                 (kind, k) for kind, k in changed_objects
@@ -456,16 +536,25 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
             from . import tables as tables_mod
 
             tables_mod.plan_table_mutations(
-                workbook, ws, part, zin, table_changes, plan)
+                workbook, ws, part, zin, table_changes, plan,
+                armed_tables=armed_snap.get("table", {}))
         legacy_drawing_bytes = None
         if comments_changed:
             from . import comments as comments_mod
 
-            if comments_mod.sheet_has_comment_machinery(zin, part, names):
+            comment_kind = comments_mod.comment_machinery_kind(
+                zin, part, names)
+            if comment_kind == "comments":
                 _refuse("comments changed on sheet {0!r}, which already "
                         "carries comment parts; editing preserved comment/"
                         "VML machinery is not supported yet (comment "
                         "CREATION on comment-free sheets is).".format(
+                            ws.title))
+            if comment_kind == "other-vml":
+                _refuse("comments changed on sheet {0!r}, which carries "
+                        "non-comment VML (such as controls or header/footer "
+                        "drawing state); adding comment VML without "
+                        "rewriting that machinery is unsupported.".format(
                             ws.title))
             if led.comment_snapshots.get(ws):
                 _refuse("internal: comment snapshot mismatch on a sheet "
@@ -489,22 +578,9 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
             # the standard splice then treats the shifted bytes as its
             # baseline
             from .structural import apply_shift_to_bytes
-            from .chartpatch import plan_chart_updates
             for op, op_idx, op_amount in shift_ops:
                 original = apply_shift_to_bytes(original, op, op_idx,
                                                 op_amount)
-                # overrides: a chart part already patched for another
-                # sheet's shift must be patched incrementally, never
-                # re-planned from the source (the earlier rewrite would be
-                # silently discarded)
-                chart_plans, chart_blockers = plan_chart_updates(
-                    workbook, led.renames.get(ws, ws.title), op, op_idx,
-                    op_amount, overrides=plan)
-                if chart_blockers:
-                    _refuse("chart parts referencing sheet {0!r} cannot be "
-                            "patched: {1}.".format(
-                                ws.title, "; ".join(chart_blockers)))
-                plan.update(chart_plans)
             baselines[part] = original
         try:
             scan = scan_sheet(original)
@@ -584,6 +660,28 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
             region_changes["cols"] = _translate_col_styles(
                 ws, region_changes["cols"], translator)
 
+        # A modeled region whose element shape did not change gets a
+        # lexical delta patch.  This keeps omitted defaults omitted and
+        # preserves producer-specific attribute order, quoting, whitespace,
+        # and unknown children.  ``cols`` is excluded because its style ids
+        # have just been translated from model ids to file ids.
+        from .lexical import patch_xml
+
+        region_baselines = led.region_snapshots.get(ws, {})
+        for tag, rendered in tuple(region_changes.items()):
+            spans = scan.regions.get(tag, ())
+            baseline = region_baselines.get(tag)
+            if tag == "cols" or len(spans) != 1 \
+                    or not isinstance(baseline, (bytes, bytearray)) \
+                    or not isinstance(rendered, (bytes, bytearray)) \
+                    or not baseline or not rendered:
+                continue
+            span = spans[0]
+            patched = patch_xml(
+                original[span.start:span.end], baseline, rendered, tag)
+            if patched is not None:
+                region_changes[tag] = patched
+
         cf_replacement = None
         if "conditionalFormatting" in all_region_changes:
             from . import x14
@@ -599,7 +697,35 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
                 if ext_crafted is not None:
                     region_changes["extLst"] = ext_crafted
             else:
-                cf_replacement = render_cf_for_write(ws)
+                render_cf_for_write(ws)
+                current_blocks = tuple(
+                    tostring(cf.to_tree())
+                    for cf in ws.conditional_formatting)
+                armed_blocks = region_baselines.get(
+                    "conditionalFormatting", ())
+                spans = scan.regions.get("conditionalFormatting", ())
+                if len(spans) == len(armed_blocks) == len(current_blocks) \
+                        and spans:
+                    replacements = []
+                    for span, baseline, current in zip(
+                            spans, armed_blocks, current_blocks):
+                        patched = patch_xml(
+                            original[span.start:span.end], baseline,
+                            current, "conditionalFormatting")
+                        if patched is None:
+                            replacements = []
+                            break
+                        replacements.append((span, patched))
+                    if replacements:
+                        run_start = spans[0].start
+                        run_end = spans[-1].end
+                        cf_replacement = crosspart.apply_edits(
+                            original[run_start:run_end],
+                            [(span.start - run_start, span.end - run_start,
+                              patched)
+                             for span, patched in replacements])
+                if cf_replacement is None:
+                    cf_replacement = render_cf_for_write(ws)
         if "dataValidations" in region_changes:
             from . import x14
 
@@ -725,8 +851,6 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
             # the package has no styles.xml: generate it whole from the
             # model (nothing to preserve) via the lifecycle engine
             from openpyxl.styles.stylesheet import write_stylesheet
-            from openpyxl.xml.functions import tostring
-
             part_plan.add_part(
                 ARC_STYLE, tostring(write_stylesheet(workbook)),
                 content_type="application/vnd.openxmlformats-"
@@ -805,7 +929,9 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
         if rels_part in sheet_rels_updates:
             existing = sheet_rels_updates.pop(rels_part)
         else:
-            existing = zin.read(rels_part) if rels_part in names else None
+            existing = plan.pop(rels_part, None)
+            if existing is None:
+                existing = zin.read(rels_part) if rels_part in names else None
         extra_rels_updates[rels_part] = part_plan.apply_rels(
             rels_part, existing)
 
@@ -819,13 +945,10 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
 
 
     # ---- assemble -----------------------------------------------------------
-    def build(zout):
+    def _build(zout, zin):
         for info in zin.infolist():
             name = info.filename
             if name in part_plan.dropped:
-                continue
-            if name in led.replaced_parts:
-                zipio.write_entry(zout, name, led.replaced_parts[name])
                 continue
             if name in extra_rels_updates:
                 zipio.write_entry(zout, name, extra_rels_updates[name])
@@ -865,39 +988,53 @@ def _save_preserved(workbook, target, *, allow_formula_loss=False,
             if part_name not in names:
                 zipio.write_entry(zout, part_name, payload)
 
-    # contradictory combos refuse rather than resolve silently
-    # (replace_part payloads vanished under drops/re-renders)
-    for name in led.replaced_parts:
-        if name in part_plan.dropped:
-            _refuse("replace_part({0!r}) conflicts with this save removing "
-                    "the same part; drop one of the two edits.".format(name))
-        if name in plan:
-            _refuse("replace_part({0!r}) conflicts with model edits that "
-                    "re-render the same part; drop one of the two "
-                    "edits.".format(name))
+    def build(zout):
+        # The immutable plan owns source bytes, not an open ZipFile.  Delivery
+        # can therefore happen after planning resources have been closed, and
+        # validate() can discard a plan without leaking a file handle.
+        with zipfile.ZipFile(io.BytesIO(source)) as build_source:
+            _build(zout, build_source)
 
-    source_identity = workbook._paper_source_identity
+    changed_parts = set(plan) | set(sheet_rels_updates) \
+        | set(extra_rels_updates)
+    for part_name, replacement in (
+            (wb_part, wb_xml_plan),
+            (wb_rels_part, wb_rels_plan),
+            ("[Content_Types].xml", ct_plan),
+            (ARC_STYLE, styles_plan)):
+        if replacement is not None:
+            changed_parts.add(part_name)
+    if core_changed:
+        changed_parts.add(ARC_CORE)
+    if custom_changed:
+        changed_parts.add(ARC_CUSTOM)
+    if theme_changed:
+        changed_parts.add(ARC_THEME)
+    added_parts = set(part_plan.added)
+    added_parts.update(name for name, _payload in new_sheet_parts)
+    added_parts.update(name for name, _payload in new_rels_parts)
+    save_plan = _PreservePlan(
+        changed_parts=tuple(sorted(changed_parts)),
+        added_parts=tuple(sorted(added_parts)),
+        dropped_parts=tuple(sorted(part_plan.dropped)),
+        build=build,
+        source=source,
+        source_identity=workbook._paper_source_identity,
+        expected_identity=expected_identity,
+        target_is_source=target_is_source,
+        crosscheck=(os.environ.get("PAPER_LEDGER_CROSSCHECK") == "1"
+                    and bool(plan)),
+        dirty_by_part=_frozen_mapping(dirty_by_part, set_values=True),
+        baselines=_frozen_mapping(baselines),
+        region_claims=_frozen_mapping(region_claims, set_values=True),
+        row_claims=_frozen_mapping(row_claims, set_values=True),
+    )
 
-    def validate_source():
-        if source_identity is not None:
-            zipio._assert_path_identity(source_identity)
-
-    if os.environ.get("PAPER_LEDGER_CROSSCHECK") == "1" and plan:
-        # the crosscheck needs the finished bytes: in-memory build
-        data = zipio.build_archive_bytes(build)
-        from .crosscheck import verify_splice
-        verify_splice(source, data, dirty_by_part, baselines=baselines,
-                      region_claims=region_claims, row_claims=row_claims)
-        return zipio.deliver(
-            data, target, expected_identity=expected_identity,
-            precommit=validate_source,
-            postcommit=None if target_is_source else validate_source)
-
-    # spool-to-disk for path targets
-    return zipio.build_and_deliver(
-        build, target, expected_identity=expected_identity,
-        precommit=validate_source,
-        postcommit=None if target_is_source else validate_source)
+    # Planning is the complete non-I/O validation boundary. Both validate()
+    # and save() receive this same immutable result; only save() hands it to
+    # the delivery phase.
+    zin.close()
+    return save_plan
 
 
 def _model_style_resolver(cell):
@@ -1301,6 +1438,25 @@ def _plan_hyperlinks(workbook, ws, led, zin, sheet_part, names,
     now = hyperlink_signatures(ws)
     removed = set(arm) - set(now)
     changed = {k for k in set(arm) & set(now) if arm[k] != now[k]}
+    if changed and led.renames:
+        from .rewrite import rename_sheets_in_formula_fragment
+
+        rename_map = {original: sheet.title
+                      for sheet, original in led.renames.items()
+                      if original != sheet.title}
+        derived = set()
+        for coordinate in changed:
+            old_target, old_location, old_tooltip, old_display = arm[coordinate]
+            new_target, new_location, new_tooltip, new_display = now[coordinate]
+            if (old_target, old_tooltip, old_display) != \
+                    (new_target, new_tooltip, new_display) \
+                    or not isinstance(old_location, str):
+                continue
+            expected, did_change = rename_sheets_in_formula_fragment(
+                old_location, rename_map)
+            if did_change and expected == new_location:
+                derived.add(coordinate)
+        changed -= derived
     if removed or changed:
         from openpyxl.errors import RelationshipPolicyError
 

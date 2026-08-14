@@ -1,140 +1,29 @@
-"""The computation layer — scenario
-runner, formula pre-flight linter, certification-gated write-back."""
+"""The computation layer — explicit scenarios and certified write-back."""
 from __future__ import annotations
 
-import warnings
 import zipfile
 
 import pytest
 
 from openpyxl import Workbook, load_workbook, oracle
-from openpyxl.errors import (
-    LintWarning,
-    TargetNotFoundError,
-    UnsupportedStructureError,
-)
-from openpyxl.formula.lint import lint_formula
+from openpyxl.errors import UnsupportedStructureError
 
 needs_soffice = pytest.mark.skipif(
     not oracle.available(), reason="LibreOffice not installed")
 
 
-class TestLintFormula:
-
-    def test_unknown_function(self):
-        findings = lint_formula("=SUMM(A1:B2)")
-        assert [f["code"] for f in findings] == ["unknown-function"]
-        assert "SUMM" in findings[0]["message"]
-
-    def test_xlfn_prefix_is_known(self):
-        assert lint_formula("=_xlfn.XLOOKUP(A1,B:B,C:C)") == []
-
-    def test_semicolon_separator_flagged_outside_arrays_only(self):
-        assert [f["code"] for f in lint_formula("=SUM(A1;B2)")] \
-            == ["semicolon-separator"]
-        assert lint_formula("={1,2;3,4}") == []      # row separator: legal
-        assert lint_formula('=IF(A1,"x;y",1)') == [] # inside a string
-
-    def test_unbalanced_parens(self):
-        assert [f["code"] for f in lint_formula("=SUM((A1)")] \
-            == ["unbalanced-parens"]
-        assert lint_formula("=SUM((A1))") == []
-
-    def test_workbook_reference_checks(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        codes = {f["code"] for f in lint_formula(
-            "=Nowhere!A1+BadName+Schedule!B2", workbook=wb,
-            sheet=wb["Summary"])}
-        assert codes == {"unknown-sheet", "unknown-name"}
-        assert lint_formula("=SUM(Schedule!B2:B10)", workbook=wb) == []
-
-    def test_structured_refs_checked_against_tables(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/tables.xlsx"))
-        table = next(iter(next(
-            ws for ws in wb.worksheets if ws.tables).tables.values()))
-        col = table.column_names[0]
-        good = "=SUM({0}[{1}])".format(table.name, col)
-        assert lint_formula(good, workbook=wb) == []
-        bad = "=SUM({0}[NoSuchColumn])".format(table.name)
-        assert [f["code"] for f in lint_formula(bad, workbook=wb)] \
-            == ["unknown-column"]
-        assert [f["code"] for f in
-                lint_formula("=SUM(NoTable[Col])", workbook=wb)] \
-            == ["unknown-table"]
-
-    def test_let_locals_skip_name_checks(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        assert lint_formula("=LET(x,1,x*2)", workbook=wb) == []
-
-
-class TestLintChokepoint:
-
-    def test_warn_mode_binds_with_lint_warning(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           preserve=True)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            wb["Summary"]["D1"] = "=SUMM(A1)"
-        assert any(isinstance(w.message, LintWarning) for w in caught)
-        assert wb["Summary"]["D1"].value == "=SUMM(A1)"   # warn, not block
-
-    def test_refuse_mode_is_atomic(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           preserve=True)
-        wb.formula_lint = "refuse"
-        ws = wb["Summary"]
-        old_value, old_type = ws["B1"].value, ws["B1"].data_type
-        with pytest.raises(UnsupportedStructureError, match="pre-flight"):
-            ws["B1"] = "=SUMM(A1)"
-        assert ws["B1"].value == old_value
-        assert ws["B1"].data_type == old_type
-        assert not wb._paper_ledger.dirty_coordinates(ws)  # nothing dirtied
-
-    def test_off_mode_is_silent(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"),
-                           preserve=True)
-        wb.formula_lint = "off"
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            wb["Summary"]["D1"] = "=SUMM(A1)"
-        assert not any(isinstance(w.message, LintWarning) for w in caught)
-
-    def test_stock_mode_never_lints(self, fixture_copy):
-        wb = load_workbook(
-            fixture_copy("features/schedule.xlsx"), preserve=False)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            wb["Summary"]["D1"] = "=SUMM(A1)"
-        assert not any(isinstance(w.message, LintWarning) for w in caught)
-
-
 class TestEvaluate:
 
-    def test_resolver_refusals(self, fixture_copy):
-        src = fixture_copy("features/schedule_calc.xlsx")
-        wb = load_workbook(src, preserve=True)
-        with pytest.raises(TargetNotFoundError, match="Nowhere"):
-            wb.evaluate(set={"Nowhere!B2": 1}, read=[])
-        with pytest.raises(TargetNotFoundError, match="SINGLE"):
-            wb.evaluate(set={"Schedule!B2:B4": 1}, read=[])
-        with pytest.raises(TargetNotFoundError, match="defined name"):
-            wb.evaluate(set={"NotAName": 1}, read=[])
-
-    def test_evaluate_requires_preserve(self, fixture_copy):
-        wb = load_workbook(
-            fixture_copy("features/schedule_calc.xlsx"), preserve=False)
-        with pytest.raises(ValueError, match="preserve"):
-            wb.evaluate(set={}, read=[])
-
     @needs_soffice
+    @pytest.mark.lo_smoke
     def test_scenario_run_certified_and_untouched(self, fixture_copy):
         # battery job 12: one evaluate call with explicit certification state
         src = fixture_copy("features/schedule_calc.xlsx")
         with open(src, "rb") as f:
             before = f.read()
-        wb = load_workbook(src, preserve=True)
-        ev = wb.evaluate(set={"Schedule!B2": 1000, "Schedule!B3": 0},
-                         read=["Summary!B1", "Schedule!B12"])
+        ev = oracle.evaluate(
+            src, set={"Schedule!B2": 1000, "Schedule!B3": 0},
+            read=["Summary!B1", "Schedule!B12"])
         assert isinstance(ev, oracle.Evaluation)      # pinned return type
         assert ev.status == "ok"
         assert ev.outputs["Summary!B1"] == ev.outputs["Schedule!B12"]
@@ -156,6 +45,7 @@ class TestEvaluate:
             assert f.read() == before                 # original untouched
 
     @needs_soffice
+    @pytest.mark.lo_smoke
     def test_evaluate_many_pool(self, fixture_copy):
         src = fixture_copy("features/schedule_calc.xlsx")
         cases = [{"Schedule!B2": v} for v in (100, 300)]
@@ -175,6 +65,7 @@ class TestWriteBack:
             oracle.write_back(b"PK\x03\x04junk")
 
     @needs_soffice
+    @pytest.mark.lo_smoke
     def test_cacheless_write_back_and_clear(self, tmp_path):
         # battery job 24: the cache-less openpyxl file gains real caches
         wb = Workbook()
@@ -218,6 +109,7 @@ class TestWriteBack:
             assert b"fullCalcOnLoad" not in z.read("xl/workbook.xml")
 
     @needs_soffice
+    @pytest.mark.lo_smoke
     def test_write_back_is_macro_safe(self, fixture_copy):
         # the splice writes values into the ORIGINAL package: LibreOffice
         # bytes never enter the output, so vbaProject.bin survives

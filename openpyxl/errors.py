@@ -1,12 +1,12 @@
-# paper-xlsx: typed refusals and structured warnings
+# paper-xlsx: typed refusals and protection warnings
 
 """Typed exceptions for paper-xlsx safety refusals.
 
-Every operation in preserve mode has exactly three legal outcomes: done
-correctly; refused with a :class:`PaperRefusal` subclass saying what was found
-and why it was unsafe; or done with a loud warning enumerating exactly what
-could not be preserved. A refused operation leaves the in-memory model, the
-dirty ledger, and any file on disk exactly as they were.
+Every preserve-mode operation completes correctly or refuses with a
+:class:`PaperRefusal` subclass saying what was found and why it was unsafe.
+Writes to protected cells can also emit an explicit advisory warning. A
+refused operation leaves the in-memory model, dirty ledger, and destination
+exactly as they were.
 
 Programmer errors (invalid argument combinations, wrong types) remain
 ``TypeError``/``ValueError`` and are deliberately NOT part of this hierarchy.
@@ -65,32 +65,6 @@ class OracleUnavailableError(PaperRefusal):
 
 class OracleTimeoutError(PaperRefusal):
     """The LibreOffice oracle did not finish within the allowed time."""
-
-
-class StructuralShiftWarning(UserWarning):
-    """A row/column shift on a loaded workbook: the cells move but nothing
-    that references them is updated — formulas, defined names and chart
-    ranges keep pointing at the old cells."""
-
-
-class LintWarning(UserWarning):
-    """Formula pre-flight lint findings at the value-bind chokepoint: the
-    formula was accepted, but Excel will likely show
-    #NAME? or compute wrongly. Set ``wb.formula_lint = "refuse"`` to turn
-    these into typed refusals, or ``"off"`` to silence them."""
-
-
-class LossySaveWarning(UserWarning):
-    """Loud warning on a save path that is about to rebuild or drop content
-    it cannot preserve.
-
-    ``losses`` is a list of dicts, each ``{"kind": ..., "location": ...,
-    "detail": ...}``; the rendered message enumerates them.
-    """
-
-    def __init__(self, message, losses=None):
-        super().__init__(message)
-        self.losses = list(losses) if losses else []
 
 
 class ProtectedWriteWarning(UserWarning):

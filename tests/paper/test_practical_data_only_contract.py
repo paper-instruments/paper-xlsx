@@ -22,31 +22,6 @@ def _source_bytes():
     return target.getvalue()
 
 
-def test_preserve_data_only_set_input_refuses_source_formula_atomically():
-    source = _source_bytes()
-    workbook = load_workbook(
-        io.BytesIO(source), preserve=True, data_only=True)
-    ledger = workbook._paper_ledger
-    before_cells = {
-        sheet: set(coordinates) for sheet, coordinates in ledger.cells.items()
-    }
-    before_overwrites = {
-        sheet: set(coordinates)
-        for sheet, coordinates in ledger.value_overwrites.items()
-    }
-
-    with pytest.raises(UnsupportedStructureError) as refusal:
-        workbook.set_input("FormulaInput", 5)
-
-    assert refusal.value.kind == "input-is-calculation"
-    assert workbook["Model"]["A1"].value is None
-    assert {sheet: set(coordinates)
-            for sheet, coordinates in ledger.cells.items()} == before_cells
-    assert {sheet: set(coordinates)
-            for sheet, coordinates in ledger.value_overwrites.items()} == \
-        before_overwrites
-
-
 def test_preserve_data_only_direct_assignment_refuses_source_formula():
     workbook = load_workbook(
         io.BytesIO(_source_bytes()), preserve=True, data_only=True)
@@ -121,34 +96,6 @@ def test_preserve_data_only_direct_assignment_allows_source_literal():
     workbook["Model"]["B1"] = 20
 
     assert workbook["Model"]["B1"].value == 20
-
-
-def test_preserve_data_only_set_input_allows_proven_nonformula():
-    source = _source_bytes()
-    workbook = load_workbook(
-        io.BytesIO(source), preserve=True, data_only=True)
-
-    target = workbook.set_input("ValueInput", 20)
-    assert target.coordinate == "B1"
-    assert target.value == 20
-
-    output = io.BytesIO()
-    workbook.save(output, allow_formula_loss=True)
-    output.seek(0)
-    reopened = load_workbook(output, data_only=False)
-    assert reopened["Model"]["A1"].value == "=1+1"
-    assert reopened["Model"]["B1"].value == 20
-
-
-def test_stock_data_only_set_input_refuses_without_source_custody():
-    workbook = load_workbook(
-        io.BytesIO(_source_bytes()), data_only=True, preserve=False)
-
-    with pytest.raises(UnsupportedStructureError) as refusal:
-        workbook.set_input("ValueInput", 20)
-
-    assert refusal.value.kind == "data-only-input-model-unavailable"
-    assert workbook["Model"]["B1"].value == 10
 
 
 def test_preserve_data_only_loaded_sheet_copy_refuses_atomically():
