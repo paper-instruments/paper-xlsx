@@ -140,16 +140,6 @@ The library does not define workbook eligibility caps for entry count,
 uncompressed bytes, source bytes, or compression ratio. Resource limits belong
 to the caller or execution environment. Reads and validation remain chunked.
 
-Deliberately absent APIs
-------------------------
-
-The public release does not include heuristic role/target APIs or raw package
-escape hatches: ``manifest()``, ``model_map()``, ``findings()``, ``locate()``,
-``set_input()``, ``apply_profile()``, ``protect_for_delivery()``, ``scrub()``,
-``mark_dirty()``, ``replace_part()``, workbook-level ``evaluate()``, and formula
-linting. Unsupported low-level mutations must refuse rather than become
-"safe" through a caller declaration.
-
 Refusal taxonomy
 ----------------
 

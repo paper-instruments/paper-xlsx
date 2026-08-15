@@ -105,10 +105,9 @@ Every claim below is traceable to a commit in this repository. The fork point is
 - **Formula caches are invalidated instead of trusted** ([`a0b89793`](https://github.com/paper-instruments/paper-xlsx/commit/a0b89793) through [`1a16aa07`](https://github.com/paper-instruments/paper-xlsx/commit/1a16aa07), 0.1.3): when you edit a formula, or write a value into a cell that formulas read, the save strips the now-stale cached results from the file and sets the workbook to fully recalculate on open. The risk this closes: a human opens the edited file in Excel and silently trusts a stale number. The commit stream handles the ugly realities — array/spill formula followers, namespace-prefixed formula elements, whole-column array references — and style-only edits keep their caches untouched.
 - **The stock path stays stock.** `preserve=False` does not run Paper ledgers, scanners, warnings, structural guards, or ZIP eligibility policies. It is the compatibility escape hatch for callers that deliberately want upstream openpyxl behavior.
 
-### Removed
+### Archive validation
 
-- **Heuristic and raw-mutation APIs.** The release surface excludes `manifest()`, `model_map()`, `findings()`, `locate()`, `set_input()`, `apply_profile()`, `protect_for_delivery()`, `scrub()`, `mark_dirty()`, `replace_part()`, workbook-level `evaluate()`, and formula linting. These APIs either guessed workbook intent, declared unsupported low-level changes safe, or duplicated ordinary openpyxl operations without a closed preservation contract.
-- **Paper-defined archive eligibility caps.** Valid workbooks are not rejected because they cross a fixed entry-count, byte-size, or compression-ratio threshold. ZIP integrity checks remain; resource limits belong to the caller or execution environment.
+- **Integrity without package-defined eligibility caps.** Paper validates ZIP integrity but does not impose fixed entry-count, byte-size, or compression-ratio limits. Resource limits belong to the caller or execution environment.
 
 ## How it works
 
