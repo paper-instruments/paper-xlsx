@@ -215,7 +215,7 @@ def test_row_reference_overflow_refuses_before_mutation(tmp_path):
     assert wb["Other"]["A1"].value == "=Target!A1048576"
 
 
-def test_append_totals_moves_hyperlink_without_residue(tmp_path):
+def test_append_totals_with_new_hyperlink_refuses_before_mutation(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.append(["Region", "Amount"])
@@ -229,17 +229,12 @@ def test_append_totals_moves_hyperlink_without_residue(tmp_path):
     wb = _preserved(tmp_path, wb)
     ws = wb.active
     ws["A3"].hyperlink = "https://example.com/total"
-    ws.append_table_row("T", ["East", 20])
-    assert ws["A4"].hyperlink.target == "https://example.com/total"
-    assert ws["A4"].hyperlink.ref == "A4"
-    assert ws["A3"].hyperlink is None
-
-    output = tmp_path / "totals-hyperlink.xlsx"
-    wb.save(output)
-    reloaded = load_workbook(output)
-    assert reloaded.active["A4"].hyperlink.target == \
-        "https://example.com/total"
-    assert reloaded.active["A3"].hyperlink is None
+    with pytest.raises(PaperRefusal, match="comment or hyperlink"):
+        ws.append_table_row("T", ["East", 20])
+    assert ws.tables["T"].ref == "A1:B3"
+    assert ws["A3"].value == "Total"
+    assert ws["A3"].hyperlink.target == "https://example.com/total"
+    assert ws["A4"].value is None
 
 
 def test_append_totals_with_preserved_comment_refuses_before_mutation(
@@ -256,7 +251,7 @@ def test_append_totals_with_preserved_comment_refuses_before_mutation(
 
     wb = _preserved(tmp_path, wb, "totals-comment.xlsx")
     ws = wb.active
-    with pytest.raises(PaperRefusal, match="comment/VML anchor"):
+    with pytest.raises(PaperRefusal, match="comment or hyperlink"):
         ws.append_table_row("T", ["East", 20])
     assert ws.tables["T"].ref == "A1:B3"
     assert ws["A3"].value == "Total"
@@ -278,7 +273,7 @@ def test_append_totals_with_preserved_hyperlink_refuses_before_mutation(
 
     wb = _preserved(tmp_path, wb, "totals-link.xlsx")
     ws = wb.active
-    with pytest.raises(PaperRefusal, match="hyperlink relationship"):
+    with pytest.raises(PaperRefusal, match="comment or hyperlink"):
         ws.append_table_row("T", ["East", 20])
     assert ws.tables["T"].ref == "A1:B3"
     assert ws["A3"].value == "Total"

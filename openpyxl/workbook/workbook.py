@@ -160,6 +160,8 @@ class Workbook:
     _paper_source_identity = None   # content-bound source path identity
     _paper_content_type = None      # source workbook type under preserve
     _paper_ledger = None            # the dirty ledger; armed after load
+    # distinguishes stock-loaded workbooks from new in-memory workbooks
+    _paper_loaded_from_package = False
     # protection awareness: True turns writes to locked
     # cells on protected sheets into typed refusals (default: warn once
     # per sheet). Protection is reported, never enforced or bypassed.

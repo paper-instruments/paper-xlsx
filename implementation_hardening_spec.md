@@ -818,8 +818,9 @@ The removals are based on implementation contracts, not only low eval usage:
   `Worksheet.append_table_row(table_name, values)`; do not overload generic
   `Worksheet.append()` with table semantics.
 - Preserve table-range and auto-filter expansion, totals-row relocation,
-  declared calculated-column formulas, boundary checks, and refusal when
-  content below the table would require a structural shift.
+  declared calculated-column formulas, inherited cell styles and number
+  formats, boundary checks, and refusal when the immediate destination row
+  conflicts. Nonintersecting content farther below the table is unchanged.
 - Remove the fallback that copies a formula from the preceding row when the
   table column has no `calculatedColumnFormula`. A missing ordinary-column
   value remains blank unless the caller supplies it.
@@ -831,6 +832,22 @@ The removals are based on implementation contracts, not only low eval usage:
   registries, and preservation-ledger deltas.
 - Reuse the coordinate-local transaction primitives from R1/R2, but keep the
   public table-row contract separate from generic row append.
+- For loaded tables, inspect the retained original table XML, worksheet/table
+  relationships, and original geometry during the call. Loading explicitly
+  with ``preserve=False`` cannot satisfy this contract and must refuse.
+- Refuse connected/query tables, unsupported extensions, active sort state,
+  malformed or ambiguous headers/columns, merged destinations, array/spill or
+  data-table intersections, unsupported table formulas, and protection states
+  that cannot be honored. Unknown table structures default to typed refusal.
+- Support both common totals-row encodings (``totalsRowCount`` and
+  ``totalsRowShown``), retain the producer's coherent auto-filter convention,
+  and initialize column metadata for a valid new in-memory table.
+- Add an explicit commit point after every mutation stage. Inject a failure at
+  every point and prove exact restoration of cells, styles, table/filter
+  metadata, formula/cache state, number-format registries, and ledger state.
+- Treat a table-append refusal as final in agent instructions. Generic append,
+  structural row insertion, ``preserve=False``, and direct ZIP/XML mutation
+  are not valid fallbacks.
 
 #### Required pivot-refresh API
 

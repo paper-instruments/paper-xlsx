@@ -196,14 +196,29 @@ class TestTableLifecycle:
         assert ws3["A7"].value == "Total"              # totals stayed last
         assert ws3.tables["RegionTable"].ref == "A1:B7"
 
-    def test_append_refuses_content_below(self, fixture_copy, tmp_path):
+    def test_append_ignores_nonconflicting_content_far_below(
+            self, fixture_copy, tmp_path):
+        src = fixture_copy("features/tables.xlsx")
+        wb = load_workbook(src, preserve=True)
+        ws = wb.worksheets[0]
+        ws["A8"] = "not in the way"
+
+        ws.append_table_row("RegionTable", ["X", 1])
+
+        assert ws.tables["RegionTable"].ref == "A1:B6"
+        assert ws["A6"].value == "X"
+        assert ws["A8"].value == "not in the way"
+
+    def test_append_refuses_destination_conflict(self, fixture_copy, tmp_path):
         from openpyxl.errors import UnsupportedStructureError
         src = fixture_copy("features/tables.xlsx")
         wb = load_workbook(src, preserve=True)
         ws = wb.worksheets[0]
-        ws["A8"] = "in the way"
-        with pytest.raises(UnsupportedStructureError, match="below"):
+        ws["A6"] = "in the way"
+        with pytest.raises(UnsupportedStructureError, match="overwrite"):
             ws.append_table_row("RegionTable", ["X", 1])
+        assert ws.tables["RegionTable"].ref == "A1:B5"
+        assert ws["A6"].value == "in the way"
 
 
 class TestCommentCreation:

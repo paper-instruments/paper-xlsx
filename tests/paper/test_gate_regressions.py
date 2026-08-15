@@ -314,23 +314,17 @@ class TestBatch2TableGaps:
                 zout.writestr(name, payload)
         return out
 
-    def test_table_with_extlst_preserves_extension_on_local_mutation(
+    def test_table_with_extlst_refuses_append_before_mutation(
             self, fixture_copy, tmp_path):
-        # The lexical table patch changes only modeled values, so an
-        # extension child that openpyxl does not model survives verbatim.
         src = self._with_table_extlst(fixture_copy, tmp_path)
         wb = load_workbook(src, preserve=True)
         ws = wb.worksheets[0]
-        ws.append_table_row("RegionTable", ["West2", 99])
-        out = str(tmp_path / "o.xlsx")
-        wb.save(out)
-        with zipfile.ZipFile(src) as before, zipfile.ZipFile(out) as after:
-            old = before.read("xl/tables/table1.xml")
-            new = after.read("xl/tables/table1.xml")
-        extension = old[old.index(b"<extLst"):old.index(b"</extLst>") + 9]
-        assert extension in new
-        assert b'altText="alt"' in new
-        assert b'ref="A1:B6"' in new
+        cells_before = dict(ws._cells)
+        with pytest.raises(
+                UnsupportedStructureError, match="extension|unmodeled"):
+            ws.append_table_row("RegionTable", ["West2", 99])
+        assert dict(ws._cells) == cells_before
+        assert ws.tables["RegionTable"].ref == "A1:B5"
 
     def test_sibling_basename_survives_removal(self, fixture_copy,
                                                tmp_path):

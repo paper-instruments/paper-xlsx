@@ -81,6 +81,23 @@ surface:
     populated only from the table's declared ``calculatedColumnFormula``.
     The helper never guesses formulas from a neighboring ordinary row.
 
+    Success is limited to a closed worksheet-table subset. Before changing
+    cells, the helper checks the retained table XML and relationships, the
+    original and current table geometry, headers and columns, totals and
+    filter ranges, declared formulas, destination cells, merged and array or
+    spill regions, inherited styles and number formats, and protection state.
+    It preserves the producer's supported auto-filter convention and keeps a
+    single totals row last. New in-memory tables are supported once they have
+    one text header row and at least one data row.
+
+    Loaded tables require preserve mode because stock loading does not retain
+    the source XML needed for that proof. Query or externally connected
+    tables, table extensions, active sort metadata, array table formulas,
+    ambiguous headers, destination conflicts, and other unknown table
+    structures raise a typed refusal without mutation. Treat that refusal as
+    final. Do not retry through generic row insertion, ``preserve=False``, or
+    direct ZIP/XML editing.
+
 ``ws.replace_image(target, replacement, name=None)``
     Replace one loaded image selected by anchor or object. Save adds a fresh
     media part and retargets only the selected drawing relationship. The old

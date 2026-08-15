@@ -293,6 +293,7 @@ class ExcelReader:
             self._validate_sheet_relationships()
         wb = self.parser.wb
         wb._sheets = []
+        wb._paper_loaded_from_package = True
         wb._data_only = self.data_only
         wb._read_only = self.read_only
         wb.template = wb_part.ContentType in (XLTX, XLTM)

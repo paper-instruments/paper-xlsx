@@ -766,7 +766,7 @@ class Worksheet(_WorkbookChild):
         return _allowed(self, cell)
 
     def append_table_row(self, table_name, values):
-        """Atomically append values to a named table and expand its range."""
+        """Append to a supported named table, or refuse without mutation."""
         from openpyxl.preserve.tables import append_table_row
 
         return append_table_row(self, table_name, values)

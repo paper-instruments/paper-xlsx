@@ -25,7 +25,7 @@ performance, compatibility, and reviewability defects in the retained code.
 
 | Addition | What it provides |
 | --- | --- |
-| `Worksheet.append_table_row(table_name, values)` | Atomically expands one loaded Excel table, its filter, totals placement, and declared calculated columns. It does not infer formulas from the previous row. |
+| `Worksheet.append_table_row(table_name, values)` | Atomically expands a supported named worksheet table, its filter, totals placement, inherited cell formats, and declared calculated columns. Loaded tables are checked against retained source XML and relationships; connected, extended, merged/spill, sorted, protected, ambiguous, or conflicting states refuse before mutation. A refusal is final and must not be bypassed. |
 | `Worksheet.replace_image(target, replacement, *, name=None)` | Replaces one worksheet image by allocating a new media part and retargeting exactly one relationship, without changing other shapes that shared the old media part. |
 | Targeted pivot refresh requests | `Workbook.set_pivot_refresh_on_load(pivots=[...])` or explicit `all=True` records planner-owned requests and patches only selected pivot-cache root attributes. |
 | Local rollback journals | Cell assignment, generic append, and table-row append now restore mutation-owned state without copying whole ledgers, sheets, or workbooks. Nested savepoints preserve exact failure atomicity. |
