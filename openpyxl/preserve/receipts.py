@@ -164,7 +164,7 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
 def receipt(before, after, *, recalc=None, _ledger=None):
     """Build an :class:`EditReceipt` from two package states (paths,
     bytes, or binary file-likes). ``recalc``: an oracle result
-    (RecalcResult/CertificationResult/Evaluation/WriteBackResult) whose
+    (RecalcResult/CertificationResult/Evaluation) whose
     ``to_dict()`` rides along. The result must carry ``artifact_sha256``
     matching ``after``; unbound or cross-workbook verification refuses."""
     from .crosscheck import _sheet_cells

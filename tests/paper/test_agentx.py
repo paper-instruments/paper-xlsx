@@ -7,7 +7,11 @@ import zipfile
 import pytest
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.errors import UnsupportedStructureError
+from openpyxl.errors import (
+    AmbiguousTargetError,
+    TargetNotFoundError,
+    UnsupportedStructureError,
+)
 
 
 class TestSearchAndScan:
@@ -48,6 +52,39 @@ class TestSearchAndScan:
         sources = {r["source"] for r in results}
         assert {"cache", "formula"} <= sources
 
+    def test_scan_errors_uses_formula_operands_not_string_substrings(self):
+        from openpyxl.preserve import scan_errors
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Model"
+        ws["A1"] = '=IF(B1="#REF!", 1, 0)'
+        ws["A2"] = "=#REF!+1"
+        ws["A3"] = "=Other!#REF!"
+        ws["A4"] = "=#SPILL!"
+        results = scan_errors(wb)
+        assert results == [
+            {"address": "Model!A2", "value": "#REF!",
+             "source": "formula"},
+            {"address": "Model!A3", "value": "#REF!",
+             "source": "formula"},
+            {"address": "Model!A4", "value": "#SPILL!",
+             "source": "formula"},
+        ]
+
+    def test_scan_errors_refuses_unscannable_formula_without_partial_report(
+            self):
+        from openpyxl.preserve import scan_errors
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "=#REF!"
+        ws["A2"] = '="unterminated'
+
+        with pytest.raises(UnsupportedStructureError,
+                           match="No partial formula-error report"):
+            scan_errors(wb)
+
     def test_allowed_values_literal_and_range(self, fixture_copy):
         from openpyxl.worksheet.datavalidation import DataValidation
 
@@ -64,6 +101,83 @@ class TestSearchAndScan:
         assert ws.allowed_values(ws["D2"]) == ["Item 1", "Item 2",
                                                "Item 3"]
         assert ws.allowed_values("E9") is None
+
+    def test_allowed_values_preserves_literal_text_and_blanks(self):
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "Yes"
+        ws["A3"] = " No "
+        literal = DataValidation(
+            type="list", formula1='" Yes,No ,A""B,"')
+        literal.add("D1")
+        ws.add_data_validation(literal)
+        ranged = DataValidation(type="list", formula1="=$A$1:$A$3")
+        ranged.add("D2")
+        ws.add_data_validation(ranged)
+        assert ws.allowed_values("D1") == [" Yes", "No ", 'A"B', ""]
+        assert ws.allowed_values("D2") == ["Yes", None, " No "]
+
+    def test_allowed_values_handles_quoted_cross_sheet_and_reversed_ranges(
+            self):
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        wb = Workbook()
+        ws = wb.active
+        source = wb.create_sheet("Owner's Inputs")
+        source["A1"] = "Low"
+        source["A2"] = "High"
+        validation = DataValidation(
+            type="list", formula1="='Owner''s Inputs'!$A$2:$A$1")
+        validation.add("B1")
+        ws.add_data_validation(validation)
+
+        assert ws.allowed_values("B1") == ["Low", "High"]
+
+    def test_allowed_values_refuses_unsupported_or_ambiguous_sources(self):
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "=1+1"
+        cases = {
+            "D1": "=ModelInputs",
+            "D2": "=Missing!$A$1:$A$2",
+            "D3": "=$A$1:$A$2",
+            "D4": "=$A$1:$B$2",
+        }
+        for target, formula in cases.items():
+            validation = DataValidation(type="list", formula1=formula)
+            validation.add(target)
+            ws.add_data_validation(validation)
+        with pytest.raises(UnsupportedStructureError, match="defined name"):
+            ws.allowed_values("D1")
+        with pytest.raises(TargetNotFoundError, match="missing worksheet"):
+            ws.allowed_values("D2")
+        with pytest.raises(UnsupportedStructureError, match="formula cell"):
+            ws.allowed_values("D3")
+        with pytest.raises(UnsupportedStructureError,
+                           match="two-dimensional"):
+            ws.allowed_values("D4")
+
+        first = DataValidation(type="list", formula1='"A,B"')
+        second = DataValidation(type="list", formula1='"C,D"')
+        first.add("E1")
+        second.add("E1")
+        ws.add_data_validation(first)
+        ws.add_data_validation(second)
+        with pytest.raises(AmbiguousTargetError,
+                           match="covered by 2 list validations"):
+            ws.allowed_values("E1")
+
+        ws.merge_cells("F1:G1")
+        merged = DataValidation(type="list", formula1='"A,B"')
+        merged.add("G1")
+        ws.add_data_validation(merged)
+        with pytest.raises(UnsupportedStructureError,
+                           match="non-anchor merged cell"):
+            ws.allowed_values("G1")
 
 
 class TestValidateAndReceipt:

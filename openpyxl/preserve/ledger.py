@@ -85,7 +85,7 @@ class DirtyLedger:
         self.shifts = {}               # ws -> [(operation, index, amount)]
         self.template_flag = False
         self.cache_writes = {}         # ws -> {(row, col): computed value}
-                                       # (oracle write-back)
+                                       # (preserved recalc candidate)
         self.pivot_refresh_requests = set()
         self.image_replacements = {}
 

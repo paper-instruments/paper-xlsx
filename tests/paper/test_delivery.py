@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import io
+import warnings
 import zipfile
 
 import pytest
 
 from openpyxl import load_workbook
-from openpyxl.errors import AmbiguousTargetError, TargetNotFoundError
+from openpyxl.errors import (
+    AmbiguousTargetError,
+    ProtectedWriteWarning,
+    TargetNotFoundError,
+    UnsupportedStructureError,
+)
 
 
 def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False):
@@ -94,6 +100,111 @@ def test_copy_format_through_the_splice(fixture_copy, tmp_path):
     wb2 = load_workbook(out)
     assert wb2["Schedule"]["B3"].font.bold is True
     assert wb2["Schedule"]["B4"].font.italic is True
+
+
+def test_copy_format_rolls_back_model_and_ledger(
+        fixture_copy, monkeypatch):
+    from copy import copy
+
+    from openpyxl.preserve import copy_format
+    from openpyxl.styles import Font
+    import openpyxl.preserve.styleverbs as styleverbs
+
+    wb = load_workbook(
+        fixture_copy("features/schedule.xlsx"), preserve=True)
+    ws = wb["Schedule"]
+    ws["B2"].font = Font(bold=True, italic=True)
+    before_styles = {
+        coordinate: copy(ws[coordinate]._style)
+        for coordinate in ("B3", "B4")
+    }
+    before_dirty = set(wb._paper_ledger.dirty_coordinates(ws))
+    before_row = ws._current_row
+    calls = []
+
+    def fail_after_first(coordinate):
+        calls.append(coordinate)
+        raise RuntimeError("injected format-copy failure")
+
+    monkeypatch.setattr(
+        styleverbs, "_copy_format_commit_point", fail_after_first)
+    with pytest.raises(RuntimeError, match="injected"):
+        copy_format(ws, "B2", "B3:B4")
+    assert calls == [(3, 2)]
+    assert {coordinate: ws[coordinate]._style
+            for coordinate in ("B3", "B4")} == before_styles
+    assert set(wb._paper_ledger.dirty_coordinates(ws)) == before_dirty
+    assert ws._current_row == before_row
+
+
+def test_copy_format_rolls_back_new_cells_on_interrupt(
+        fixture_copy, monkeypatch):
+    from openpyxl.preserve import copy_format
+    import openpyxl.preserve.styleverbs as styleverbs
+
+    wb = load_workbook(
+        fixture_copy("features/schedule.xlsx"), preserve=True)
+    ws = wb["Schedule"]
+    before_cells = set(ws._cells)
+    before_dirty = set(wb._paper_ledger.dirty_coordinates(ws))
+    before_row = ws._current_row
+    calls = []
+
+    def interrupt_after_second(coordinate):
+        calls.append(coordinate)
+        if len(calls) == 2:
+            raise KeyboardInterrupt("injected format-copy interruption")
+
+    monkeypatch.setattr(
+        styleverbs, "_copy_format_commit_point", interrupt_after_second)
+    with pytest.raises(KeyboardInterrupt, match="injected"):
+        copy_format(ws, "B2", "Z100:Z101")
+
+    assert calls == [(100, 26), (101, 26)]
+    assert set(ws._cells) == before_cells
+    assert set(wb._paper_ledger.dirty_coordinates(ws)) == before_dirty
+    assert ws._current_row == before_row
+
+
+def test_copy_format_preflights_merges_and_protection(
+        fixture_copy, tmp_path):
+    from openpyxl.preserve import copy_format
+
+    src = fixture_copy("minimal/minimal_clean.xlsx")
+    wb = load_workbook(src, preserve=True)
+    ws = wb.active
+    ws["A1"].number_format = "$0.00"
+    ws.merge_cells("B1:C1")
+    before_anchor = ws["B1"]._style
+    with pytest.raises(UnsupportedStructureError,
+                       match="non-anchor merged cell"):
+        copy_format(ws, "A1", "B1:C1")
+    assert ws["B1"]._style == before_anchor
+
+    protected = tmp_path / "protected.xlsx"
+    wb = load_workbook(src, preserve=True)
+    ws = wb.active
+    ws["A1"].number_format = "$0.00"
+    ws["B1"].number_format = "0.00"
+    ws.protection.sheet = True
+    wb.save(protected)
+    wb = load_workbook(protected, preserve=True)
+    ws = wb.active
+    wb.strict_protection = True
+    before = ws["B1"]._style
+    before_cells = set(ws._cells)
+    with pytest.raises(UnsupportedStructureError,
+                       match="strict_protection"):
+        copy_format(ws, "A1", "B1:C1")
+    assert ws["B1"]._style == before
+    assert set(ws._cells) == before_cells
+
+    wb.strict_protection = False
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert copy_format(ws, "A1", "B1:C1") == 2
+    assert len([item for item in caught
+                if issubclass(item.category, ProtectedWriteWarning)]) == 1
 
 
 def test_pivot_refresh_requires_explicit_scope(fixture_copy):

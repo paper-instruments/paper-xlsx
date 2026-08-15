@@ -100,14 +100,13 @@ skill text. Grader checks were inspected at the individual-trial level where a
 treatment gap appeared.
 
 The implemented release cut passes the complete non-LibreOffice suite with its
-optional dependencies: 3,265 tests passed, 7 skipped, 25 LibreOffice-tier tests
-were deselected, and 7 were expected failures. The isolated LibreOffice tier
-still invokes a locally installed executable that aborts with exit code 134
-even for its untouched
-smoke fixture. This is an environment or LibreOffice failure, not evidence
-that those package behaviors pass. The independent-loader and oracle gate was
-rerun in the Linux GitHub Actions environment and passed, along with Windows,
-Python 3.9--3.13, stdlib XML, documentation, and distribution-build jobs.
+optional dependencies: 3,323 tests passed, 7 skipped, 24 LibreOffice-tier tests
+were deselected, and 7 were expected failures. All 24 local Apple Silicon
+LibreOffice tests also pass. Sphinx completes with warnings treated as errors,
+and both release distributions build and pass strict Twine validation. The
+independent-loader and oracle gate was also rerun in the Linux GitHub Actions
+environment, along with Windows, Python 3.9--3.13, stdlib XML, documentation,
+and distribution-build jobs.
 
 ## Fork inventory and decision
 
@@ -556,6 +555,8 @@ Do not generate a new cache without recalculation evidence.
 #### Acceptance criteria
 
 - Saved chart XML contains the new range and no stale cache for that series.
+- A missing sheet, unsupported encoding, or untrustworthy formula-node mapping
+  leaves the in-memory series formula exactly unchanged.
 - Title, category, secondary-axis, scatter, chartsheet, and multi-series cases
   patch only the selected series.
 - Numeric character references and unsupported extension encodings refuse
@@ -773,7 +774,7 @@ Keep these supported groups:
 - targeted pivot refresh through
   `Workbook.set_pivot_refresh_on_load(pivots=..., all=...)`; and
 - optional module-level oracle operations with an explicit source: recalc,
-  certify, evaluate, batch evaluate, and write-back.
+  certify, evaluate, and batch evaluate.
 
 Remove these Paper additions before publication:
 
@@ -786,7 +787,9 @@ Remove these Paper additions before publication:
 - `Workbook.mark_dirty()` and `Workbook.replace_part()`, whose declarations
   cannot make an otherwise unsupported mutation safe;
 - `Workbook.evaluate()`, whose live-workbook receiver is misleading because
-  the implementation evaluates retained source bytes; and
+  the implementation evaluates retained source bytes;
+- `oracle.write_back()`, whose useful path wrote LibreOffice results exactly
+  when cache equivalence was unproven; and
 - the hidden module-level `append_row()` entry point, after its supported
   behavior moves to `Worksheet.append_table_row()`.
 
@@ -1050,7 +1053,7 @@ to serialize it.
 - The six Harbor image-replacement strategies that misused `replace_part()`
   have a direct supported replacement in `Worksheet.replace_image()`.
 
-### R16 Make oracle write and evaluation semantics non-destructive
+### R16 Make oracle recalculation and evaluation semantics non-destructive
 
 #### Confirmed failure
 
@@ -1062,12 +1065,29 @@ unsaved workbook edits are invisible. Harbor agents called or inspected the
 workbook method in 21 trajectories, often after editing, and several also
 guessed incompatible positional signatures.
 
+The later certification-gated `oracle.write_back()` does not close that
+contract. A certified workbook already has caches that match LibreOffice, so
+the normal path generally writes zero cells. Cache-less or changed workbooks
+need the `allow_uncertified=True` escape hatch, which writes LibreOffice values
+precisely when equivalence is unproven. The operation also overwrites the
+source path.
+
 #### Required change
 
 - Remove the `in_place=True` package-replacement path from `recalc()`.
-  Recalculation may return evidence or write a separate candidate path.
-- Keep `write_back()` as the only API that mutates a candidate with calculated
-  caches, and route it through the preservation planner.
+  With no output path, recalculation returns evidence only. With an output
+  path, it must build a separate Paper-preserved candidate by splicing eligible
+  LibreOffice-calculated caches into the original package structure.
+- Never deliver LibreOffice's fully reserialized workbook from the Paper API.
+- Remove `write_back()`, `WriteBackResult`, and `allow_uncertified`.
+- Verify sheet and formula-result topology before transferring cache values;
+  exclude volatile, external, unsupported, error-producing, missing, and
+  type-unwritable results.
+- Preserve original formulas, macros, extensions, and unrelated XML. Keep or
+  set full recalculation flags in every materialized candidate.
+- Replace oracle result status `"ok"` with narrow terminology that says only
+  whether recognized formula errors were detected. No result may imply Excel
+  equivalence or financial correctness.
 - Remove `Workbook.evaluate()` entirely. A workbook method cannot accurately
   represent an operation that ignores the receiver's unsaved state.
 - Keep module-level source evaluation explicit: the caller supplies the source
@@ -1079,6 +1099,10 @@ guessed incompatible positional signatures.
 
 - No oracle API replaces a caller's source package with generic converter
   output.
+- No oracle API overwrites its source. `recalc(..., output_path=...)` requires a
+  distinct path with the same workbook package type as the source.
+- Recalculated candidates report the engine, exact written and excluded cache
+  addresses, package changes, formula errors, and artifact hashes.
 - `Workbook` exposes no `evaluate()` method. Module-level evaluation requires
   an explicit source and never labels retained source-state results as live
   workbook evaluation.
@@ -1277,6 +1301,84 @@ The integrity validation remains valuable. Keep checks for:
 - Tests distinguish structural invalidity from resource-policy behavior; no
   test calls an oversized but otherwise valid package a decompression bomb.
 
+### R21 Make `allowed_values()` exact or typed-refused
+
+#### Confirmed failure
+
+`allowed_values()` returned `None` for both absent validation and unsupported
+validation sources. It returned formula text from source cells as if it were a
+dropdown value, stripped item whitespace, flattened two-dimensional ranges,
+and silently selected the first overlapping validation.
+
+#### Required change
+
+- Return `None` only when no list validation covers the requested cell.
+- Support correctly decoded literal lists and deterministic static,
+  one-dimensional ranges only.
+- Preserve item order, duplicates, meaningful whitespace, escaped quotes, and
+  explicit blank entries.
+- Refuse defined names, formulas, structured/dynamic/external references,
+  missing sheets, multi-area or two-dimensional sources, formula/error source
+  cells, merged interiors, and overlapping validations with typed errors.
+
+#### Acceptance criteria
+
+- Unsupported validation never looks identical to absent validation.
+- A formula source can never be returned as an allowed input value.
+- Literal and static-range results round-trip exact text and blank positions.
+
+### R22 Make `scan_errors()` inspect formula tokens
+
+#### Confirmed failure
+
+The formula check used `"#REF!" in formula`, so string literals such as
+`IF(A1="#REF!", ...)` were reported as broken references. Its token vocabulary
+also omitted modern worksheet error values.
+
+#### Required change
+
+- Maintain one error-token vocabulary shared by the formula tokenizer,
+  preserve scanner, and oracle scanner.
+- Report only actual error operands, including sheet-qualified `#REF!`
+  operands; ignore text operands.
+- Refuse the scan with a typed error rather than return a partial formula report
+  when a formula cannot be tokenized.
+- Retain cached error-cell evidence.
+
+#### Acceptance criteria
+
+- Error-like strings produce no finding.
+- Direct, sheet-qualified, and modern error operands report the exact token.
+- Cached error evidence remains de-duplicated against live formula evidence.
+
+### R23 Make `copy_format()` a range transaction
+
+#### Confirmed failure
+
+`copy_format()` assigned private style arrays one cell at a time. An exception
+could leave a partially formatted model and mismatched dirty ledger, and the
+helper did not preflight merged or protected destinations.
+
+#### Required change
+
+- Keep the explicit helper and define format as font, fill, border, alignment,
+  number format, and cell protection only.
+- Require a same-worksheet source and a finite destination range.
+- Preflight merged interiors and every protected target before mutation.
+- Under `strict_protection`, refuse the whole range; otherwise warn once before
+  applying it.
+- Journal prior styles, cell existence, dirty-ledger membership,
+  `_current_row`, and protection-warning membership. Roll back on
+  `BaseException`.
+
+#### Acceptance criteria
+
+- Mid-range `Exception` and `KeyboardInterrupt` restore the exact model and
+  ledger.
+- Save/reopen and receipt evidence show only requested destination styles.
+- Values, formulas, comments, hyperlinks, validation, row heights, and column
+  widths are unchanged.
+
 ## Harbor evidence used for this cut
 
 The Harbor export is evidence about API ergonomics and saved artifacts. It is
@@ -1292,14 +1394,14 @@ not mentions in the skill text:
 | --- | ---: | ---: | --- |
 | `save(..., receipt=True)` | 162 | 53 | Keep; add derived effects in R17 |
 | `validate()` | 129 | 29 | Keep; route through the pure planner in R18 |
-| `scan_errors()` | 51 | 1 | Keep diagnostic |
-| `copy_format()` | 19 | 0 | Keep explicit operation |
+| `scan_errors()` | 51 | 1 | Keep; tokenize actual error operands in R22 |
+| `copy_format()` | 19 | 0 | Keep; make range-transactional in R23 |
 | `protect_for_delivery()` / `scrub()` | 12 / 12 | 3 / 3 | Remove in R5; calls came from the synthetic task that explicitly required both operations |
 | `model_map()` | 13 | 4 | Remove in R5; nearly all calls were induced by the delivery helper |
-| `allowed_values()` | 7 | 1 | Keep; low use is not a defect |
+| `allowed_values()` | 7 | 1 | Keep; narrow to exact sources in R21 |
 | `replace_part()` | 7 | 0 | Remove in R15; all demonstrated image use needed the dedicated R8 operation |
 | `mark_dirty()` | 4 | 0 | Remove in R15; ledger membership cannot validate an unsupported mutation |
-| `Chart.repoint()` | 1 | 1 | Keep; fix caches and composition |
+| `Chart.repoint()` | 1 | 1 | Keep; fix caches, composition, and preflight atomicity |
 | `locate()` | 1 | 0 | Remove in R11; it guesses a value target from nearby cells |
 | `set_input()` | 0 | 0 | Remove in R11; it mutates a guessed target when no defined name resolves |
 | current `append_row()` | 0 | 0 | Keep the table-expansion job in R11 as public atomic `Worksheet.append_table_row()`; zero use reflects the hidden API, not a redundant capability |
@@ -1347,7 +1449,7 @@ steps or expanding the surface on usage counts alone.
   preserved pivot caches after their source data changes. Keep that narrow job
   while replacing the untargeted raw-replacement implementation.
 - Paper agents inspected or used internal `cache_writes` state in 13
-  trajectories after formula-cache or oracle write-back problems. This
+  trajectories after formula-cache or oracle recalculation problems. This
   reinforced the public/internal boundary and R16 rather than making the ledger
   public.
 
@@ -1369,7 +1471,7 @@ treatment compliance, and evaluator validity separately.
 
 ## Pre-open-source release gate: implementation record
 
-Every R1--R20 implementation item is complete on this branch. The following
+Every R1--R23 implementation item is complete on this branch. The following
 checklists record the proof expected for release review; they are retained so
 future changes can be checked against the same contract. Publication still
 depends on normal project review and release approval.
@@ -1397,6 +1499,8 @@ depends on normal project review and release approval.
 - Chart formula/cache consistency tests.
 - Closed-world structural surface and XML part-editor adversarial fixtures.
 - Oracle source/candidate custody tests.
+- Exact/refused validation vocabulary, token-aware error scanning, chart-model
+  rollback, and range-local format-copy rollback tests.
 - Valid large-package tests above every removed Paper threshold and malformed
   ZIP/OPC integrity tests.
 - Independent load in a known-good LibreOffice environment.
@@ -1431,7 +1535,7 @@ score alone.
 This proposal is implemented. The completed release cut satisfies these
 conditions:
 
-- every R1-R20 item is complete;
+- every R1-R23 item is complete;
 - every executable difference from upstream has an owner, test, and stated
   compatibility effect;
 - normal value writes and appends are linear;

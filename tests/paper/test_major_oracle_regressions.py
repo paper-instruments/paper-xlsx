@@ -95,7 +95,7 @@ def _formula_package(cached_values):
 
 class TestArrayFormulaCoverage:
 
-    def test_stale_follower_diverges_and_write_back_updates_it(
+    def test_stale_follower_recalc_updates_separate_candidate(
             self, tmp_path, monkeypatch):
         stale = _array_package([1, 999, 3])
         computed = _array_package([1, 2, 3])
@@ -111,16 +111,13 @@ class TestArrayFormulaCoverage:
 
         path = tmp_path / "array.xlsx"
         path.write_bytes(stale)
-        first = oracle.write_back(path, allow_uncertified=True)
-        assert first.written == ["Array!A2"]
-        assert first.cleared_fullcalc is False
-        assert load_workbook(path, data_only=True)["Array"]["A2"].value == 2
-
-        second = oracle.write_back(path)
-        assert second.certification.status == "CERTIFIED"
-        assert second.certification.checked == 3
-        assert second.cells_written == 0
-        assert second.cleared_fullcalc is True
+        candidate = tmp_path / "array-candidate.xlsx"
+        result = oracle.recalc(path, output_path=candidate)
+        assert result.written == ["Array!A2"]
+        assert result.verified_unchanged == ["Array!A1", "Array!A3"]
+        assert path.read_bytes() == stale
+        assert load_workbook(candidate, data_only=True)["Array"]["A2"].value \
+            == 2
 
     @pytest.mark.lo_smoke
     def test_libreoffice_array_results_are_all_certified(self, lo, tmp_path):
@@ -256,7 +253,7 @@ def test_template_conversion_and_template_destination_refuse(tmp_path, monkeypat
     wb = Workbook()
     raw = io.BytesIO()
     wb.save(raw)
-    with pytest.raises(UnsupportedStructureError, match="template"):
+    with pytest.raises(UnsupportedStructureError, match="source package type"):
         oracle.recalc(raw.getvalue(), output_path=tmp_path / "result.xltx")
 
 

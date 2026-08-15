@@ -43,13 +43,16 @@ performance, compatibility, and reviewability defects in the retained code.
 | `Worksheet.append()` copied the whole cell map and, in preservation mode, workbook structural state. | An append-local journal records only appended coordinates, supplied-cell bindings, and `_current_row`; unsafe same-sheet re-entrancy refuses before mutation. |
 | A serializer or fingerprint failure could make a changed object look unchanged. | Comparison is stable or fails with a typed untrackable-object error. |
 | Sheet rename rewrote internal hyperlinks and could then refuse its own change. | Rename-owned formula, name, chart, print-region, and internal-hyperlink edits commit as one plan. |
-| `Chart.repoint()` could leave cached values from the old range. | Repointing removes the matching chart cache and reports that automatic effect. |
+| `Chart.repoint()` could leave cached values from the old range or mutate the model before discovering an unsupported patch. | Repointing preflights the complete prospective patch, changes the model only after success, removes the matching chart cache, and reports that automatic effect. |
 | Edits sharing an XML part conflicted at part granularity. | Planner conflict detection operates on exact owned nodes. |
 | Narrow table, validation, filter, and formatting edits could normalize unrelated XML. | Region editors patch the intended lexical tokens and preserve omitted defaults, ordering, prefixes, and unknown children. |
 | Structural preflight did not centrally cover every modeled reference surface. | A closed operation matrix rewrites all known affected surfaces or refuses before mutation. |
 | Paper hooks could affect `preserve=False`. | The stock path bypasses Paper ledgers, snapshots, guards, warnings, parser policy, and preservation behavior. |
 | Several XML editors used broad fallback or substring matching. | Rich text, self-closing cells, CDATA/namespaces, x14 twins, drawing relationships, table IDs/formulas, VML, and chart extensions have explicit handling and adversarial coverage. |
-| Oracle recalculation could replace a package in place, and a workbook method evaluated retained source rather than unsaved live edits. | `write_back()` is the only oracle cache-write path; evaluation remains an explicit-source module operation. |
+| Oracle recalculation could deliver a full LibreOffice rewrite, while meaningful in-place cache write-back required an uncertified override. | `recalc()` is the single calculation API: without an output it returns evidence, and with a separate output it splices eligible caches into a Paper-preserved candidate while keeping full recalculation enabled. Evaluation remains an explicit-source module operation. |
+| `allowed_values()` conflated absent and unsupported validation and could return formula text as an allowed input. | It returns `None` only for absent list validation, supports exact literals and static one-dimensional value ranges, and typed-refuses ambiguous or unsupported sources. |
+| `scan_errors()` matched `#REF!` substrings inside formula text. | It uses the shared formula tokenizer and reports only actual error operands plus cached error values. |
+| `copy_format()` could leave a partly changed range after failure. | It preflights merges and protection, then applies the complete style through a range-local rollback journal. |
 | `validate()` and receipt generation repeated archive work. | Validation and save use the same pure preservation plan, and receipts inspect the delivered archive without rebuilding it. |
 | Large planner and scanner functions mixed unrelated responsibilities. | Planning is split into named phases. Scanner semantic phases are separated while its measured hot loop remains intentionally inline. |
 | Fixed Paper resource caps rejected otherwise valid packages. | All Paper entry-count, part-size, aggregate-size, compression-ratio, source-size, and stock-path caps are gone. Structural ZIP/OPC integrity validation remains. |
@@ -75,6 +78,7 @@ protection, workbook properties, comments, sheets, or defined names.
 | Untargeted default-all pivot refresh | Refresh now requires pivot names or explicit `all=True`; the pivot-refresh job remains. |
 | `Workbook.evaluate()` | The wrapper evaluated retained source bytes rather than unsaved workbook state. Explicit-source `openpyxl.oracle` evaluation remains. |
 | `oracle.recalc(in_place=True)` | Broad package replacement conflicted with preservation custody. |
+| `oracle.write_back()`, `WriteBackResult`, and `allow_uncertified` | The useful path overwrote the source using LibreOffice values precisely when cache equivalence was unproven. Separate-output preserved recalculation remains through `oracle.recalc()`. |
 | `RemovalReport` | The fork-specific return value broke upstream `Workbook.remove()` compatibility. |
 | `DirtyLedger`, `save_preserved`, `scan_archive`, and `LossInventory` public exports | These are implementation components, not supported user operations. The ledger and scanners remain internal where preservation needs them. |
 | Hidden module-level `append_row()` | Its valid table-expansion job moved to public, atomic `Worksheet.append_table_row()` rather than being deleted. |
@@ -94,8 +98,7 @@ protection, workbook properties, comments, sheets, or defined names.
 - Deterministic helpers `allowed_values()`, `search()`, and `copy_format()`.
 - Atomic table expansion through `Worksheet.append_table_row()`.
 - Explicitly scoped pivot refresh through the preservation planner.
-- Optional explicit-source oracle evaluation, certification, and cache
-  write-back.
+- Optional explicit-source oracle recalculation, evaluation, and certification.
 - ZIP/OPC integrity checks for duplicate or case-colliding names, overlapping
   entries, header disagreement, truncation, size or CRC mismatch, encryption,
   and unsupported compression methods.
@@ -127,7 +130,7 @@ use and artifact failures:
 
 ## Verification
 
-- The non-LibreOffice suite passes with 3,265 tests, 7 skips, 25 deliberate
+- The non-LibreOffice suite passes with 3,323 tests, 7 skips, 24 deliberate
   deselections, and 7 expected failures. Packaging checks and focused
   release-cut tests
   cover rollback under `Exception` and `BaseException`, append re-entrancy,
@@ -141,9 +144,11 @@ use and artifact failures:
 - GitHub Actions passes on Windows, Python 3.9--3.13, stdlib XML, default
   dependencies, LibreOffice, documentation, CodeQL, and build/install from the
   source and wheel distributions.
-- The local Apple Silicon LibreOffice wrapper aborts even on an untouched smoke
-  fixture. The equivalent Linux LibreOffice tier passes in GitHub Actions; the
-  local abort is recorded as a machine limitation, not a package pass.
+- All 24 local Apple Silicon LibreOffice smoke tests pass, including preserved
+  recalculation, certification, array results, chart/table delivery, structural
+  edits, and corrupt-input refusal.
+- Sphinx builds with warnings treated as errors. The source and wheel
+  distributions build successfully and both pass strict Twine validation.
 
 Package correctness, model behavior, treatment compliance, and evaluator
 validity remain separate claims.

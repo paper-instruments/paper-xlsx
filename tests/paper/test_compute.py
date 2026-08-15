@@ -25,7 +25,7 @@ class TestEvaluate:
             src, set={"Schedule!B2": 1000, "Schedule!B3": 0},
             read=["Summary!B1", "Schedule!B12"])
         assert isinstance(ev, oracle.Evaluation)      # pinned return type
-        assert ev.status == "ok"
+        assert ev.status == "NO_DETECTED_FORMULA_ERRORS"
         assert ev.outputs["Summary!B1"] == ev.outputs["Schedule!B12"]
         assert ev.outputs["Summary!B1"] == 6500 - 200 - 300 + 1000
         cert = ev.certification
@@ -38,7 +38,7 @@ class TestEvaluate:
         assert "Summary!B1" in cert.input_excluded    # downstream of input
         payload = ev.to_dict()
         assert payload["schema"] == "evaluation"
-        assert payload["version"] == 1
+        assert payload["version"] == 2
         assert payload["certification"]["status"] == \
             "BASELINE_UNVERIFIABLE"
         with open(src, "rb") as f:
@@ -56,69 +56,6 @@ class TestEvaluate:
                    and e.certification.checked == 0
                    and e.certification.input_excluded
                    for e in results)
-
-
-class TestWriteBack:
-
-    def test_path_required(self):
-        with pytest.raises(ValueError, match="filesystem path"):
-            oracle.write_back(b"PK\x03\x04junk")
-
-    @needs_soffice
-    @pytest.mark.lo_smoke
-    def test_cacheless_write_back_and_clear(self, tmp_path):
-        # battery job 24: the cache-less openpyxl file gains real caches
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "M"
-        ws["A1"] = 10
-        ws["A2"] = 32
-        ws["A3"] = "=A1+A2"
-        ws["A4"] = "=A3*2"
-        p = str(tmp_path / "fresh.xlsx")
-        wb.save(p)
-        # cache-less = BASELINE_UNVERIFIABLE: gated
-        with pytest.raises(UnsupportedStructureError,
-                           match="certification-gated"):
-            oracle.write_back(p)
-        result = oracle.write_back(p, allow_uncertified=True)
-        assert isinstance(result, oracle.WriteBackResult)  # pinned type
-        assert result.uncertified is True             # the loud stamp
-        assert result.cells_written == 2
-        # an uncertified write NEVER clears the recalc flag: Excel must
-        # not be told to trust caches nobody verified
-        assert result.cleared_fullcalc is False
-        assert "xl/worksheets/sheet1.xml" in result.package_diff
-        payload = result.to_dict()
-        assert payload["schema"] == "oracle_write_back"
-        wb2 = load_workbook(p, data_only=True)
-        assert wb2["M"]["A3"].value == 42
-        assert wb2["M"]["A4"].value == 84
-        wb3 = load_workbook(p)
-        assert wb3["M"]["A3"].value == "=A1+A2"       # formulas intact
-        with zipfile.ZipFile(p) as z:
-            assert b"fullCalcOnLoad" in z.read("xl/workbook.xml")
-        # second run: the caches now verify, so the CERTIFIED pass writes
-        # nothing new and MAY clear the flag (full coverage, certified)
-        result2 = oracle.write_back(p)
-        assert result2.uncertified is False
-        assert result2.cells_written == 0
-        assert result2.cleared_fullcalc is True
-        assert result2.package_diff == ["xl/workbook.xml"]
-        with zipfile.ZipFile(p) as z:
-            assert b"fullCalcOnLoad" not in z.read("xl/workbook.xml")
-
-    @needs_soffice
-    @pytest.mark.lo_smoke
-    def test_write_back_is_macro_safe(self, fixture_copy):
-        # the splice writes values into the ORIGINAL package: LibreOffice
-        # bytes never enter the output, so vbaProject.bin survives
-        src = fixture_copy("features/macro_stub.xlsm")
-        with zipfile.ZipFile(src) as z:
-            vba_before = z.read("xl/vbaProject.bin")
-        oracle.write_back(src, allow_uncertified=True)
-        with zipfile.ZipFile(src) as z:
-            assert z.read("xl/vbaProject.bin") == vba_before
 
 
 class TestCacheSplice:

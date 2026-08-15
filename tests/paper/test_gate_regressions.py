@@ -1123,9 +1123,9 @@ class TestBatch5OracleGaps:
         assert result.status == "BASELINE_UNVERIFIABLE"
 
     def test_baseline_unverifiable_carries_exclusions(self, tmp_path):
-        # write_back(allow_uncertified=True) on a cache-less workbook
-        # wrote volatile cells: the early-return result now
-        # carries the exclusion classes
+        # Cache-less certification still carries exclusion classes so a
+        # preserved recalc candidate can omit volatile formulas and their
+        # dependants without first requiring an answer-key cache.
         from openpyxl import oracle as oracle_mod
 
         wb = Workbook()

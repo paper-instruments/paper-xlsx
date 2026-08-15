@@ -4,11 +4,14 @@
 
 import re
 
+from openpyxl.formula.tokenizer import (
+    EXCEL_ERROR_CODES,
+    Token,
+    Tokenizer,
+    TokenizerError,
+)
 
-ERROR_TOKENS = frozenset([
-    "#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A",
-    "#SPILL!", "#CALC!", "#GETTING_DATA",
-])
+ERROR_TOKENS = frozenset(EXCEL_ERROR_CODES)
 
 _ERROR_CELL_RE = re.compile(
     br"<c\b([^>]*)\bt=(?:\"e\"|'e')([^>]*)>(.*?)</c>", re.S)
@@ -34,8 +37,37 @@ def current_titles_by_part(wb, zin):
     return out
 
 
+def _formula_errors(formula, address):
+    from openpyxl.errors import UnsupportedStructureError
+
+    try:
+        tokens = Tokenizer(formula).items
+    except TokenizerError as exc:
+        raise UnsupportedStructureError(
+            "scan_errors() cannot tokenize formula {0}: {1}. No partial "
+            "formula-error report was returned.".format(address, exc),
+            kind="unscannable-formula",
+            anchor=address,
+        ) from exc
+    found = []
+    for token in tokens:
+        if token.type != Token.OPERAND or token.subtype == Token.TEXT:
+            continue
+        if token.subtype == Token.ERROR and token.value in ERROR_TOKENS:
+            found.append(token.value)
+            continue
+        # The upstream tokenizer classifies Sheet!#REF! as a RANGE operand.
+        if token.subtype == Token.RANGE:
+            for error in EXCEL_ERROR_CODES:
+                if token.value.endswith(error) \
+                        and token.value[:-len(error)].endswith("!"):
+                    found.append(error)
+                    break
+    return tuple(dict.fromkeys(found))
+
+
 def scan_errors(wb):
-    """Return live, cached, and formula ``#REF!`` error evidence."""
+    """Return cached values and actual formula error operands."""
     from openpyxl.workbook.workbook import _require_materialized_cells
 
     _require_materialized_cells(wb, "scan_errors()")
@@ -49,10 +81,11 @@ def scan_errors(wb):
             address = "{0}!{1}".format(ws.title, cell.coordinate)
             if not isinstance(value, str):
                 continue
-            if cell.data_type == "f" and "#REF!" in value:
-                results.append({"address": address, "value": "#REF!",
-                                "source": "formula"})
-                seen.add(address)
+            if cell.data_type == "f":
+                for error in _formula_errors(value, address):
+                    results.append({"address": address, "value": error,
+                                    "source": "formula"})
+                    seen.add(address)
             elif cell.data_type != "f" and value.strip() in ERROR_TOKENS:
                 results.append({"address": address, "value": value.strip(),
                                 "source": "value"})

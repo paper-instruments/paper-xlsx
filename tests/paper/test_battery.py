@@ -730,28 +730,27 @@ class TestBatteryToday:
         wb2 = load_workbook(out)
         assert len(wb2["Model"]._charts) == before + 1
 
-    # job 24: write-back exists and is
-    # CERTIFICATION-GATED; the full LibreOffice path is exercised in
-    # test_compute.py (this job pins the behavior without needing soffice)
-    def test_job24_oracle_writeback_certification_gated(
+    # job 24: recalculation materializes only a separate preserved candidate;
+    # the full LibreOffice path is exercised in test_oracle.py.
+    def test_job24_oracle_recalc_preserves_source(
             self, fixture_copy, tmp_path, monkeypatch):
         from openpyxl import oracle
-        from openpyxl.errors import UnsupportedStructureError
 
-        assert callable(oracle.write_back)
-        src = fixture_copy("features/schedule_calc.xlsx")
+        src = fixture_copy("features/schedule.xlsx")
+        computed = fixture_copy("features/schedule_calc.xlsx")
+        with open(computed, "rb") as f:
+            computed_bytes = f.read()
+        monkeypatch.setattr(
+            oracle, "_recalculate_bytes",
+            lambda data, timeout, suffix=".xlsx", profile_root=None:
+                computed_bytes)
         with open(src, "rb") as f:
             before = f.read()
-        # a DIVERGED certification refuses without allow_uncertified
-        monkeypatch.setattr(
-            oracle, "_certify_impl",
-            lambda data, timeout, recalculated=None, input_seeds=None: (
-                oracle.CertificationResult(
-                    oracle.CertificationResult.DIVERGED, 3,
-                    [{"address": "Schedule!B12", "cached": 1,
-                      "computed": 2}], [], []), b""))
-        with pytest.raises(UnsupportedStructureError,
-                           match="certification-gated"):
-            oracle.write_back(src)
+        out = tmp_path / "candidate.xlsx"
+        result = oracle.recalc(src, output_path=out)
+        assert result.written == [
+            "Schedule!B12", "Schedule!B13", "Summary!B1"]
         with open(src, "rb") as f:
-            assert f.read() == before               # atomic
+            assert f.read() == before
+        assert load_workbook(out, data_only=True)["Summary"]["B1"].value \
+            == 6500

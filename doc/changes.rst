@@ -19,6 +19,10 @@ Breaking changes
   recalculation, and public exports of preservation implementation objects.
   Explicit cell/style operations, objective ``scan_errors()``, and
   explicit-source oracle operations remain available.
+* Remove certification-gated oracle cache write-back and its uncertified
+  override. ``oracle.recalc(..., output_path=...)`` now creates a separate
+  Paper-preserved candidate instead of mutating a source or delivering a full
+  LibreOffice rewrite.
 
 Changes
 -------
@@ -29,6 +33,10 @@ Changes
   ``Worksheet.replace_image()``, and explicitly scoped pivot refresh requests.
 * Compose structural and chart edits, remove stale chart caches, and report
   safety-derived changes in version 2 edit receipts.
+* Preflight ``Chart.repoint()`` before model mutation, make ``copy_format()``
+  range-transactional and protection-aware, narrow ``allowed_values()`` to
+  exact deterministic sources, and tokenize formula operands in
+  ``scan_errors()``.
 * Make ``validate()`` run the save planner without assembling an archive.
 * Restore ``preserve=False`` compatibility and remove Paper-defined archive
   eligibility caps while retaining ZIP integrity validation.

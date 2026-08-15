@@ -150,6 +150,12 @@ def test_separate_path_recalc_never_replaces_source(tmp_path, monkeypatch):
 
     monkeypatch.setattr(oracle, "_recalculate_bytes", return_candidate)
     output = tmp_path / "candidate.xlsx"
-    oracle.recalc(source, output_path=output)
+    result = oracle.recalc(source, output_path=output)
     assert source.read_bytes() == package
-    assert output.read_bytes() == package
+    assert result.written == []
+    assert result.verified_unchanged == ["Sheet!A1"]
+    assert result.package_diff == ["xl/workbook.xml"]
+    with zipfile.ZipFile(output) as archive:
+        calc_properties = archive.read("xl/workbook.xml")
+        assert b'fullCalcOnLoad="1"' in calc_properties
+        assert b'forceFullCalc="1"' in calc_properties

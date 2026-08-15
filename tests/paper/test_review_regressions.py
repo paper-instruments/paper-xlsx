@@ -261,12 +261,23 @@ class TestOracleRegressions:
         # A1 must NOT be volatile-excluded (it has no cache -> unverifiable)
         assert not result.volatile_excluded
 
-    def test_xlsm_recalc_output_refuses(self, fixture_copy, tmp_path):
+    def test_xlsm_recalc_output_preserves_vba(
+            self, fixture_copy, tmp_path, monkeypatch):
         from openpyxl import oracle
 
         src = fixture_copy("features/macro_stub.xlsm")
-        with pytest.raises(UnsupportedStructureError, match="VBA"):
-            oracle.recalc(src, output_path=str(tmp_path / "o.xlsx"))
+        with open(src, "rb") as handle:
+            source_bytes = handle.read()
+        monkeypatch.setattr(
+            oracle, "_recalculate_bytes",
+            lambda data, timeout, suffix=".xlsx", profile_root=None:
+                source_bytes)
+        out = tmp_path / "candidate.xlsm"
+        result = oracle.recalc(src, output_path=out)
+        assert result.output_kind == "paper-preserved-candidate"
+        with zipfile.ZipFile(src) as before, zipfile.ZipFile(out) as after:
+            assert after.read("xl/vbaProject.bin") == \
+                before.read("xl/vbaProject.bin")
 
     def test_bool_never_equals_number(self):
         from openpyxl.oracle import _values_match

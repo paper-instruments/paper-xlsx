@@ -9,8 +9,8 @@ import zipfile
 import pytest
 
 from openpyxl import load_workbook
-from openpyxl.chart import BarChart, Reference
-from openpyxl.errors import UnsupportedStructureError
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.errors import TargetNotFoundError, UnsupportedStructureError
 
 from .support.partdiff import part_payloads
 
@@ -197,17 +197,53 @@ class TestChartPropertyEdits:
         with pytest.raises(ValueError, match="series"):
             chart.repoint(5, "Model!$B$1:$B$4")        # no such series
 
-    def test_repoint_to_missing_sheet_refuses_at_save(self, fixture_copy,
-                                                      tmp_path):
+    def test_repoint_to_missing_sheet_refuses_before_mutation(
+            self, fixture_copy):
         src = fixture_copy("features/chart_image.xlsx")
         with open(src, "rb") as f:
             before = f.read()
         wb = load_workbook(src, preserve=True)
-        wb["Model"]._charts[0].repoint(0, "Nowhere!$B$1:$B$4")
-        with pytest.raises(UnsupportedStructureError, match="Nowhere"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        chart = wb["Model"]._charts[0]
+        original = chart.series[0].val.numRef.f
+        with pytest.raises(TargetNotFoundError, match="Nowhere"):
+            chart.repoint(0, "Nowhere!$B$1:$B$4")
+        assert chart.series[0].val.numRef.f == original
         with open(src, "rb") as f:
             assert f.read() == before
+
+    def test_repoint_restores_range_when_complete_preflight_refuses(
+            self, fixture_copy):
+        wb = load_workbook(
+            fixture_copy("features/chart_image.xlsx"), preserve=True)
+        chart = wb["Model"]._charts[0]
+        original = chart.series[0].val.numRef.f
+        chart.style = 31
+        with pytest.raises(UnsupportedStructureError, match="property"):
+            chart.repoint(0, "Model!$B$1:$B$4")
+        assert chart.series[0].val.numRef.f == original
+        assert chart.style == 31
+
+    def test_repoint_preflights_attached_combined_chart_component(
+            self, fixture_copy):
+        wb = load_workbook(
+            fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+        ws = wb["Sheet1"]
+        for row in range(1, 4):
+            ws.cell(row, 2, row)
+            ws.cell(row, 3, row * 2)
+        primary = BarChart()
+        primary.add_data(Reference(
+            ws, min_col=2, min_row=1, max_row=3))
+        secondary = LineChart()
+        secondary.add_data(Reference(
+            ws, min_col=3, min_row=1, max_row=3))
+        primary += secondary
+        ws.add_chart(primary, "E2")
+
+        secondary.repoint(0, "Sheet1!$B$1:$B$3")
+
+        assert secondary._parent_sheet is ws
+        assert secondary.series[0].val.numRef.f == "Sheet1!$B$1:$B$3"
 
     def test_title_edit_lands_and_reloads(self, fixture_copy, tmp_path):
         src = fixture_copy("features/chart_image.xlsx")

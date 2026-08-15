@@ -66,15 +66,30 @@ surface:
 
 ``wb.search(...)`` and ``ws.allowed_values(cell)``
     Search modeled values/formulas and inspect list validation vocabulary.
+    ``allowed_values()`` returns ``None`` only when no list validation covers
+    the cell. It supports literal lists and deterministic static,
+    one-dimensional ranges; unsupported or ambiguous sources raise a typed
+    refusal rather than returning a partial answer.
 
 ``openpyxl.preserve.scan_errors(wb)``
-    Report modeled formula and cached error tokens without calculating.
+    Report actual formula error operands and cached error values without
+    calculating. Error-like text inside formula string literals is ignored.
 
 ``openpyxl.preserve.diff_workbooks(before, after, remaps=())``
     Classify workbook cell changes and structural moves.
 
 ``openpyxl.preserve.copy_format(ws, source, destination)``
-    Copy a cell format to an explicit destination range.
+    Atomically copy a cell's font, fill, border, alignment, number format, and
+    protection to an explicit finite range. Values, formulas, comments,
+    hyperlinks, validation, row heights, and column widths are not copied.
+    Merged-cell interiors and strictly protected targets refuse before any
+    destination changes.
+
+``chart.repoint(series_index, range)``
+    Point one chart value series at a sheet-qualified range. Loaded
+    preserve-mode charts run the complete chart patch planner before the
+    in-memory formula changes; the saved patch removes the corresponding
+    stale chart cache.
 
 ``ws.append_table_row(table_name, values)``
     Atomically add a row and expand a named table. Calculated columns are
@@ -129,21 +144,22 @@ The optional :mod:`openpyxl.oracle` module uses headless LibreOffice. It does
 not implement a partial formula engine.
 
 ``oracle.recalc(source, output_path=None)``
-    Recalculate a temporary copy. An output path must be separate from the
-    source. There is no in-place conversion mode.
+    Recalculate a temporary copy. With no output path, return calculation and
+    error-scan evidence without writing. With a separate output path, create a
+    Paper-preserved candidate by splicing eligible LibreOffice-calculated
+    caches into the original package structure. The source is never modified,
+    LibreOffice's rewritten package is never delivered, and full recalculation
+    remains requested. Status reports only whether recognized formula errors
+    were detected; it does not claim Excel equivalence or financial accuracy.
 
 ``oracle.certify(source)``
     Compare source caches with recalculated values and report ``CERTIFIED``,
     ``DIVERGED``, or ``BASELINE_UNVERIFIABLE`` with exclusions.
 
 ``oracle.evaluate(source, set=..., read=...)``
-    Evaluate an explicit source package and scenario. Workbook objects do not
-    expose ``evaluate()`` because unsaved workbook state cannot be represented
-    honestly by a retained-source evaluation.
-
-``oracle.write_back(path)``
-    Splice computed caches through the preserve machinery. This is the only
-    oracle API that mutates a candidate package.
+    Evaluate an explicit source package and scenario. Evaluation status, like
+    recalculation status, reports only whether recognized formula errors were
+    detected.
 
 ZIP policy
 ----------

@@ -248,7 +248,7 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     ``style_resolver``: cell -> FILE xf index (StyleTranslator) —
     model style indices must never reach the spliced bytes.
     ``cache_writes``: {(row, col): computed_value} — cached-value updates
-    for UNTOUCHED formula cells (oracle write-back): the
+    for untouched formula cells in a preserved recalc candidate: the
     <f> bytes stay verbatim, only the cached <v> (and its t attribute)
     change.
     ``cache_invalidations``: {(row, col)} — formula cells and array followers
@@ -604,8 +604,8 @@ def _row_edits(ws, row_span, original, dirty_cols, new_attrs, resolve,
 
 
 # ---------------------------------------------------------------------
-# oracle write-back: cached-value updates on untouched
-# formula cells — the <f> bytes verbatim, the <v> replaced
+# preserved recalculation: cached-value updates on untouched formula cells —
+# the <f> bytes stay verbatim and only the <v> value is replaced
 
 def _serialize_cached_value(value, epoch):
     """(t_attr_or_None, v_text) for a computed value; the mirror of what

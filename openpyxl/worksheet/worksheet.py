@@ -779,6 +779,8 @@ class Worksheet(_WorkbookChild):
         _refuse_chart_or_image_add(self, "chart")
         if anchor is not None:
             chart.anchor = anchor
+        for component in getattr(chart, "_charts", (chart,)):
+            component._parent_sheet = self
         self._charts.append(chart)
 
 
