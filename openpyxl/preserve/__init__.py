@@ -14,12 +14,6 @@ __all__ = ["AddressRemap", "scan_errors", "receipt", "diff_workbooks",
 
 
 def __getattr__(name):
-    # DirtyLedger lives in .ledger, which several early-imported modules
-    # (cell, styleable, worksheet) pull helpers from; exposing it lazily
-    # here keeps this package importable from anywhere without cycles
-    if name == "DirtyLedger":
-        from .ledger import DirtyLedger
-        return DirtyLedger
     if name == "AddressRemap":
         from .structural import AddressRemap
         return AddressRemap
