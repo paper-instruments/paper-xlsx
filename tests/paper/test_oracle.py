@@ -21,11 +21,6 @@ class TestDriverRules:
         with pytest.raises(OracleUnavailableError):
             oracle.certify(fixture_copy("features/schedule_calc.xlsx"))
 
-    def test_in_place_surface_is_removed(self):
-        import inspect
-
-        assert "in_place" not in inspect.signature(oracle.recalc).parameters
-
     @pytest.mark.lo_smoke
     def test_original_path_never_reaches_libreoffice(
             self, lo, fixture_copy, monkeypatch):

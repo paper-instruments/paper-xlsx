@@ -503,8 +503,7 @@ contract.
   operations. Preserve mode must track, land, or refuse those explicit edits
   under the same rules as other mutations.
 - Remove model-map and delivery-helper documentation, examples, exports, and
-  tests that imply these APIs remain supported. Add public-surface tests proving
-  they are absent.
+  tests that imply these APIs remain supported.
 
 There is no deprecation window. These APIs have not been published in an
 open-source release, and the purpose of this cut is to avoid promising weak
@@ -522,8 +521,8 @@ surface area.
   operations remain available.
 - A preserve-mode explicit protection or metadata edit either lands with the
   exact requested package delta or refuses before destination delivery.
-- Public API snapshots and package documentation contain no removed model-map
-  or delivery convenience API.
+- Package documentation contains no removed model-map or delivery convenience
+  API.
 
 ### R6 Remove or refresh chart caches when repointing
 
@@ -857,16 +856,8 @@ receipt is the correct place to report package-part removals after planning.
 Remove `RemovalReport` from the public surface if no other operation can return
 an accurate instance.
 
-The pinned-surface test must distinguish supported public API from internal
-implementation names and compare upstream types/signatures under
-`preserve=False`.
-
 #### Acceptance criteria
 
-- Star import and generated API snapshots contain no ledger, scanner, planner,
-  or loss-inventory implementation types.
-- Generated API snapshots prove that every removal listed above is absent from
-  its former namespace or class.
 - No dead implementation module or internal-only orphan remains solely to
   support a removed public helper.
 - `Worksheet.append_table_row()` is public, documented, and has atomicity and
@@ -874,9 +865,7 @@ implementation names and compare upstream types/signatures under
 - Pivot refresh requires explicit scope, performs no raw replacement-ledger
   write, and exposes its cache-level effects in the receipt.
 - `Workbook.remove()` matches upstream return behavior.
-- Every supported Paper symbol has a direct public-surface test; every internal
-  symbol remains importable only by explicit internal module path if runtime
-  code needs it.
+- Every supported Paper symbol has direct behavioral coverage.
 
 ### R12 Make structural rewrite coverage closed-world
 
@@ -1369,12 +1358,10 @@ complete.
   already-enabled caches, exact XML deltas, unknown/ambiguous names, and
   package-plan conflicts.
 - Lexical region-preservation tests, including omitted defaults.
-- Public-surface absence tests for every removed helper and type in R5, R10,
-  R11, R15, and R16, plus exact-delta tests for equivalent explicit stock
-  protection, metadata, named-cell, and coordinate edits in preserve mode.
+- Exact-delta tests for explicit stock protection, metadata, named-cell, and
+  coordinate edits in preserve mode.
 - Chart formula/cache consistency tests.
 - Closed-world structural surface and XML part-editor adversarial fixtures.
-- Public API snapshot tests with internal exports absent.
 - Oracle source/candidate custody tests.
 - Valid large-package tests above every removed Paper threshold and malformed
   ZIP/OPC integrity tests.

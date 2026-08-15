@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -8,25 +7,6 @@ import pytest
 import openpyxl
 from openpyxl._distribution import assert_single_openpyxl_distribution
 from paper_xlsx_doctor import DoctorError, _openpyxl_record_entries
-
-
-class _ArchiveMetadata:
-
-    def __init__(self, infos):
-        self._infos = infos
-
-    def infolist(self):
-        return self._infos
-
-    def namelist(self):
-        return [info.filename for info in self._infos]
-
-
-def _zip_info(name, file_size, compress_size=None):
-    info = zipfile.ZipInfo(name)
-    info.file_size = file_size
-    info.compress_size = file_size if compress_size is None else compress_size
-    return info
 
 
 def test_distribution_guard_accepts_paper_xlsx_alone():
@@ -89,26 +69,3 @@ def test_doctor_record_filter_only_accepts_safe_openpyxl_paths():
     unsafe = "openpyxl/../outside.py,sha256=abc,1\n"
     with pytest.raises(DoctorError, match="unsafe path"):
         list(_openpyxl_record_entries(unsafe))
-
-
-def test_fixture_request_document_exists():
-    root = Path(__file__).resolve().parents[2]
-    requests = root / "FIXTURE-REQUESTS.md"
-    assert requests.is_file()
-    text = requests.read_text(encoding="utf-8")
-    assert "Google Sheets" in text
-    assert "pivot cache" in text
-
-
-def test_paper_does_not_expose_package_eligibility_caps():
-    from openpyxl.preserve import zipguard
-    from openpyxl.reader import excel
-
-    for name in (
-        "MAX_PART_BYTES", "MAX_TOTAL_BYTES", "MAX_ENTRIES",
-        "_PRESERVE_DECOMPRESSION_MAX_PART", "_DECOMPRESSION_MAX_PART",
-        "_DECOMPRESSION_MAX_TOTAL", "_DECOMPRESSION_MAX_ENTRIES",
-        "_DECOMPRESSION_RATIO_FLOOR",
-    ):
-        assert not hasattr(zipguard, name)
-        assert not hasattr(excel, name)

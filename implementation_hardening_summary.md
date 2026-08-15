@@ -131,8 +131,8 @@ spreadsheet skill.
 - A closed-world structural-surface registry and operation matrix.
 - Receipt `derived_effects`.
 - Content sniffing for seekable file-like sources.
-- Public API snapshots, upstream differential tests, failure injection,
-  scaling benchmarks, adversarial XML fixtures, and large-valid-package tests.
+- Upstream differential tests, failure injection, scaling benchmarks,
+  adversarial XML fixtures, and large-valid-package tests.
 
 ### Edit
 

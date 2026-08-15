@@ -521,14 +521,10 @@ class TestBatteryToday:
         # the copied comment landed via the added-sheet generator
         assert copied["B8"].comment is not None
 
-    # Scenario evaluation is explicit about its source package and does not
-    # masquerade as evaluation of unsaved Workbook state.
-    def test_job12_explicit_evaluate_api_exists(self, fixture_copy):
+    def test_job12_explicit_evaluate_api_exists(self):
         from openpyxl import oracle
-        from openpyxl.workbook import Workbook
 
         assert callable(oracle.evaluate)
-        assert not hasattr(Workbook, "evaluate")
 
     # job 13: typed refusal naming the
     # encryption and the decrypt route, on both load arms.

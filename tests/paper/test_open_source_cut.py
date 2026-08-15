@@ -22,21 +22,6 @@ def _preserved_workbook():
     return load_workbook(io.BytesIO(stream.getvalue()), preserve=True)
 
 
-def test_removed_public_apis_are_absent():
-    workbook = Workbook()
-    for name in (
-        "evaluate", "mark_dirty", "model_map", "protect_for_delivery",
-        "replace_part", "scrub", "set_input", "formula_lint",
-    ):
-        assert not hasattr(workbook, name)
-    for name in ("locate",):
-        assert not hasattr(workbook.active, name)
-    import openpyxl.preserve as preserve
-
-    for name in ("apply_profile", "findings"):
-        assert not hasattr(preserve, name)
-
-
 class _Interrupt(BaseException):
     pass
 

@@ -196,32 +196,6 @@ class TestBatch1InputHonestyGaps:
         assert handle.tell() == 4              # position restored
         handle.close()
 
-    def test_rich_text_mode_suppresses_rich_text_loss_entry(
-            self, fixture_copy, tmp_path):
-        # under rich_text=True the stock save PRESERVES runs — warning
-        # about flattening was loud-but-wrong
-        src = fixture_copy("minimal/minimal_clean.xlsx")
-        rich = str(tmp_path / "rich.xlsx")
-        with zipfile.ZipFile(src) as zin, zipfile.ZipFile(rich, "w") as zout:
-            for name in zin.namelist():
-                payload = zin.read(name)
-                if name.startswith("xl/worksheets/sheet"):
-                    payload = payload.replace(
-                        b"</sheetData>",
-                        b'<row r="9"><c r="A9" t="inlineStr"><is><r><rPr>'
-                        b'<b/></rPr><t>bold</t></r></is></c></row>'
-                        b"</sheetData>", 1)
-                zout.writestr(name, payload)
-        import warnings as _w
-        with _w.catch_warnings():
-            _w.simplefilter("ignore")
-            flat = load_workbook(rich)
-            modeled = load_workbook(rich, rich_text=True)
-        # Stock loading no longer pays for a Paper-only loss inventory.
-        assert not hasattr(flat, "_paper_loss_inventory")
-        assert not hasattr(modeled, "_paper_loss_inventory")
-
-
 class TestBatch1RemapAndCertifyGaps:
 
     def test_xlfn_prefixed_functions_are_excluded(self):

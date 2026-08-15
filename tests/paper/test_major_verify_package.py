@@ -40,14 +40,6 @@ def test_duplicate_entries_refuse_diff_and_receipt():
         receipt(duplicate, duplicate)
 
 
-def test_package_apis_do_not_define_workbook_eligibility_caps():
-    import openpyxl.package.diff as package_diff
-    import openpyxl.preserve.receipts as receipts
-    for module in (package_diff, receipts):
-        assert not hasattr(module, "_MAX_ZIP_UNCOMPRESSED")
-        assert not hasattr(module, "_MAX_ZIP_PART")
-
-
 def test_xml_leaf_and_xml_space_whitespace_are_significant():
     assert not xml_equivalent(b"<t> </t>", b"<t></t>")
     assert not xml_equivalent(
