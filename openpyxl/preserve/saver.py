@@ -148,6 +148,94 @@ class _PreservePlan:
     row_claims: object = field(repr=False, compare=False)
 
 
+@dataclass(frozen=True)
+class _PlanContext:
+    """Stable package inputs shared by every planning phase."""
+
+    workbook: object
+    ledger: object
+    source: bytes
+    archive: object = field(repr=False, compare=False)
+    names: object = field(repr=False, compare=False)
+    part_plan: object = field(repr=False, compare=False)
+    workbook_part: str
+    sheet_parts: object = field(repr=False, compare=False)
+    workbook_rels_part: str
+    translator: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class _AddedSheetsPlan:
+    sheet_parts: tuple
+    rels_parts: tuple
+    sheet_entries: tuple
+    content_type_appends: tuple
+    workbook_rels_appends: tuple
+
+
+@dataclass(frozen=True)
+class _SheetObjectPlan:
+    armed_snapshot: object = field(repr=False, compare=False)
+    table_changes: tuple
+    new_drawables: tuple
+
+
+@dataclass(frozen=True)
+class _SheetChanges:
+    ledger_dirty: object = field(repr=False, compare=False)
+    cache_writes: object = field(repr=False, compare=False)
+    regions: object = field(repr=False, compare=False)
+    rows: object = field(repr=False, compare=False)
+    comments_changed: bool
+    shifts: tuple
+    table_lifecycle: bool
+    changed: bool
+
+
+@dataclass(frozen=True)
+class _LoadedSheetSource:
+    part: str
+    original: bytes = field(repr=False)
+    scan: object = field(repr=False, compare=False)
+    table_parts: object = field(repr=False, compare=False)
+    legacy_drawing: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class _SheetEdits:
+    dirty: object = field(repr=False, compare=False)
+    cache_invalidations: object = field(repr=False, compare=False)
+    regions: object = field(repr=False, compare=False)
+    rows: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class _LoadedSheetsPlan:
+    parts: object = field(repr=False, compare=False)
+    dirty_by_part: object = field(repr=False, compare=False)
+    region_claims: object = field(repr=False, compare=False)
+    row_claims: object = field(repr=False, compare=False)
+    baselines: object = field(repr=False, compare=False)
+    sheet_rels_updates: object = field(repr=False, compare=False)
+    need_styles_part: bool
+
+
+@dataclass(frozen=True)
+class _WorkbookPartsPlan:
+    workbook_xml: object = field(repr=False, compare=False)
+    workbook_rels: object = field(repr=False, compare=False)
+    content_types: object = field(repr=False, compare=False)
+    extra_rels: object = field(repr=False, compare=False)
+    styles: object = field(repr=False, compare=False)
+    core_changed: bool
+    custom_render: object = field(repr=False, compare=False)
+    custom_changed: bool
+    theme_changed: bool
+
+
+_UNSET = object()
+
+
 def _frozen_mapping(mapping, *, set_values=False):
     values = {
         key: frozenset(value) if set_values else value
@@ -466,595 +554,699 @@ def _compose_package_registries(zin, names, wb_rels_part, wb_rels_appends,
     return wb_rels_plan, extra_rels_updates, ct_plan
 
 
-def _plan_preserved(workbook, *, allow_formula_loss=False,
-                    expected_identity=None, target_is_source=False):
-    """Validate the model and return an immutable, non-writing save plan."""
-    led = workbook._paper_ledger
+def _prepare_plan_context(workbook):
+    ledger = workbook._paper_ledger
     source = workbook._paper_source
-    if led is None or source is None:
+    if ledger is None or source is None:
         _refuse("preserve-mode save requires a workbook loaded with "
                 "preserve=True.")
-
-    force_calcpr = _validate_preserve_model(
-        workbook, led, allow_formula_loss)
-
-    zin = zipfile.ZipFile(io.BytesIO(source))
-    names = set(zin.namelist())
+    archive = zipfile.ZipFile(io.BytesIO(source))
+    names = set(archive.namelist())
     from . import lifecycle
+
     part_plan = lifecycle.PartPlan(names)
-
-    wb_part, sheet_parts = _package_info(zin)
-    wb_rels_part = _rels_path(wb_part)
-
-    # model style indices drift from the file's on non-openpyxl producers
-    # (numFmt normalization, Normal-style bootstrap): every emitted s
-    # attribute goes through the translator
+    workbook_part, sheet_parts = _package_info(archive)
+    workbook_rels_part = _rels_path(workbook_part)
     translator = None
     if ARC_STYLE in names:
         from .styletrans import StyleTranslator
-        translator = StyleTranslator(workbook, zin.read(ARC_STYLE))
 
-    (new_sheet_parts, new_rels_parts, new_sheet_entries, ct_appends,
-     wb_rels_appends) = _plan_added_sheets(
-         workbook, led, zin, names, wb_part, wb_rels_part, translator,
-         part_plan)
+        translator = StyleTranslator(workbook, archive.read(ARC_STYLE))
+    return _PlanContext(
+        workbook=workbook,
+        ledger=ledger,
+        source=source,
+        archive=archive,
+        names=names,
+        part_plan=part_plan,
+        workbook_part=workbook_part,
+        sheet_parts=sheet_parts,
+        workbook_rels_part=workbook_rels_part,
+        translator=translator,
+    )
 
-    # ---- loaded-sheet plans ----------------------------------------------
-    plan = {}
-    if led.image_replacements:
+
+def _plan_new_sheets(context):
+    result = _plan_added_sheets(
+        context.workbook, context.ledger, context.archive, context.names,
+        context.workbook_part, context.workbook_rels_part,
+        context.translator, context.part_plan)
+    return _AddedSheetsPlan(*[tuple(value) for value in result])
+
+
+def _plan_requested_parts(context, parts):
+    ledger = context.ledger
+    if ledger.image_replacements:
         from .images import plan_replacements
 
         plan_replacements(
-            zin, led.image_replacements, part_plan, names, plan)
-    if led.pivot_refresh_requests:
+            context.archive, ledger.image_replacements, context.part_plan,
+            context.names, parts)
+    if ledger.pivot_refresh_requests:
         from .pivots import plan_refresh
 
-        plan_refresh(zin, led.pivot_refresh_requests, plan)
-    # Structural chart/drawing remaps own the first transformation of each
-    # part. Explicit chart property edits then compose on these bytes.
-    if led.shifts:
-        from .chartpatch import plan_chart_updates
+        plan_refresh(
+            context.archive, ledger.pivot_refresh_requests, parts)
+    if not ledger.shifts:
+        return
+    from .chartpatch import plan_chart_updates
 
-        for shifted_ws in workbook.worksheets:
-            for operation, op_index, op_amount in led.shifts.get(
-                    shifted_ws, ()):
-                chart_plans, chart_blockers = plan_chart_updates(
-                    workbook, led.renames.get(shifted_ws, shifted_ws.title),
-                    operation, op_index, op_amount, overrides=plan)
-                if chart_blockers:
-                    _refuse("chart parts referencing sheet {0!r} cannot be "
-                            "patched: {1}.".format(
-                                shifted_ws.title,
-                                "; ".join(chart_blockers)))
-                plan.update(chart_plans)
-    dirty_by_part = {}
-    region_claims = {}        # part -> region tags knowingly rewritten
-    row_claims = {}           # part -> row indices with claimed attr edits
-    baselines = {}            # part -> shifted baseline bytes
-    sheet_rels_updates = {}   # part_name -> new payload
-    need_styles_part = False  # styled writes into a styles-less package
-    for ws in workbook.worksheets:
-        if ws in led.added_sheets:
+    for sheet in context.workbook.worksheets:
+        for operation, index, amount in ledger.shifts.get(sheet, ()):
+            chart_parts, blockers = plan_chart_updates(
+                context.workbook,
+                ledger.renames.get(sheet, sheet.title),
+                operation, index, amount, overrides=parts)
+            if blockers:
+                _refuse("chart parts referencing sheet {0!r} cannot be "
+                        "patched: {1}.".format(
+                            sheet.title, "; ".join(blockers)))
+            parts.update(chart_parts)
+
+
+def _plan_sheet_objects(context, sheet, parts):
+    ledger = context.ledger
+    changed = ledger_mod.diff_objects(
+        sheet, ledger.object_snapshots.get(sheet))
+    armed = ledger.object_snapshots.get(sheet) or {}
+    armed_tables = set(armed.get("table", {}))
+    table_changes = tuple(
+        key for kind, key in changed
+        if kind == "table" and key in armed_tables
+        and key in getattr(sheet, "tables", {}))
+    changed = [(kind, key) for kind, key in changed if kind != "table"]
+    new_drawables = tuple(
+        (kind, key) for kind, key in changed
+        if kind in ("chart", "image")
+        and key not in armed.get(kind, {})
+        and key < len(getattr(sheet, "_" + kind + "s", []) or []))
+    changed = [item for item in changed if item not in new_drawables]
+    chart_mutations = tuple(
+        key for kind, key in changed
+        if kind == "chart" and key in armed.get("chart", {})
+        and key < len(getattr(sheet, "_charts", []) or []))
+    if chart_mutations:
+        _plan_chart_property_edits(
+            context, sheet, armed, chart_mutations, parts)
+        changed = [
+            (kind, key) for kind, key in changed
+            if not (kind == "chart" and key in chart_mutations)]
+    if changed:
+        details = "; ".join(
+            "{0} {1!r} ({2})".format(
+                kind, key, ledger_mod._OBJECT_UNLOCKS[kind])
+            for kind, key in changed)
+        _refuse(
+            "loaded object(s) were modified in-session on sheet {0!r}: "
+            "{1}. Their backing parts are preserved verbatim, so the edits "
+            "cannot be saved faithfully — editing loaded objects of these "
+            "kinds is not supported yet. Reopen without preserve=True to "
+            "rewrite the workbook lossily instead.".format(
+                sheet.title, details))
+    return _SheetObjectPlan(
+        armed_snapshot=armed,
+        table_changes=table_changes,
+        new_drawables=new_drawables,
+    )
+
+
+def _plan_chart_property_edits(context, sheet, armed, mutations, parts):
+    from . import chartpatch as chartpatch_mod
+
+    chart_parts = {}
+    for key in mutations:
+        chart = sheet._charts[key]
+        armed_render, armed_anchor = armed["chart"][key][:2]
+        part_name = getattr(chart, "_paper_part", None)
+        if part_name is None or part_name not in context.names:
+            _refuse("chart {0} on sheet {1!r} was modified but its package "
+                    "part could not be located; the edit cannot be "
+                    "expressed. Reopen without preserve=True to rewrite "
+                    "the workbook lossily.".format(key, sheet.title))
+        if ledger_mod._anchor_fingerprint(chart) != armed_anchor:
+            _refuse("chart {0} on sheet {1!r}: the anchor (position/size) "
+                    "changed; anchors live in the preserved drawing part "
+                    "and cannot be patched. Only title text and series "
+                    "ranges are editable on loaded charts.".format(
+                        key, sheet.title))
+        current_render, settled = ledger_mod._settled(
+            lambda chart=chart: tostring(chart._write()))
+        if not settled:
+            _refuse("chart {0} on sheet {1!r}: its serializer is impure, "
+                    "so the edit cannot be expressed faithfully.".format(
+                        key, sheet.title))
+        base = chart_parts.get(part_name)
+        composed = base is not None or part_name in parts
+        if base is None:
+            base = parts.get(part_name)
+        if base is None:
+            base = context.archive.read(part_name)
+        chart_parts[part_name] = chartpatch_mod.plan_property_edits(
+            context.workbook, sheet, key, armed_render, current_render, base,
+            allow_composed_formula_baseline=composed)
+    parts.update(chart_parts)
+
+
+def _inspect_sheet_changes(context, sheet, object_plan):
+    ledger = context.ledger
+    ledger_dirty = ledger.dirty_coordinates(sheet)
+    cache_writes = ledger.cache_writes.get(sheet, {})
+    regions = diff_regions(
+        sheet, ledger.region_snapshots.get(sheet, {}))
+    pinned = sorted(
+        ledger.pinned_regions.get(sheet, set()) & set(regions))
+    if pinned:
+        _refuse(
+            "region(s) {0} changed on sheet {1!r}, but their serializers "
+            "are impure (arm-time renders disagreed with themselves), so "
+            "the model render cannot be spliced faithfully. Reopen without "
+            "preserve=True to rewrite the sheet lossily.".format(
+                ", ".join(pinned), sheet.title))
+    rows = diff_row_attrs(
+        sheet, ledger.row_attr_snapshots.get(sheet, {}))
+    comments_changed = _comments_changed(sheet, ledger)
+    shifts = tuple(ledger.shifts.get(sheet, ()))
+    changed = bool(
+        ledger_dirty or regions or rows or comments_changed or shifts
+        or ledger.rich_text_mode or object_plan.table_changes
+        or object_plan.new_drawables or cache_writes)
+    return _SheetChanges(
+        ledger_dirty=ledger_dirty,
+        cache_writes=cache_writes,
+        regions=regions,
+        rows=rows,
+        comments_changed=comments_changed,
+        shifts=shifts,
+        table_lifecycle="tableParts" in regions,
+        changed=changed,
+    )
+
+
+def _prepare_loaded_sheet_source(context, sheet, object_plan, changes, parts,
+                                 baselines, force_calcpr):
+    ledger = context.ledger
+    original_title = ledger.renames.get(sheet, sheet.title)
+    part = context.sheet_parts.get(original_title)
+    if part is None or part not in context.names:
+        _refuse("cannot locate the package part for sheet {0!r} via the "
+                "workbook relationships.".format(sheet.title))
+    original = context.archive.read(part)
+    if object_plan.table_changes:
+        from . import tables as tables_mod
+
+        tables_mod.plan_table_mutations(
+            context.workbook, sheet, part, context.archive,
+            object_plan.table_changes, parts,
+            armed_tables=object_plan.armed_snapshot.get("table", {}))
+    legacy_drawing = _plan_loaded_sheet_comments(
+        context, sheet, part, changes.comments_changed)
+    table_parts = _UNSET
+    if changes.table_lifecycle:
+        from . import tables as tables_mod
+
+        table_parts = tables_mod.plan_table_lifecycle(
+            context.workbook, sheet, part, context.archive,
+            ledger.region_snapshots.get(sheet, {}).get("tableParts", ()),
+            parts, context.part_plan, context.names)
+    if changes.shifts:
+        from .structural import apply_shift_to_bytes
+
+        for operation, index, amount in changes.shifts:
+            original = apply_shift_to_bytes(
+                original, operation, index, amount)
+        baselines[part] = original
+    try:
+        scan = scan_sheet(original)
+    except ScanRefusal:
+        if force_calcpr and not changes.changed:
+            return None
+        raise
+    return _LoadedSheetSource(
+        part=part,
+        original=original,
+        scan=scan,
+        table_parts=table_parts,
+        legacy_drawing=legacy_drawing,
+    )
+
+
+def _plan_loaded_sheet_comments(context, sheet, part, changed):
+    if not changed:
+        return None
+    from . import comments as comments_mod
+
+    kind = comments_mod.comment_machinery_kind(
+        context.archive, part, context.names)
+    if kind == "comments":
+        _refuse("comments changed on sheet {0!r}, which already carries "
+                "comment parts; editing preserved comment/VML machinery is "
+                "not supported yet (comment CREATION on comment-free sheets "
+                "is).".format(sheet.title))
+    if kind == "other-vml":
+        _refuse("comments changed on sheet {0!r}, which carries non-comment "
+                "VML (such as controls or header/footer drawing state); "
+                "adding comment VML without rewriting that machinery is "
+                "unsupported.".format(sheet.title))
+    if context.ledger.comment_snapshots.get(sheet):
+        _refuse("internal: comment snapshot mismatch on a sheet without "
+                "comment machinery ({0!r}).".format(sheet.title))
+    return comments_mod.plan_comment_creation(
+        context.workbook, sheet, part, context.archive, context.part_plan,
+        context.names)
+
+
+def _initial_sheet_edits(context, sheet, changes, source, force_calcpr):
+    dirty = resolve_dirty_cells(
+        sheet, changes.ledger_dirty, source.scan,
+        value_overwrites=context.ledger.value_overwrites.get(sheet, set()))
+    cache_invalidations = _formula_cache_invalidations(source.scan) \
+        if force_calcpr else set()
+    if changes.cache_writes:
+        cache_invalidations -= set(changes.cache_writes)
+    regions = {
+        tag: rendered for tag, rendered in changes.regions.items()
+        if tag not in _CUSTOM_REGIONS}
+    if changes.table_lifecycle and source.table_parts is not _UNSET:
+        regions["tableParts"] = source.table_parts
+    if source.legacy_drawing is not None:
+        regions["legacyDrawing"] = source.legacy_drawing
+    rows = changes.rows
+    if changes.shifts:
+        for members in source.scan.shared_members.values():
+            dirty |= members
+    return _SheetEdits(
+        dirty=dirty,
+        cache_invalidations=cache_invalidations,
+        regions=regions,
+        rows=rows,
+    )
+
+
+def _plan_sheet_drawables(context, sheet, object_plan, source, regions, parts):
+    if not object_plan.new_drawables:
+        return
+    new_charts = [
+        sheet._charts[key] for kind, key in object_plan.new_drawables
+        if kind == "chart"]
+    new_images = [
+        sheet._images[key] for kind, key in object_plan.new_drawables
+        if kind == "image"]
+    drawing_part, drawing_rid = drawings_mod._existing_drawing_part(
+        context.archive, context.names, source.part)
+    if drawing_part is None:
+        if source.scan.regions.get("drawing"):
+            _refuse("sheet {0!r} carries a drawing element whose "
+                    "relationship target cannot be resolved; adding "
+                    "charts/images to it is not possible.".format(
+                        sheet.title))
+        rels_part = _rels_path(source.part)
+        original_rels = context.archive.read(rels_part) \
+            if rels_part in context.names else None
+        regions["drawing"] = drawings_mod.plan_fresh_drawing(
+            context.workbook, sheet, context.part_plan, context.names,
+            source.part, original_rels, new_charts, new_images)
+        return
+    drawing_base = parts.get(drawing_part)
+    if drawing_base is None:
+        drawing_base = context.archive.read(drawing_part)
+    drawing_rels = _rels_path(drawing_part)
+    parts[drawing_part] = drawings_mod.plan_drawing_append(
+        context.workbook, sheet, context.part_plan, context.names,
+        drawing_part, drawing_base,
+        context.archive.read(drawing_rels)
+        if drawing_rels in context.names else None,
+        new_charts, new_images)
+    if not source.scan.regions.get("drawing"):
+        regions["drawing"] = (
+            b'<drawing xmlns:r="%s" r:id="%s"/>'
+            % (REL_NS.encode("ascii"), drawing_rid.encode("ascii")))
+
+
+def _translate_and_patch_regions(context, sheet, source, edits):
+    rows = edits.rows
+    regions = edits.regions
+    if rows:
+        rows = _translate_row_styles(sheet, rows, context.translator)
+    if "cols" in regions and regions["cols"]:
+        regions["cols"] = _translate_col_styles(
+            sheet, regions["cols"], context.translator)
+    from .lexical import patch_xml
+
+    baselines = context.ledger.region_snapshots.get(sheet, {})
+    for tag, rendered in tuple(regions.items()):
+        spans = source.scan.regions.get(tag, ())
+        baseline = baselines.get(tag)
+        if tag == "cols" or len(spans) != 1 \
+                or not isinstance(baseline, (bytes, bytearray)) \
+                or not isinstance(rendered, (bytes, bytearray)) \
+                or not baseline or not rendered:
             continue
-        changed_objects = ledger_mod.diff_objects(
-            ws, led.object_snapshots.get(ws))
-        armed_snap = led.object_snapshots.get(ws) or {}
-        _armed_tables = set(armed_snap.get("table", {}))
-        table_changes = [key for kind, key in changed_objects
-                         if kind == "table"
-                         and key in _armed_tables
-                         and key in getattr(ws, "tables", {})]
-        changed_objects = [(kind, key) for kind, key in changed_objects
-                           if kind != "table"]
-        # chart/image ADDITIONS on loaded sheets become
-        # new parts through the engine; per-property chart MUTATIONS
-        # become byte patches when chartpatch can express them
-        new_drawables = [
-            (kind, key) for kind, key in changed_objects
-            if kind in ("chart", "image")
-            and key not in armed_snap.get(kind, {})
-            and key < len(getattr(ws, "_" + kind + "s", []) or [])]
-        changed_objects = [co for co in changed_objects
-                           if co not in new_drawables]
-        chart_prop_parts = {}     # chart part -> patched payload
-        chart_mutations = [
-            key for kind, key in changed_objects
-            if kind == "chart" and key in armed_snap.get("chart", {})
-            and key < len(getattr(ws, "_charts", []) or [])]
-        if chart_mutations:
-            from . import chartpatch as chartpatch_mod
-            for key in chart_mutations:
-                chart = ws._charts[key]
-                armed_render, armed_anchor = armed_snap["chart"][key][:2]
-                part_name = getattr(chart, "_paper_part", None)
-                if part_name is None or part_name not in names:
-                    _refuse("chart {0} on sheet {1!r} was modified but its "
-                            "package part could not be located; the edit "
-                            "cannot be expressed. Reopen without "
-                            "preserve=True to rewrite the workbook "
-                            "lossily.".format(key, ws.title))
-                if ledger_mod._anchor_fingerprint(chart) != armed_anchor:
-                    _refuse("chart {0} on sheet {1!r}: the anchor "
-                            "(position/size) changed; anchors live in the "
-                            "preserved drawing part and cannot be patched. "
-                            "Only title text and series ranges are "
-                            "editable on loaded charts.".format(
-                                key, ws.title))
-                current_render, settled = ledger_mod._settled(
-                    lambda c=chart: tostring(c._write()))
-                if not settled:
-                    _refuse("chart {0} on sheet {1!r}: its serializer is "
-                            "impure, so the edit cannot be expressed "
-                            "faithfully.".format(key, ws.title))
-                base = chart_prop_parts.get(part_name)
-                composed = base is not None or part_name in plan
-                if base is None:
-                    # compose over an earlier shift's chart patch, never
-                    # over the raw source (later overrides must stack)
-                    base = plan.get(part_name)
-                if base is None:
-                    base = zin.read(part_name)
-                chart_prop_parts[part_name] = \
-                    chartpatch_mod.plan_property_edits(
-                        workbook, ws, key, armed_render, current_render,
-                        base,
-                        allow_composed_formula_baseline=composed)
-            plan.update(chart_prop_parts)
-            changed_objects = [
-                (kind, k) for kind, k in changed_objects
-                if not (kind == "chart" and k in chart_mutations)]
-        if changed_objects:
-            # the boundary class: these objects' backing
-            # parts are preserved bytes the splice never re-serializes —
-            # an accepted-but-unsaved edit is the forbidden fourth outcome
-            details = "; ".join(
-                "{0} {1!r} ({2})".format(
-                    kind, key, ledger_mod._OBJECT_UNLOCKS[kind])
-                for kind, key in changed_objects)
-            _refuse(
-                "loaded object(s) were modified in-session on sheet "
-                "{0!r}: {1}. Their backing parts are preserved verbatim, "
-                "so the edits cannot be saved faithfully — {2}. Reopen "
-                "without preserve=True to rewrite the workbook lossily "
-                "instead.".format(
-                    ws.title, details,
-                    "editing loaded objects of these kinds is not "
-                    "supported yet"))
-        ledger_dirty = led.dirty_coordinates(ws)
-        cache_writes = led.cache_writes.get(ws, {})
-        all_region_changes = diff_regions(ws, led.region_snapshots.get(ws, {}))
-        pinned_hits = sorted(
-            led.pinned_regions.get(ws, set()) & set(all_region_changes))
-        if pinned_hits:
-            # the region's serializer disagreed with itself at arm time
-            # (render-time side effects): its output cannot be trusted to
-            # express only the user's edit, so splicing it risks silent
-            # drift — refuse instead
-            _refuse(
-                "region(s) {0} changed on sheet {1!r}, but their "
-                "serializers are impure (arm-time renders disagreed with "
-                "themselves), so the model render cannot be spliced "
-                "faithfully. Reopen without preserve=True to rewrite the "
-                "sheet lossily.".format(", ".join(pinned_hits), ws.title))
-        row_changes = diff_row_attrs(ws, led.row_attr_snapshots.get(ws, {}))
-        comments_changed = _comments_changed(ws, led)
-        shift_ops = led.shifts.get(ws, [])
-        sheet_changed = bool(
-            ledger_dirty or all_region_changes or row_changes
-            or comments_changed or shift_ops or led.rich_text_mode
-            or table_changes or new_drawables or cache_writes)
-        if not (sheet_changed or force_calcpr):
-            continue
-        table_lifecycle = "tableParts" in all_region_changes
+        span = spans[0]
+        patched = patch_xml(
+            source.original[span.start:span.end], baseline, rendered, tag)
+        if patched is not None:
+            regions[tag] = patched
+    return _SheetEdits(
+        dirty=edits.dirty,
+        cache_invalidations=edits.cache_invalidations,
+        regions=regions,
+        rows=rows,
+    )
 
-        # renamed sheets are still keyed by their ORIGINAL title in the
-        # original workbook.xml
-        original_title = led.renames.get(ws, ws.title)
-        part = sheet_parts.get(original_title)
-        if part is None or part not in names:
-            _refuse("cannot locate the package part for sheet {0!r} via "
-                    "the workbook relationships.".format(ws.title))
-        original = zin.read(part)
-        if table_changes:
-            # loaded-table mutations re-render the
-            # table part from the fully-modeled Table via the engine
-            from . import tables as tables_mod
 
-            tables_mod.plan_table_mutations(
-                workbook, ws, part, zin, table_changes, plan,
-                armed_tables=armed_snap.get("table", {}))
-        legacy_drawing_bytes = None
-        if comments_changed:
-            from . import comments as comments_mod
+def _plan_conditional_formatting(context, sheet, source, all_regions,
+                                 regions):
+    if "conditionalFormatting" not in all_regions:
+        return None
+    from . import x14
+    from .lexical import patch_xml
 
-            comment_kind = comments_mod.comment_machinery_kind(
-                zin, part, names)
-            if comment_kind == "comments":
-                _refuse("comments changed on sheet {0!r}, which already "
-                        "carries comment parts; editing preserved comment/"
-                        "VML machinery is not supported yet (comment "
-                        "CREATION on comment-free sheets is).".format(
-                            ws.title))
-            if comment_kind == "other-vml":
-                _refuse("comments changed on sheet {0!r}, which carries "
-                        "non-comment VML (such as controls or header/footer "
-                        "drawing state); adding comment VML without "
-                        "rewriting that machinery is unsupported.".format(
-                            ws.title))
-            if led.comment_snapshots.get(ws):
-                _refuse("internal: comment snapshot mismatch on a sheet "
-                        "without comment machinery ({0!r}).".format(
-                            ws.title))
-            legacy_drawing_bytes = comments_mod.plan_comment_creation(
-                workbook, ws, part, zin, part_plan, names)
-        table_parts_bytes = _UNSET = object()
-        if table_lifecycle:
-            # table ADD/REMOVE via the lifecycle
-            # engine; the crafted tableParts bytes ride the region splice
-            from . import tables as tables_mod
-
-            table_parts_bytes = tables_mod.plan_table_lifecycle(
-                workbook, ws, part, zin,
-                led.region_snapshots.get(ws, {}).get("tableParts", ()),
-                plan, part_plan, names)
-        if shift_ops:
-            # the byte renumber runs first (deleted rows cut,
-            # shifted r attributes rewritten, all other bytes verbatim);
-            # the standard splice then treats the shifted bytes as its
-            # baseline
-            from .structural import apply_shift_to_bytes
-            for op, op_idx, op_amount in shift_ops:
-                original = apply_shift_to_bytes(original, op, op_idx,
-                                                op_amount)
-            baselines[part] = original
-        try:
-            scan = scan_sheet(original)
-        except ScanRefusal:
-            if force_calcpr and not sheet_changed:
-                # This part was raw-copyable before cache invalidation existed.
-                # Keep that contract for untouched XML outside the splice
-                # grammar; calcPr still tells spreadsheet applications to
-                # recompute it on open.
-                continue
-            raise
-        dirty = resolve_dirty_cells(
-            ws, ledger_dirty, scan,
-            value_overwrites=led.value_overwrites.get(ws, set()))
-        cache_invalidations = _formula_cache_invalidations(scan) \
-            if force_calcpr else set()
-        if cache_writes:
-            cache_invalidations -= set(cache_writes)
-
-        region_changes = {tag: rendered
-                          for tag, rendered in all_region_changes.items()
-                          if tag not in _CUSTOM_REGIONS}
-        if table_lifecycle and table_parts_bytes is not _UNSET:
-            region_changes["tableParts"] = table_parts_bytes
-        if legacy_drawing_bytes is not None:
-            region_changes["legacyDrawing"] = legacy_drawing_bytes
-        if new_drawables:
-            # new chart/image objects become fresh
-            # parts through the engine; the sheet gains ONE spliced
-            # <drawing r:id> element, or the anchors land in the sheet's
-            # EXISTING drawing part (anchor-only originals only)
-            new_charts = [ws._charts[k] for kind, k in new_drawables
-                          if kind == "chart"]
-            new_images = [ws._images[k] for kind, k in new_drawables
-                          if kind == "image"]
-            existing_drawing, existing_drawing_rid = \
-                drawings_mod._existing_drawing_part(zin, names, part)
-            if existing_drawing is None:
-                if scan.regions.get("drawing"):
-                    _refuse("sheet {0!r} carries a drawing element whose "
-                            "relationship target cannot be resolved; "
-                            "adding charts/images to it is not "
-                            "possible.".format(ws.title))
-                rels_part = _rels_path(part)
-                original_rels = zin.read(rels_part) \
-                    if rels_part in names else None
-                region_changes["drawing"] = drawings_mod.plan_fresh_drawing(
-                    workbook, ws, part_plan, names, part, original_rels,
-                    new_charts, new_images)
-            else:
-                drawing_base = plan.get(existing_drawing)
-                if drawing_base is None:
-                    drawing_base = zin.read(existing_drawing)
-                drels = _rels_path(existing_drawing)
-                plan[existing_drawing] = drawings_mod.plan_drawing_append(
-                    workbook, ws, part_plan, names, existing_drawing,
-                    drawing_base,
-                    zin.read(drels) if drels in names else None,
-                    new_charts, new_images)
-                if not scan.regions.get("drawing"):
-                    # legal-but-odd package: the drawing rel and part
-                    # exist, the sheet never references them — without
-                    # this element the appended objects are invisible
-                    # (orphan drawing rel)
-                    region_changes["drawing"] = (
-                        b'<drawing xmlns:r="%s" r:id="%s"/>'
-                        % (REL_NS.encode("ascii"),
-                           existing_drawing_rid.encode("ascii")))
-
-        # ROW and COLUMN styles need translating too: dict(RowDimension)
-        # and ColumnDimension.to_tree() carry MODEL style indices — every
-        # one must be translated to the FILE's xf numbering (and the xf
-        # appended) before touching the spliced bytes
-        if row_changes:
-            row_changes = _translate_row_styles(ws, row_changes, translator)
-        if "cols" in region_changes and region_changes["cols"]:
-            region_changes["cols"] = _translate_col_styles(
-                ws, region_changes["cols"], translator)
-
-        # A modeled region whose element shape did not change gets a
-        # lexical delta patch.  This keeps omitted defaults omitted and
-        # preserves producer-specific attribute order, quoting, whitespace,
-        # and unknown children.  ``cols`` is excluded because its style ids
-        # have just been translated from model ids to file ids.
-        from .lexical import patch_xml
-
-        region_baselines = led.region_snapshots.get(ws, {})
-        for tag, rendered in tuple(region_changes.items()):
-            spans = scan.regions.get(tag, ())
-            baseline = region_baselines.get(tag)
-            if tag == "cols" or len(spans) != 1 \
-                    or not isinstance(baseline, (bytes, bytearray)) \
-                    or not isinstance(rendered, (bytes, bytearray)) \
-                    or not baseline or not rendered:
-                continue
-            span = spans[0]
+    scan = source.scan
+    original = source.original
+    baselines = context.ledger.region_snapshots.get(sheet, {})
+    if x14.sheet_has_cf_twins(scan, original):
+        replacement, extension = x14.plan_cf_composed(
+            context.workbook, sheet, scan, original,
+            baselines.get("conditionalFormatting", ()))
+        if extension is not None:
+            regions["extLst"] = extension
+        return replacement
+    render_cf_for_write(sheet)
+    current_blocks = tuple(
+        tostring(cf.to_tree()) for cf in sheet.conditional_formatting)
+    armed_blocks = baselines.get("conditionalFormatting", ())
+    spans = scan.regions.get("conditionalFormatting", ())
+    if len(spans) == len(armed_blocks) == len(current_blocks) and spans:
+        replacements = []
+        for span, baseline, current in zip(
+                spans, armed_blocks, current_blocks):
             patched = patch_xml(
-                original[span.start:span.end], baseline, rendered, tag)
-            if patched is not None:
-                region_changes[tag] = patched
+                original[span.start:span.end], baseline, current,
+                "conditionalFormatting")
+            if patched is None:
+                replacements = []
+                break
+            replacements.append((span, patched))
+        if replacements:
+            run_start = spans[0].start
+            run_end = spans[-1].end
+            return crosspart.apply_edits(
+                original[run_start:run_end],
+                [(span.start - run_start, span.end - run_start, patched)
+                 for span, patched in replacements])
+    return render_cf_for_write(sheet)
 
-        cf_replacement = None
-        if "conditionalFormatting" in all_region_changes:
-            from . import x14
 
-            if x14.sheet_has_cf_twins(scan, original):
-                # twin-bearing CF is COMPOSED from
-                # original bytes (the model drops <x14:id> pointers on
-                # re-render) with the extLst twins patched in lockstep
-                cf_replacement, ext_crafted = x14.plan_cf_composed(
-                    workbook, ws, scan, original,
-                    led.region_snapshots.get(ws, {}).get(
-                        "conditionalFormatting", ()))
-                if ext_crafted is not None:
-                    region_changes["extLst"] = ext_crafted
-            else:
-                render_cf_for_write(ws)
-                current_blocks = tuple(
-                    tostring(cf.to_tree())
-                    for cf in ws.conditional_formatting)
-                armed_blocks = region_baselines.get(
-                    "conditionalFormatting", ())
-                spans = scan.regions.get("conditionalFormatting", ())
-                if len(spans) == len(armed_blocks) == len(current_blocks) \
-                        and spans:
-                    replacements = []
-                    for span, baseline, current in zip(
-                            spans, armed_blocks, current_blocks):
-                        patched = patch_xml(
-                            original[span.start:span.end], baseline,
-                            current, "conditionalFormatting")
-                        if patched is None:
-                            replacements = []
-                            break
-                        replacements.append((span, patched))
-                    if replacements:
-                        run_start = spans[0].start
-                        run_end = spans[-1].end
-                        cf_replacement = crosspart.apply_edits(
-                            original[run_start:run_end],
-                            [(span.start - run_start, span.end - run_start,
-                              patched)
-                             for span, patched in replacements])
-                if cf_replacement is None:
-                    cf_replacement = render_cf_for_write(ws)
-        if "dataValidations" in region_changes:
-            from . import x14
+def _plan_sheet_hyperlinks(context, sheet, source, changes,
+                           sheet_rels_updates):
+    replacement = None
+    if changes.shifts and "hyperlinks" not in changes.regions \
+            and (hyperlink_signatures(sheet)
+                 or source.scan.regions.get("hyperlinks")):
+        replacement = render_hyperlinks_for_write(sheet)
+    if "hyperlinks" in changes.regions:
+        replacement, rels_update = _plan_hyperlinks(
+            context.workbook, sheet, context.ledger, context.archive,
+            source.part, context.names, context.part_plan)
+        if rels_update is not None:
+            sheet_rels_updates[rels_update[0]] = rels_update[1]
+    return replacement
 
-            # classic DV edits coexist with verbatim x14 DVs unless the
-            # ranges overlap (lifts the blanket refusal)
-            x14.check_dv_coexistence(ws, scan, original)
 
-        if shift_ops:
-            # a shift splits/renumbers shared groups whose members would
-            # otherwise re-derive positionally from a stale host: dissolve
-            # every group on the sheet (members re-emit as plain formulas
-            # from the correctly rewritten model)
-            for members in scan.shared_members.values():
-                dirty |= members
+def _write_loaded_sheet_plan(context, sheet, source, changes, edits,
+                             cf_replacement, hyperlink_replacement, parts,
+                             dirty_by_part, region_claims, row_claims):
+    if not (edits.dirty or edits.regions or edits.rows or changes.shifts
+            or cf_replacement is not None
+            or hyperlink_replacement is not None
+            or changes.cache_writes or edits.cache_invalidations):
+        return False
+    need_styles_part = False
+    if context.translator is None:
+        styles_needed = any(
+            sheet._cells[(row, column)]._style is not None
+            for row, column in edits.dirty
+            if (row, column) in sheet._cells)
+        need_styles_part = styles_needed
+        resolver = _model_style_resolver
+    else:
+        resolver = context.translator.resolver()
+    payload = splice_sheet(
+        sheet, source.original, edits.dirty, edits.regions, edits.rows,
+        scan=source.scan,
+        cf_replacement=cf_replacement,
+        hyperlinks_replacement=hyperlink_replacement,
+        style_resolver=resolver,
+        value_overwrites=context.ledger.value_overwrites.get(
+            sheet, frozenset()),
+        cache_writes=changes.cache_writes,
+        cache_invalidations=edits.cache_invalidations)
+    parts[source.part], dimension_changed = _sync_dimension(
+        payload, sheet, source.scan, edits.dirty)
+    dirty_by_part[source.part] = edits.dirty \
+        | set(changes.cache_writes) | set(edits.cache_invalidations)
+    claims = set(edits.regions)
+    if cf_replacement is not None:
+        claims.add("conditionalFormatting")
+    if hyperlink_replacement is not None:
+        claims.add("hyperlinks")
+    if dimension_changed:
+        claims.add("dimension")
+    region_claims[source.part] = claims
+    row_claims[source.part] = set(edits.rows)
+    return need_styles_part
 
-        hyperlinks_replacement = None
-        if shift_ops and "hyperlinks" not in all_region_changes \
-                and (hyperlink_signatures(ws)
-                     or scan.regions.get("hyperlinks")):
-            # anchors moved with their cells (or the anchored row was
-            # deleted): re-render the element — possibly to nothing — so the
-            # original refs can never reattach to shifted rows. Relationship
-            # ids on surviving link objects are unchanged.
-            hyperlinks_replacement = render_hyperlinks_for_write(ws)
-        if "hyperlinks" in all_region_changes:
-            hyperlinks_replacement, rels_update = _plan_hyperlinks(
-                workbook, ws, led, zin, part, names, part_plan)
-            if rels_update is not None:
-                sheet_rels_updates[rels_update[0]] = rels_update[1]
 
-        if not (dirty or region_changes or row_changes or shift_ops
-                or cf_replacement is not None
-                or hyperlinks_replacement is not None
-                or cache_writes or cache_invalidations):
+def _plan_loaded_sheet(context, sheet, force_calcpr, parts, dirty_by_part,
+                       region_claims, row_claims, baselines,
+                       sheet_rels_updates):
+    object_plan = _plan_sheet_objects(context, sheet, parts)
+    changes = _inspect_sheet_changes(context, sheet, object_plan)
+    if not (changes.changed or force_calcpr):
+        return False
+    source = _prepare_loaded_sheet_source(
+        context, sheet, object_plan, changes, parts, baselines,
+        force_calcpr)
+    if source is None:
+        return False
+    edits = _initial_sheet_edits(
+        context, sheet, changes, source, force_calcpr)
+    _plan_sheet_drawables(
+        context, sheet, object_plan, source, edits.regions, parts)
+    edits = _translate_and_patch_regions(
+        context, sheet, source, edits)
+    cf_replacement = _plan_conditional_formatting(
+        context, sheet, source, changes.regions, edits.regions)
+    if "dataValidations" in edits.regions:
+        from . import x14
+
+        x14.check_dv_coexistence(sheet, source.scan, source.original)
+    hyperlink_replacement = _plan_sheet_hyperlinks(
+        context, sheet, source, changes, sheet_rels_updates)
+    return _write_loaded_sheet_plan(
+        context, sheet, source, changes, edits, cf_replacement,
+        hyperlink_replacement, parts, dirty_by_part, region_claims,
+        row_claims)
+
+
+def _plan_loaded_sheets(context, force_calcpr, parts):
+    dirty_by_part = {}
+    region_claims = {}
+    row_claims = {}
+    baselines = {}
+    sheet_rels_updates = {}
+    need_styles_part = False
+    for sheet in context.workbook.worksheets:
+        if sheet in context.ledger.added_sheets:
             continue
-        if translator is None:
-            # no styles.xml in the package: the part is CREATED from the
-            # model via the lifecycle engine, and cells write
-            # MODEL indices (a fresh part shares the model's numbering)
-            styles_needed = any(
-                ws._cells[(r, c)]._style is not None
-                for (r, c) in dirty if (r, c) in ws._cells)
-            if styles_needed:
-                need_styles_part = True
-            resolver = _model_style_resolver
-        else:
-            resolver = translator.resolver()
-        sheet_payload = splice_sheet(
-            ws, original, dirty, region_changes, row_changes, scan=scan,
-            cf_replacement=cf_replacement,
-            hyperlinks_replacement=hyperlinks_replacement,
-            style_resolver=resolver,
-            value_overwrites=led.value_overwrites.get(ws, frozenset()),
-            cache_writes=cache_writes,
-            cache_invalidations=cache_invalidations)
-        plan[part], dimension_changed = _sync_dimension(
-            sheet_payload, ws, scan, dirty)
-        # cache-written cells are CLAIMED changes: the crosscheck verifies
-        # them exactly like dirty cells
-        dirty_by_part[part] = dirty | set(cache_writes) \
-            | set(cache_invalidations)
-        claims = set(region_changes)
-        if cf_replacement is not None:
-            claims.add("conditionalFormatting")
-        if hyperlinks_replacement is not None:
-            claims.add("hyperlinks")
-        if dimension_changed:
-            claims.add("dimension")
-        region_claims[part] = claims
-        row_claims[part] = set(row_changes)
+        need_styles_part = _plan_loaded_sheet(
+            context, sheet, force_calcpr, parts, dirty_by_part,
+            region_claims, row_claims, baselines,
+            sheet_rels_updates) or need_styles_part
+    return _LoadedSheetsPlan(
+        parts=parts,
+        dirty_by_part=dirty_by_part,
+        region_claims=region_claims,
+        row_claims=row_claims,
+        baselines=baselines,
+        sheet_rels_updates=sheet_rels_updates,
+        need_styles_part=need_styles_part,
+    )
 
+
+def _plan_workbook_parts(context, added, loaded, force_calcpr):
+    ledger = context.ledger
     _plan_removed_sheets(
-        led, zin, names, sheet_parts, wb_rels_part, part_plan)
-    _plan_chart_rename_cascade(workbook, led, zin, plan)
-
-    # ---- calcChain cascade (D13), on the lifecycle engine ------------------
-    drop_calcchain = led.formulas_changed and _CALC_CHAIN in names
-    if drop_calcchain:
-        part_plan.remove_part(
+        ledger, context.archive, context.names, context.sheet_parts,
+        context.workbook_rels_part, context.part_plan)
+    _plan_chart_rename_cascade(
+        context.workbook, ledger, context.archive, loaded.parts)
+    if ledger.formulas_changed and _CALC_CHAIN in context.names:
+        context.part_plan.remove_part(
             _CALC_CHAIN,
-            referencing_rels=[(wb_rels_part, _CALC_CHAIN)])
+            referencing_rels=[
+                (context.workbook_rels_part, _CALC_CHAIN)])
 
-    # ---- styles append (runs AFTER splices: resolution allocates new xfs) --
-    styles_plan = None
-    if translator is not None:
-        styles_plan = crosspart.plan_styles_xml(workbook, led,
-                                                zin.read(ARC_STYLE),
-                                                translator)
+    styles = None
+    if context.translator is not None:
+        styles = crosspart.plan_styles_xml(
+            context.workbook, ledger, context.archive.read(ARC_STYLE),
+            context.translator)
     else:
         from .ledger import _style_fingerprint
-        lengths, _fp = _style_fingerprint(workbook)
-        if need_styles_part or lengths != led._style_lengths \
-                or len(workbook._cell_styles) != led.orig_cell_styles_len:
-            # the package has no styles.xml: generate it whole from the
-            # model (nothing to preserve) via the lifecycle engine
+
+        lengths, _fingerprint = _style_fingerprint(context.workbook)
+        if loaded.need_styles_part or lengths != ledger._style_lengths \
+                or len(context.workbook._cell_styles) \
+                != ledger.orig_cell_styles_len:
             from openpyxl.styles.stylesheet import write_stylesheet
-            part_plan.add_part(
-                ARC_STYLE, tostring(write_stylesheet(workbook)),
+
+            context.part_plan.add_part(
+                ARC_STYLE, tostring(write_stylesheet(context.workbook)),
                 content_type="application/vnd.openxmlformats-"
                              "officedocument.spreadsheetml.styles+xml",
-                relate_from=wb_part,
+                relate_from=context.workbook_part,
                 rel_type=REL_NS + "/styles")
 
-    (wb_xml_plan, core_changed, custom_render, custom_changed,
+    (workbook_xml, core_changed, custom_render, custom_changed,
      theme_changed) = _plan_workbook_metadata(
-         workbook, led, zin, names, wb_part, new_sheet_entries,
-         force_calcpr, part_plan)
-    wb_rels_plan, extra_rels_updates, ct_plan = \
+         context.workbook, ledger, context.archive, context.names,
+         context.workbook_part, added.sheet_entries, force_calcpr,
+         context.part_plan)
+    workbook_rels, extra_rels, content_types = \
         _compose_package_registries(
-            zin, names, wb_rels_part, wb_rels_appends, ct_appends,
-            part_plan, plan, sheet_rels_updates)
+            context.archive, context.names, context.workbook_rels_part,
+            added.workbook_rels_appends, added.content_type_appends,
+            context.part_plan, loaded.parts, loaded.sheet_rels_updates)
+    return _WorkbookPartsPlan(
+        workbook_xml=workbook_xml,
+        workbook_rels=workbook_rels,
+        content_types=content_types,
+        extra_rels=extra_rels,
+        styles=styles,
+        core_changed=core_changed,
+        custom_render=custom_render,
+        custom_changed=custom_changed,
+        theme_changed=theme_changed,
+    )
 
 
-    # ---- assemble -----------------------------------------------------------
-    def _build(zout, zin):
-        for info in zin.infolist():
-            name = info.filename
-            if name in part_plan.dropped:
-                continue
-            if name in extra_rels_updates:
-                zipio.write_entry(zout, name, extra_rels_updates[name])
-                continue
-            if name in plan:
-                zipio.write_entry(zout, name, plan[name])
-            elif name in sheet_rels_updates:
-                zipio.write_entry(zout, name, sheet_rels_updates[name])
-            elif name == wb_part and wb_xml_plan is not None:
-                zipio.write_entry(zout, name, wb_xml_plan)
-            elif name == wb_rels_part and wb_rels_plan is not None:
-                zipio.write_entry(zout, name, wb_rels_plan)
-            elif name == "[Content_Types].xml" and ct_plan is not None:
-                zipio.write_entry(zout, name, ct_plan)
-            elif name == ARC_STYLE and styles_plan is not None:
-                zipio.write_entry(zout, name, styles_plan)
-            elif name == ARC_CORE and core_changed:
-                zipio.write_entry(zout, name, render_core_model(workbook))
-            elif name == ARC_CUSTOM and custom_changed:
-                zipio.write_entry(zout, name, custom_render)
-            elif name == ARC_THEME and theme_changed:
-                zipio.write_entry(zout, name, workbook.loaded_theme)
-            else:
-                zipio.copy_entry(zin, info, zout)
-        for part_name, payload in new_sheet_parts:
-            zipio.write_entry(zout, part_name, payload)
-        for part_name, payload in new_rels_parts:
-            zipio.write_entry(zout, part_name, payload)
-        for part_name, payload in part_plan.added.items():
-            zipio.write_entry(zout, part_name, payload)
-        for part_name, payload in extra_rels_updates.items():
-            if part_name not in names:
-                zipio.write_entry(zout, part_name, payload)
-        # rels parts created for LOADED sheets that had none (first
-        # hyperlink on a rels-less sheet): they exist only in the plan
-        for part_name, payload in sheet_rels_updates.items():
-            if part_name not in names:
-                zipio.write_entry(zout, part_name, payload)
-
+def _archive_builder(context, added, loaded, workbook_parts):
     def build(zout):
-        # The immutable plan owns source bytes, not an open ZipFile.  Delivery
-        # can therefore happen after planning resources have been closed, and
-        # validate() can discard a plan without leaking a file handle.
-        with zipfile.ZipFile(io.BytesIO(source)) as build_source:
-            _build(zout, build_source)
+        with zipfile.ZipFile(io.BytesIO(context.source)) as archive:
+            for info in archive.infolist():
+                name = info.filename
+                if name in context.part_plan.dropped:
+                    continue
+                if name in workbook_parts.extra_rels:
+                    zipio.write_entry(
+                        zout, name, workbook_parts.extra_rels[name])
+                elif name in loaded.parts:
+                    zipio.write_entry(zout, name, loaded.parts[name])
+                elif name in loaded.sheet_rels_updates:
+                    zipio.write_entry(
+                        zout, name, loaded.sheet_rels_updates[name])
+                elif name == context.workbook_part \
+                        and workbook_parts.workbook_xml is not None:
+                    zipio.write_entry(
+                        zout, name, workbook_parts.workbook_xml)
+                elif name == context.workbook_rels_part \
+                        and workbook_parts.workbook_rels is not None:
+                    zipio.write_entry(
+                        zout, name, workbook_parts.workbook_rels)
+                elif name == "[Content_Types].xml" \
+                        and workbook_parts.content_types is not None:
+                    zipio.write_entry(
+                        zout, name, workbook_parts.content_types)
+                elif name == ARC_STYLE and workbook_parts.styles is not None:
+                    zipio.write_entry(zout, name, workbook_parts.styles)
+                elif name == ARC_CORE and workbook_parts.core_changed:
+                    zipio.write_entry(
+                        zout, name, render_core_model(context.workbook))
+                elif name == ARC_CUSTOM and workbook_parts.custom_changed:
+                    zipio.write_entry(
+                        zout, name, workbook_parts.custom_render)
+                elif name == ARC_THEME and workbook_parts.theme_changed:
+                    zipio.write_entry(
+                        zout, name, context.workbook.loaded_theme)
+                else:
+                    zipio.copy_entry(archive, info, zout)
+            for part_name, payload in added.sheet_parts:
+                zipio.write_entry(zout, part_name, payload)
+            for part_name, payload in added.rels_parts:
+                zipio.write_entry(zout, part_name, payload)
+            for part_name, payload in context.part_plan.added.items():
+                zipio.write_entry(zout, part_name, payload)
+            for part_name, payload in workbook_parts.extra_rels.items():
+                if part_name not in context.names:
+                    zipio.write_entry(zout, part_name, payload)
+            for part_name, payload in loaded.sheet_rels_updates.items():
+                if part_name not in context.names:
+                    zipio.write_entry(zout, part_name, payload)
+    return build
 
-    changed_parts = set(plan) | set(sheet_rels_updates) \
-        | set(extra_rels_updates)
+
+def _make_preserve_plan(context, added, loaded, workbook_parts,
+                        expected_identity, target_is_source):
+    changed_parts = set(loaded.parts) \
+        | set(loaded.sheet_rels_updates) \
+        | set(workbook_parts.extra_rels)
     for part_name, replacement in (
-            (wb_part, wb_xml_plan),
-            (wb_rels_part, wb_rels_plan),
-            ("[Content_Types].xml", ct_plan),
-            (ARC_STYLE, styles_plan)):
+            (context.workbook_part, workbook_parts.workbook_xml),
+            (context.workbook_rels_part, workbook_parts.workbook_rels),
+            ("[Content_Types].xml", workbook_parts.content_types),
+            (ARC_STYLE, workbook_parts.styles)):
         if replacement is not None:
             changed_parts.add(part_name)
-    if core_changed:
+    if workbook_parts.core_changed:
         changed_parts.add(ARC_CORE)
-    if custom_changed:
+    if workbook_parts.custom_changed:
         changed_parts.add(ARC_CUSTOM)
-    if theme_changed:
+    if workbook_parts.theme_changed:
         changed_parts.add(ARC_THEME)
-    added_parts = set(part_plan.added)
-    added_parts.update(name for name, _payload in new_sheet_parts)
-    added_parts.update(name for name, _payload in new_rels_parts)
-    save_plan = _PreservePlan(
+    added_parts = set(context.part_plan.added)
+    added_parts.update(name for name, _payload in added.sheet_parts)
+    added_parts.update(name for name, _payload in added.rels_parts)
+    return _PreservePlan(
         changed_parts=tuple(sorted(changed_parts)),
         added_parts=tuple(sorted(added_parts)),
-        dropped_parts=tuple(sorted(part_plan.dropped)),
-        build=build,
-        source=source,
-        source_identity=workbook._paper_source_identity,
+        dropped_parts=tuple(sorted(context.part_plan.dropped)),
+        build=_archive_builder(context, added, loaded, workbook_parts),
+        source=context.source,
+        source_identity=context.workbook._paper_source_identity,
         expected_identity=expected_identity,
         target_is_source=target_is_source,
         crosscheck=(os.environ.get("PAPER_LEDGER_CROSSCHECK") == "1"
-                    and bool(plan)),
-        dirty_by_part=_frozen_mapping(dirty_by_part, set_values=True),
-        baselines=_frozen_mapping(baselines),
-        region_claims=_frozen_mapping(region_claims, set_values=True),
-        row_claims=_frozen_mapping(row_claims, set_values=True),
+                    and bool(loaded.parts)),
+        dirty_by_part=_frozen_mapping(
+            loaded.dirty_by_part, set_values=True),
+        baselines=_frozen_mapping(loaded.baselines),
+        region_claims=_frozen_mapping(
+            loaded.region_claims, set_values=True),
+        row_claims=_frozen_mapping(
+            loaded.row_claims, set_values=True),
     )
 
-    # Planning is the complete non-I/O validation boundary. Both validate()
-    # and save() receive this same immutable result; only save() hands it to
-    # the delivery phase.
-    zin.close()
-    return save_plan
+
+def _plan_preserved(workbook, *, allow_formula_loss=False,
+                    expected_identity=None, target_is_source=False):
+    """Run every non-writing phase and return one immutable save plan."""
+    context = _prepare_plan_context(workbook)
+    try:
+        force_calcpr = _validate_preserve_model(
+            workbook, context.ledger, allow_formula_loss)
+        added = _plan_new_sheets(context)
+        requested_parts = {}
+        _plan_requested_parts(context, requested_parts)
+        loaded = _plan_loaded_sheets(
+            context, force_calcpr, requested_parts)
+        workbook_parts = _plan_workbook_parts(
+            context, added, loaded, force_calcpr)
+        return _make_preserve_plan(
+            context, added, loaded, workbook_parts,
+            expected_identity, target_is_source)
+    finally:
+        context.archive.close()
 
 
 def _model_style_resolver(cell):

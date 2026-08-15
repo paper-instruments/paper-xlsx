@@ -1096,14 +1096,10 @@ Do not redesign the rest of the receipt schema.
 
 ### R18 Make the core code reviewable
 
-The main risk is concentrated in functions too large for reliable review:
+The remaining reviewability risk was concentrated in two functions:
 
-- `_save_preserved`: 727 lines, about 174 branch points;
-- `scan_sheet`: 350 lines, about 101 branch points;
-- `apply_model_shift`: 172 lines, about 43 branch points;
-- `shift_blockers`: 142 lines, about 43 branch points;
-- `begin_move_range`: 138 lines, about 49 branch points;
-- `plan_workbook_xml`: 143 lines, about 47 branch points.
+- `_plan_preserved`: 589 lines;
+- `scan_sheet`: 350 lines, about 101 branch points.
 
 R10 deletes the separate 144-line `lint_formula()` implementation rather than
 spending review effort refactoring a feature that does not make the release
@@ -1113,22 +1109,28 @@ Refactor in behavior-preserving slices:
 
 1. split save planning by sheet, workbook metadata, relationships, lifecycle,
    and delivery;
-2. give each phase an explicit immutable plan result;
-3. separate XML tokenization from worksheet semantic validation;
-4. separate structural blocker discovery from rewrite-plan construction; and
-5. keep one final commit phase after all preflight succeeds.
+2. give each phase an explicit plan result;
+3. split worksheet XML scanning into named tokenizer and semantic-validation
+   phases; and
+4. keep one final commit phase after all preflight succeeds.
 
-`Workbook.validate()` currently performs a complete preserve save into
-`BytesIO`. It was called in 129 paper-full trajectories, often immediately
-before the real save. Once the planner is explicit, make `validate()` execute
-the same complete preflight and plan validation without copying and compressing
-the archive a second time. Any failure that can currently occur only during
-assembly must be moved into preflight or remain a checked final-commit I/O
-failure.
+`Workbook.validate()` was called in 129 paper-full trajectories, often
+immediately before the real save. It now executes the same complete preflight
+and planner as `save()` without copying and compressing the archive a second
+time. Assembly is reserved for the checked final commit, so validation and
+save share every non-I/O refusal.
 
 Land the correctness changes above first. Then refactor in behavior-preserving
 slices and compare generated packages across the existing corpus before and
 after each slice.
+
+The resulting `_plan_preserved()` entry point is 19 lines and its largest
+planning phase is 55 lines. The `scan_sheet()` entry point is 6 lines and the
+largest scanner phase is 36 lines. A 14-fixture golden run covering scanner
+records, no-op saves, cell and formula edits, renames, generic and table
+appends, structural row insertion, and image replacement produced the exact
+same result before and after both slices (SHA-256
+`82a8663b1ae6d145a8262d256d52b28987c9b3e1f1585a20cf3198d8adfe18fe`).
 
 AST comparison found five modified upstream files with no executable change
 after docstrings are stripped:
