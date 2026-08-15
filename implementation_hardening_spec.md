@@ -1125,11 +1125,17 @@ slices and compare generated packages across the existing corpus before and
 after each slice.
 
 The resulting `_plan_preserved()` entry point is 19 lines and its largest
-planning phase is 55 lines. The `scan_sheet()` entry point is 6 lines and the
-largest scanner phase is 36 lines. A 14-fixture golden run covering scanner
-records, no-op saves, cell and formula edits, renames, generic and table
-appends, structural row insertion, and image replacement produced the exact
-same result before and after both slices (SHA-256
+planning phase is 55 lines. The `scan_sheet()` entry point is 6 lines. Its
+semantic phases are at most 36 lines; one deliberate 181-line tokenizer loop
+keeps common row, cell, value, formula, and inline-string shapes on local
+variables because dispatching each XML token through bound methods regressed
+CPython 3.9 and 3.10. The final Python 3.10 median for the 5.8 MiB fixture is
+0.466 s versus 0.533 s before the refactor.
+
+A 14-fixture golden run covering scanner records, no-op saves, cell and
+formula edits, renames, generic and table appends, structural row insertion,
+and image replacement produced the exact same result before and after both
+slices (SHA-256
 `82a8663b1ae6d145a8262d256d52b28987c9b3e1f1585a20cf3198d8adfe18fe`).
 
 AST comparison found five modified upstream files with no executable change

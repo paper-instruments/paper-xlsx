@@ -155,13 +155,164 @@ class _SheetScanner:
         self.current_cell = None
 
     def run(self):
-        while self.pos < len(self.data):
-            lt = self.data.find(b"<", self.pos)
+        # Keep the worksheet cell loop on locals. On CPython 3.9 and 3.10,
+        # routing common cell shapes through bound methods adds material
+        # overhead on large sheets. Uncommon forms still delegate below.
+        data = self.data
+        scan = self.scan
+        main = self.main
+        stack = self.stack
+        pos = self.pos
+        current_row = self.current_row
+        current_cell = self.current_cell
+        n = len(data)
+        while pos < n:
+            lt = data.find(b"<", pos)
             if lt == -1:
                 break
-            nxt = self.data[lt + 1]
-            if self._scan_hot_path(lt, nxt):
+            nxt = data[lt + 1]
+            if current_cell is not None:
+                if nxt == 0x76 and lt + 2 < n \
+                        and data[lt + 2] == 0x3E:
+                    close = data.find(b"<", lt + 3)
+                    if close != -1 and data.startswith(b"</v>", close):
+                        pos = close + 4
+                        continue
+                elif nxt == 0x66 and lt + 2 < n \
+                        and data[lt + 2] == 0x3E:
+                    close = data.find(b"<", lt + 3)
+                    if close != -1 and data.startswith(b"</f>", close):
+                        current_cell.has_formula = True
+                        pos = close + 4
+                        continue
+                elif nxt == 0x69 and data.startswith(b"<is><t>", lt):
+                    close = data.find(b"<", lt + 7)
+                    if close != -1 and data.startswith(b"</t></is>", close):
+                        pos = close + 9
+                        continue
+                elif nxt == 0x2F and data.startswith(b"</c>", lt) \
+                        and stack[-1][5] is current_cell:
+                    stack.pop()
+                    current_cell.end = lt + 4
+                    current_cell = None
+                    pos = lt + 4
+                    continue
+            elif current_row is not None and nxt == 0x2F \
+                    and data.startswith(b"</row>", lt) \
+                    and stack[-1][5] is current_row:
+                stack.pop()
+                current_row.end = lt + 6
+                current_row.content_end = lt
+                current_row = None
+                pos = lt + 6
                 continue
+            elif current_row is None and nxt == 0x72 \
+                    and data.startswith(b"<row", lt) \
+                    and lt + 4 < n and data[lt + 4] in b" \t\r\n/>" \
+                    and stack \
+                    and stack[-1][5] is scan.sheetdata \
+                    and stack[-1][2] == main:
+                gt = _find_tag_end(data, lt)
+                self_closing = data[gt - 1] == 0x2F
+                attr_blob = data[
+                    lt + 4:gt - 1 if self_closing else gt]
+                if b"xmlns" not in attr_blob:
+                    attrs = {}
+                    for match in _ATTR_RE.finditer(attr_blob):
+                        value = match.group(3) \
+                            if match.group(3) is not None \
+                            else match.group(4)
+                        attrs[match.group(1)] = value
+                    reference = attrs.get(b"r")
+                    if reference is None:
+                        raise ScanRefusal(
+                            "cannot splice: a <row> element carries no r "
+                            "attribute (implicit row numbering); editing "
+                            "such sheets is not supported in v0")
+                    row_index = int(reference)
+                    if scan.row_order \
+                            and row_index <= scan.row_order[-1]:
+                        scan.rows_monotonic = False
+                    row = RowSpan(row_index, lt)
+                    row.attrs = {
+                        key.decode("latin-1"): value.decode("utf-8")
+                        for key, value in attrs.items()}
+                    if self_closing:
+                        row.end = gt + 1
+                        row.self_closing = True
+                    else:
+                        row.content_start = gt + 1
+                        current_row = row
+                        stack.append([
+                            main, b"row", stack[-1][2], stack[-1][3], lt,
+                            row])
+                    scan.rows[row_index] = row
+                    scan.row_order.append(row_index)
+                    pos = gt + 1
+                    continue
+            elif (nxt == 0x63 and current_row is not None
+                    and lt + 2 < n and data[lt + 2] in b" \t\r\n/>"
+                    and stack[-1][5] is current_row
+                    and stack[-1][2] == main):
+                gt = _find_tag_end(data, lt)
+                self_closing = data[gt - 1] == 0x2F
+                attr_blob = data[
+                    lt + 2:gt - 1 if self_closing else gt]
+                if b"xmlns" not in attr_blob:
+                    reference = None
+                    for match in _ATTR_RE.finditer(attr_blob):
+                        if match.group(1) == b"r":
+                            reference = match.group(3) \
+                                if match.group(3) is not None \
+                                else match.group(4)
+                    if reference is None:
+                        raise ScanRefusal(
+                            "cannot splice: a <c> element carries no r "
+                            "attribute (implicit cell numbering); editing "
+                            "such sheets is not supported in v0")
+                    coordinate = reference.decode("ascii")
+                    column = 0
+                    index = 0
+                    while index < len(reference):
+                        value = reference[index]
+                        if 65 <= value <= 90:
+                            column = column * 26 + value - 64
+                        elif 97 <= value <= 122:
+                            column = column * 26 + value - 96
+                        else:
+                            break
+                        index += 1
+                    if column == 0:
+                        raise ScanRefusal(
+                            "cannot splice: malformed cell reference "
+                            "{0!r}".format(coordinate))
+                    while index < len(reference) and (
+                            reference[index] == 36
+                            or 65 <= reference[index] <= 90
+                            or 97 <= reference[index] <= 122):
+                        index += 1
+                    row_digits = coordinate[index:]
+                    if row_digits and int(row_digits) != current_row.index:
+                        raise ScanRefusal(
+                            "cannot splice: cell {0!r} sits inside row {1} "
+                            "(its own reference disagrees with its parent "
+                            "row)".format(coordinate, current_row.index))
+                    cell = CellSpan(current_row.index, column, lt)
+                    cell._attr_blob = attr_blob
+                    if self_closing:
+                        cell.end = gt + 1
+                    else:
+                        current_cell = cell
+                        stack.append([
+                            main, b"c", stack[-1][2], stack[-1][3], lt,
+                            cell])
+                    current_row.cells[column] = cell
+                    pos = gt + 1
+                    continue
+
+            self.pos = pos
+            self.current_row = current_row
+            self.current_cell = current_cell
             if nxt == 0x3F:
                 self._scan_processing_instruction(lt)
             elif nxt == 0x21:
@@ -170,73 +321,20 @@ class _SheetScanner:
                 self._scan_end_tag(lt)
             else:
                 self._scan_start_tag(lt)
-        if self.stack:
+            pos = self.pos
+            current_row = self.current_row
+            current_cell = self.current_cell
+
+        self.pos = pos
+        self.current_row = current_row
+        self.current_cell = current_cell
+        if stack:
             raise ScanRefusal("cannot splice: document ended with unclosed "
                               "elements")
-        if self.scan.sheetdata is None:
+        if scan.sheetdata is None:
             raise ScanRefusal(
                 "cannot splice: the worksheet has no sheetData element")
-        return self.scan
-
-    def _scan_hot_path(self, lt, nxt):
-        """Handle the three plain shapes in the sheetData hot loop."""
-        if self.current_cell is not None:
-            if nxt == 0x76 and lt + 2 < len(self.data) \
-                    and self.data[lt + 2] == 0x3E:
-                close = self.data.find(b"<", lt + 3)
-                if close != -1 and self.data.startswith(b"</v>", close):
-                    self.pos = close + 4
-                    return True
-            elif nxt == 0x2F and self.data.startswith(b"</c>", lt) \
-                    and self.stack[-1][5] is self.current_cell:
-                self.stack.pop()
-                self.current_cell.end = lt + 4
-                self.current_cell = None
-                self.pos = lt + 4
-                return True
-            return False
-        if not (nxt == 0x63 and self.current_row is not None
-                and lt + 2 < len(self.data)
-                and self.data[lt + 2] in b" \t\r\n/>"
-                and self.stack[-1][5] is self.current_row
-                and self.stack[-1][2] == self.main):
-            return False
-        return self._scan_plain_cell(lt)
-
-    def _scan_plain_cell(self, lt):
-        gt = _find_tag_end(self.data, lt)
-        self_closing = self.data[gt - 1] == 0x2F
-        attr_blob = self.data[lt + 2:gt - 1 if self_closing else gt]
-        if b"xmlns" in attr_blob:
-            return False
-        reference = None
-        for match in _ATTR_RE.finditer(attr_blob):
-            if match.group(1) == b"r":
-                reference = match.group(3) if match.group(3) is not None \
-                    else match.group(4)
-        if reference is None:
-            raise ScanRefusal(
-                "cannot splice: a <c> element carries no r attribute "
-                "(implicit cell numbering); editing such sheets is not "
-                "supported in v0")
-        coordinate, column, row_digits = _fast_cell_reference(reference)
-        if row_digits and int(row_digits) != self.current_row.index:
-            raise ScanRefusal(
-                "cannot splice: cell {0!r} sits inside row {1} "
-                "(its own reference disagrees with its parent row)".format(
-                    coordinate, self.current_row.index))
-        cell = CellSpan(self.current_row.index, column, lt)
-        cell._attr_blob = attr_blob
-        if self_closing:
-            cell.end = gt + 1
-        else:
-            self.current_cell = cell
-            self.stack.append([
-                self.main, b"c", self.stack[-1][2], self.stack[-1][3],
-                lt, cell])
-        self.current_row.cells[column] = cell
-        self.pos = gt + 1
-        return True
+        return scan
 
     def _scan_processing_instruction(self, lt):
         end = self.data.find(b"?>", lt)
@@ -495,30 +593,6 @@ def _parse_attributes(attr_blob, parent_default, parent_prefixes):
         else:
             attrs[key] = value
     return attrs, default_ns, prefixes
-
-
-def _fast_cell_reference(reference):
-    coordinate = reference.decode("ascii")
-    column = 0
-    index = 0
-    while index < len(reference):
-        byte = reference[index]
-        if 65 <= byte <= 90:
-            column = column * 26 + (byte - 64)
-        elif 97 <= byte <= 122:
-            column = column * 26 + (byte - 96)
-        else:
-            break
-        index += 1
-    if column == 0:
-        raise ScanRefusal(
-            "cannot splice: malformed cell reference {0!r}".format(
-                coordinate))
-    while index < len(reference) and (
-            reference[index] == 36 or 65 <= reference[index] <= 90
-            or 97 <= reference[index] <= 122):
-        index += 1
-    return coordinate, column, coordinate[index:]
 
 
 def scan_sheet(data):
