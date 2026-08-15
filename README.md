@@ -145,7 +145,7 @@ The fork is developed against an evaluation suite of **15 realistic spreadsheet-
 
 We don't publish aggregate pass rates here: results are tracked in the internal evaluation harness, not in this repository, and this README doesn't quote numbers you can't check.
 
-The library's own test discipline is documented in [CONTRIBUTING.md](CONTRIBUTING.md): upstream's full pytest suite green on every change, a frozen hash-pinned fixture corpus with honest provenance labels, save→reopen→assert everywhere, exact changed-part budgets, refusal-atomicity checks (output bytes equal input bytes), and a headless LibreOffice load smoke. Fixture buckets we still need — genuinely Excel-authored and Google-Sheets-authored files we refuse to synthesize — are listed in [FIXTURE-REQUESTS.md](FIXTURE-REQUESTS.md).
+The library's own test discipline is documented in [CONTRIBUTING.md](CONTRIBUTING.md): upstream's full pytest suite green on every change, a frozen hash-pinned fixture corpus with honest provenance labels, save→reopen→assert everywhere, exact changed-part budgets, refusal-atomicity checks (output bytes equal input bytes), and a headless LibreOffice load smoke.
 
 ## Drop-in by design
 
@@ -169,7 +169,6 @@ Everything upstream openpyxl documents remains available. Preserve-by-default is
 
 paper-xlsx is pre-1.0 and its surface grows only as fast as the contract harness can prove it. Direction, clearly distinguished from what is shipped today:
 
-- **Filling the fixture corpus** with genuinely Excel-authored and Google-Sheets-authored workbooks ([FIXTURE-REQUESTS.md](FIXTURE-REQUESTS.md)) — the load-bearing bucket for everything below.
 - **Shrinking the refusal set**: preserve mode still refuses operations whose splice coverage isn't proven — for example chartsheet edits, generating table and pivot parts on newly added sheets, and comment changes on sheets that already carry comment parts (see the refusal sites in [`openpyxl/preserve/saver.py`](openpyxl/preserve/saver.py)). Each becomes supported as coverage lands.
 
 Nothing on this list is presented as a current capability; when it ships, it appears in [`doc/changes.rst`](doc/changes.rst).
@@ -178,7 +177,7 @@ Nothing on this list is presented as a current capability; when it ships, it app
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the engineering discipline this fork runs on. The short version: upstream's test suite stays green on every PR; every test asserts on a saved-and-reopened file, never an in-memory object; every bug fix lands with a frozen fixture reproducing it (*no fix without a fixture*); refusals must be atomic down to the byte; and new XML handling goes through openpyxl's `Serialisable` descriptor framework — never string-formatted XML.
 
-The most valuable non-code contribution right now is real-world fixtures: workbooks authored by desktop Excel or Google Sheets, per [FIXTURE-REQUESTS.md](FIXTURE-REQUESTS.md).
+The most valuable non-code contribution right now is real-world fixtures: workbooks authored by desktop Excel or Google Sheets under the provenance rules in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Community
 

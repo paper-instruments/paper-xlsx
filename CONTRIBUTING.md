@@ -79,8 +79,8 @@ values, human verifier and date). Rules:
 
 The most valuable contribution many people can make is not code: it is
 **real application-authored workbooks** — files from desktop Excel or Google
-Sheets that our environment cannot author. The current wish list, and the
-acceptance procedure, are in [FIXTURE-REQUESTS.md](FIXTURE-REQUESTS.md).
+Sheets that our environment cannot author. Fixture contributions must follow
+the provenance and manifest rules above.
 
 ## House style
 

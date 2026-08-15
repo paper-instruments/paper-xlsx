@@ -3,7 +3,7 @@
   "provenance": {
     "app": "openpyxl 3.1.5 (this checkout)",
     "version": "",
-    "notes": "bar chart + embedded PNG; both openpyxl-modeled (stock round-trips them lossily-but-presently; real-Excel chart fixtures are in FIXTURE-REQUESTS.md)"
+    "notes": "bar chart + embedded PNG; both openpyxl-modeled (stock round-trips them lossily-but-presently)"
   },
   "features": [
     "chart",
