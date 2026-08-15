@@ -91,10 +91,10 @@ def available():
 
 
 def _read_source(source):
-    from openpyxl.preserve.limits import read_bounded
+    from openpyxl.preserve.sourceio import read_source_bytes
 
     try:
-        return read_bounded(source, context="oracle workbook")
+        return read_source_bytes(source, context="oracle workbook")
     except TypeError as exc:
         raise ValueError(
             "file-like oracle sources must be seekable so the complete "

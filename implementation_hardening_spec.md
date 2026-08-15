@@ -11,9 +11,15 @@ This is a release cut, not a roadmap. Every numbered change in this document is
 required before publication. There are no later-version buckets. Code and APIs
 not named in a required change stay as they are.
 
+The requirement and acceptance-criteria sections below are retained as the
+implementation record. Every R1--R20 item is implemented on the branch named
+above; imperative language describes the contract that the release now meets,
+not unfinished work.
+
 ## Decision
 
-Keep the hard fork, but do not publish the current implementation unchanged.
+Keep the hard fork. The audited v0.1.3 implementation was not suitable for
+publication unchanged; this branch implements the required release cut.
 
 The fork is justified by the preservation spine:
 
@@ -31,7 +37,8 @@ wrapper around upstream openpyxl could not reliably observe direct assignments
 such as `cell.value = ...`, `cell.number_format = ...`, sheet renames, or row
 insertion.
 
-The current implementation has confirmed release blockers in four classes:
+The audited v0.1.3 implementation had confirmed release blockers in four
+classes:
 
 1. normal mutations can become quadratic;
 2. some successful in-memory edits can be silently omitted, become unsavable,
@@ -47,12 +54,11 @@ one image when a media part is shared, and no way to compose an address shift
 with an explicit chart-range edit in one save. Those gaps caused agents to
 rewrite raw ZIP/XML or split one logical edit across save/reload sessions.
 
-The evaluations do not prove a package-only score gain because the paper
+The evaluations do not prove a package-only score gain because the Paper
 treatments also changed the spreadsheet skill. They do show which APIs models
 actually used, which refusals recurred, and which saved artifacts violated the
-task contracts. The implementation should prioritize the automatic
-preservation spine and these observed failure boundaries over speculative
-convenience APIs.
+task contracts. The release therefore prioritizes the automatic preservation
+spine and those observed failure boundaries over speculative convenience APIs.
 
 ## Review method and baseline
 
@@ -93,10 +99,11 @@ tool-call arguments and code written by the agents, not from API names quoted in
 skill text. Grader checks were inspected at the individual-trial level where a
 treatment gap appeared.
 
-The implemented release cut passes the complete non-LibreOffice suite: 3,259
-tests passed, 23 skipped, 25 LibreOffice-tier tests were deselected, and 7 were
-expected failures. The isolated LibreOffice tier still invokes a locally
-installed executable that aborts with exit code 134 even for its untouched
+The implemented release cut passes the complete non-LibreOffice suite with its
+optional dependencies: 3,265 tests passed, 7 skipped, 25 LibreOffice-tier tests
+were deselected, and 7 were expected failures. The isolated LibreOffice tier
+still invokes a locally installed executable that aborts with exit code 134
+even for its untouched
 smoke fixture. This is an environment or LibreOffice failure, not evidence
 that those package behaviors pass. The independent-loader and oracle gate was
 rerun in the Linux GitHub Actions environment and passed, along with Windows,
@@ -1343,10 +1350,12 @@ preservation behavior:
 Release validation must classify package correctness, model behavior,
 treatment compliance, and evaluator validity separately.
 
-## Pre-open-source release gate
+## Pre-open-source release gate: implementation record
 
-Publication is blocked until every R1-R20 change and the following proof set is
-complete.
+Every R1--R20 implementation item is complete on this branch. The following
+checklists record the proof expected for release review; they are retained so
+future changes can be checked against the same contract. Publication still
+depends on normal project review and release approval.
 
 ### Required automated proof
 
@@ -1402,7 +1411,8 @@ score alone.
 
 ## Definition of done
 
-This proposal is implemented when:
+This proposal is implemented. The completed release cut satisfies these
+conditions:
 
 - every R1-R20 item is complete;
 - every executable difference from upstream has an owner, test, and stated

@@ -50,9 +50,9 @@ class EditReceipt:
 
 
 def _read(source):
-    from .limits import read_bounded
+    from .sourceio import read_source_bytes
 
-    return read_bounded(source, context="receipt workbook")
+    return read_source_bytes(source, context="receipt workbook")
 
 
 def _validated_names(archive):

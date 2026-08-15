@@ -116,11 +116,11 @@ def path_identity(path, *, allow_missing=False):
 
 def read_path_snapshot(path, *, context="preserve-mode workbook"):
     """Read one stable regular-file snapshot and its path identity."""
-    from openpyxl.preserve.limits import read_bounded
+    from openpyxl.preserve.sourceio import read_source_bytes
 
     before = path_identity(path)
     with open(before.resolved, "rb") as source:
-        payload = read_bounded(source, context=context)
+        payload = read_source_bytes(source, context=context)
     after = path_identity(path)
     if before != after:
         _identity_refusal(before.requested)
@@ -142,9 +142,9 @@ def read_path_handle_snapshot(handle, *, context="preserve-mode workbook"):
     position = handle.tell()
     try:
         handle.seek(0)
-        from openpyxl.preserve.limits import read_bounded
+        from openpyxl.preserve.sourceio import read_source_bytes
 
-        payload = read_bounded(handle, context=context)
+        payload = read_source_bytes(handle, context=context)
     finally:
         handle.seek(position)
     after = path_identity(requested)

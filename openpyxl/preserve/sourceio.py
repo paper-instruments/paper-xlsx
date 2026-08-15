@@ -19,7 +19,7 @@ def _read_stream(stream, context):
         chunks.append(bytes(chunk))
 
 
-def read_bounded(source, *, context="workbook package"):
+def read_source_bytes(source, *, context="workbook package"):
     """Read bytes in chunks while preserving a seekable stream's position."""
     if isinstance(source, (bytes, bytearray, memoryview)):
         return bytes(source)

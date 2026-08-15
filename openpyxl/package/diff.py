@@ -14,9 +14,9 @@ _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
 def _read_payload_source(source):
     """Accept a filesystem path, bytes, or a binary file-like; return bytes."""
-    from openpyxl.preserve.limits import read_bounded
+    from openpyxl.preserve.sourceio import read_source_bytes
 
-    return read_bounded(source, context="package diff input")
+    return read_source_bytes(source, context="package diff input")
 
 
 def _looks_like_xml(payload):

@@ -761,7 +761,7 @@ class Worksheet(_WorkbookChild):
         """The data-validation vocabulary for ``cell`` (address string or
         Cell), or None when no list-type validation covers it
         (paper-xlsx)."""
-        from openpyxl.preserve.locate import allowed_values as _allowed
+        from openpyxl.preserve.validation import allowed_values as _allowed
 
         return _allowed(self, cell)
 

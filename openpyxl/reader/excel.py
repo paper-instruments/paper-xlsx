@@ -171,9 +171,9 @@ def _read_source_bytes(fn):
     that will later be overwritten in place, so retention must be eager —
     a retained path or lazy re-read would see partially overwritten bytes).
     """
-    from openpyxl.preserve.limits import read_bounded
+    from openpyxl.preserve.sourceio import read_source_bytes
 
-    return read_bounded(fn, context="preserve-mode workbook")
+    return read_source_bytes(fn, context="preserve-mode workbook")
 
 
 def _find_workbook_part(package):

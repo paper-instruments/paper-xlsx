@@ -35,9 +35,9 @@ def _formula_payload(value):
 
 
 def _source_bytes(source):
-    from openpyxl.preserve.limits import read_bounded
+    from openpyxl.preserve.sourceio import read_source_bytes
 
-    return read_bounded(source, context="cell diff input")
+    return read_source_bytes(source, context="cell diff input")
 
 
 class CellsDiff:

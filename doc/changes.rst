@@ -1,6 +1,28 @@
 Unreleased
 ==========
 
+
+paper-xlsx 0.2.0 (2026-08-14)
+================================
+
+Breaking changes
+----------------
+
+* Remove heuristic or policy APIs that could make unsupported semantic claims
+  or broad workbook mutations: ``Workbook.model_map()``, ``findings()``,
+  ``Workbook.protect_for_delivery()``, ``apply_profile()``, and
+  ``Workbook.scrub()``.
+* Remove guessed-target and raw mutation escape hatches:
+  ``Worksheet.locate()``, ``Workbook.set_input()``, ``Workbook.mark_dirty()``,
+  and ``Workbook.replace_part()``.
+* Remove formula linting, ``Workbook.evaluate()``, in-place oracle
+  recalculation, and public exports of preservation implementation objects.
+  Explicit cell/style operations, objective ``scan_errors()``, and
+  explicit-source oracle operations remain available.
+
+Changes
+-------
+
 * Replace whole-ledger and whole-sheet mutation snapshots with local rollback
   journals for cell binding and ``Worksheet.append()``.
 * Add atomic ``Worksheet.append_table_row()``, isolated
