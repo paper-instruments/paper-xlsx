@@ -280,7 +280,7 @@ def snapshot_row_attrs(ws):
 
 
 def diff_regions(ws, armed_snapshot):
-    """Return {tag: new_serialization} for regions the user changed.
+    """Return `{tag: new_serialization}` for regions the user changed.
 
     Rendered twice, second pass kept: the arm snapshot is the settled
     render (ledger double-render), so the comparison must
@@ -296,7 +296,7 @@ def diff_regions(ws, armed_snapshot):
 
 
 def diff_row_attrs(ws, armed_snapshot):
-    """Return {row_index: {attr: value}} for changed rows; a row present in
+    """Return `{row_index: {attr: value}`} for changed rows; a row present in
     the arm snapshot but now attribute-free maps to an empty dict."""
     current = snapshot_row_attrs(ws)
     changed = {}

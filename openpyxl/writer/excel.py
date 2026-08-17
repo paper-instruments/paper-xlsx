@@ -288,7 +288,7 @@ def save_workbook(workbook, filename, *, allow_formula_loss=False):
     """Save the given workbook on the filesystem under the name filename.
 
     :param workbook: the workbook to save
-    :type workbook: :class:`openpyxl.workbook.Workbook`
+    :type workbook: `openpyxl.workbook.Workbook`
 
     :param filename: the path to which save the workbook
     :type filename: string

@@ -132,7 +132,7 @@ def _ext_names(payload):
 
 
 def scan_archive(archive, valid_files, keep_vba=False, rich_text=False):
-    """Build a :class:`LossInventory` from an open source ZipFile.
+    """Build a `LossInventory` from an open source ZipFile.
 
     ``valid_files`` is the archive namelist (already computed by the reader).
     Read failures on individual entries are recorded loudly, never swallowed

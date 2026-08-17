@@ -12,7 +12,7 @@ output byte, so every refusal is atomic.
 Still refused in v0 (typed, never silent): comment changes on loaded sheets;
 table add/remove; charts/images/comments/tables on ADDED sheets (partially
 deferred); custom-property part creation; workbook.xml
-elements outside {sheets, definedNames, calcPr, bookViews}; chartsheet
+elements outside `{sheets, definedNames, calcPr, bookViews}`; chartsheet
 changes; unsupported edits to preserved object parts.
 """
 
@@ -1729,7 +1729,7 @@ _HYPERLINK_REL = ("http://schemas.openxmlformats.org/officeDocument/2006/"
 
 
 def _package_info(zin):
-    """(workbook part name, {sheet title -> part name}), rels-driven: via [Content_Types] -> workbook part -> workbook rels -> targets.
+    """(workbook part name, `{sheet title -> part name}`), rels-driven: via [Content_Types] -> workbook part -> workbook rels -> targets.
     Never pattern-matches canonical paths."""
     from openpyxl.packaging.manifest import Manifest
     from openpyxl.packaging.relationship import get_dependents, get_rels_path

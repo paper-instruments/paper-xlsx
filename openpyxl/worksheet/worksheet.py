@@ -252,7 +252,7 @@ class Worksheet(_WorkbookChild):
     """Represents a worksheet.
 
     Do not create worksheets yourself,
-    use :func:`openpyxl.workbook.Workbook.create_sheet` instead
+    use `openpyxl.workbook.Workbook.create_sheet` instead
 
     """
 
@@ -606,7 +606,7 @@ class Worksheet(_WorkbookChild):
 
     @property
     def dimensions(self):
-        """Returns the result of :func:`calculate_dimension`"""
+        """Returns the result of `calculate_dimension`"""
         return self.calculate_dimension()
 
 
@@ -660,7 +660,7 @@ class Worksheet(_WorkbookChild):
 
     @property
     def rows(self):
-        """Produces all cells in the worksheet, by row (see :func:`iter_rows`)
+        """Produces all cells in the worksheet, by row (see `iter_rows`)
 
         :type: generator
         """
@@ -730,7 +730,7 @@ class Worksheet(_WorkbookChild):
 
     @property
     def columns(self):
-        """Produces all cells in the worksheet, by column (see :func:`iter_cols`)"""
+        """Produces all cells in the worksheet, by column (see `iter_cols`)"""
         return self.iter_cols()
 
 
@@ -957,13 +957,13 @@ class Worksheet(_WorkbookChild):
         * If it's a dict: values are assigned to the columns indicated by the keys (numbers or letters)
 
         :param iterable: list, range or generator, or dict containing values to append
-        :type iterable: list|tuple|range|generator or dict
+        :type iterable: list`tuple`range|generator or dict
 
         Usage:
 
         * append(['This is A1', 'This is B1', 'This is C1'])
-        * **or** append({'A' : 'This is A1', 'C' : 'This is C1'})
-        * **or** append({1 : 'This is A1', 3 : 'This is C1'})
+        * **or** append(`{'A' : 'This is A1', 'C' : 'This is C1'}`)
+        * **or** append(`{1 : 'This is A1', 3 : 'This is C1'}`)
 
         :raise: TypeError when iterable is neither a list/tuple nor a dict
 

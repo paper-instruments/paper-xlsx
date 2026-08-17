@@ -3,7 +3,7 @@
 """Typed exceptions for paper-xlsx safety refusals.
 
 Every preserve-mode operation completes correctly or refuses with a
-:class:`PaperRefusal` subclass saying what was found and why it was unsafe.
+`PaperRefusal` subclass saying what was found and why it was unsafe.
 Writes to protected cells can also emit an explicit advisory warning. A
 refused operation leaves the in-memory model, dirty ledger, and destination
 exactly as they were.
@@ -11,6 +11,19 @@ exactly as they were.
 Programmer errors (invalid argument combinations, wrong types) remain
 ``TypeError``/``ValueError`` and are deliberately NOT part of this hierarchy.
 """
+
+__all__ = [
+    "AmbiguousTargetError",
+    "BoundaryViolationError",
+    "HandleRebindWarning",
+    "OracleTimeoutError",
+    "OracleUnavailableError",
+    "PaperRefusal",
+    "ProtectedWriteWarning",
+    "RelationshipPolicyError",
+    "TargetNotFoundError",
+    "UnsupportedStructureError",
+]
 
 
 class PaperRefusal(Exception):

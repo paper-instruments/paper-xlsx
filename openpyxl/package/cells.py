@@ -70,7 +70,7 @@ class CellsDiff:
 
 
 def _snapshot(source):
-    """{sheet: {(row, col): (value, formula)}} for one package.
+    """`{sheet: {(row, col): (value, formula)}`} for one package.
 
     Two loads, mirroring how the ecosystem reads workbooks: the formula view
     (data_only=False) and the cached-value view (data_only=True).

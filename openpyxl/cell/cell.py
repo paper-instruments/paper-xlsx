@@ -408,7 +408,7 @@ class Cell(StyleableObject):
         """Get or set the value held in the cell.
 
         :type: depends on the value (string, float, int or
-            :class:`datetime.datetime`)
+            `datetime.datetime`)
         """
         return self._value
 
@@ -480,7 +480,7 @@ class Cell(StyleableObject):
         :param column: number of columns to offset
         :type column: int
 
-        :rtype: :class:`openpyxl.cell.Cell`
+        :rtype: `openpyxl.cell.Cell`
         """
         offset_column = self.col_idx + column
         offset_row = self.row + row
@@ -491,7 +491,7 @@ class Cell(StyleableObject):
     def comment(self):
         """ Returns the comment associated with this cell
 
-            :type: :class:`openpyxl.comments.Comment`
+            :type: `openpyxl.comments.Comment`
         """
         return self._comment
 

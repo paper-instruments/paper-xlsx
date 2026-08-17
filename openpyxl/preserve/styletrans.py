@@ -130,7 +130,7 @@ class StyleTranslator:
         ]
 
     def model_to_file_table(self):
-        """{model index: file index} for every current model array — used to
+        """`{model index: file index}` for every current model array — used to
         rewrite the s attributes of freshly generated (added-sheet) parts."""
         table = {}
         for model_idx, arr in enumerate(self._wb._cell_styles):

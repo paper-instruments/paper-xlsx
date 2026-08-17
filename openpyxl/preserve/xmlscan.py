@@ -596,9 +596,9 @@ def _parse_attributes(attr_blob, parent_default, parent_prefixes):
 
 
 def scan_sheet(data):
-    """Scan one worksheet part's bytes into a :class:`SheetScan`.
+    """Scan one worksheet part's bytes into a `SheetScan`.
 
-    Raises :class:`ScanRefusal` for constructions the splice must not touch.
+    Raises `ScanRefusal` for constructions the splice must not touch.
     """
     return _SheetScanner(data).run()
 

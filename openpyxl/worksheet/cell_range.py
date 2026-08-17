@@ -163,7 +163,7 @@ class CellRange(Serialisable):
         :param col_shift: number of columns to be moved by, can be negative
         :type row_shift: int
         :param row_shift: number of rows to be moved by, can be negative
-        :raise: :class:`ValueError` if any row or column index < 1
+        :raise: `ValueError` if any row or column index < 1
         """
 
         if (self.min_col + col_shift <= 0
@@ -302,7 +302,7 @@ class CellRange(Serialisable):
         :type other: openpyxl.worksheet.cell_range.CellRange
         :param other: Other sheet range.
         :return: the intersecting sheet range.
-        :raise: :class:`ValueError` if the *other* range doesn't intersect
+        :raise: `ValueError` if the *other* range doesn't intersect
             with this range.
         """
         if self.isdisjoint(other):

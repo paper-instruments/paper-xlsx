@@ -355,7 +355,7 @@ class Workbook:
     def active(self):
         """Get the currently active sheet or None
 
-        :type: :class:`openpyxl.worksheet.worksheet.Worksheet`
+        :type: `openpyxl.worksheet.worksheet.Worksheet`
         """
         try:
             return self._sheets[self._active_sheet_index]
@@ -555,7 +555,7 @@ class Workbook:
     def worksheets(self):
         """A list of sheets in this workbook
 
-        :type: list of :class:`openpyxl.worksheet.worksheet.Worksheet`
+        :type: list of `openpyxl.worksheet.worksheet.Worksheet`
         """
         return [s for s in self._sheets if isinstance(s, (Worksheet, ReadOnlyWorksheet, WriteOnlyWorksheet))]
 
@@ -563,7 +563,7 @@ class Workbook:
     def chartsheets(self):
         """A list of Chartsheets in this workbook
 
-        :type: list of :class:`openpyxl.chartsheet.chartsheet.Chartsheet`
+        :type: list of `openpyxl.chartsheet.chartsheet.Chartsheet`
         """
         return [s for s in self._sheets if isinstance(s, Chartsheet)]
 
@@ -637,14 +637,14 @@ class Workbook:
             their formulas — untouched cells keep them in the original
             bytes). On the stock path the flag silences the loud warning.
         :param receipt: preserve mode only — return an
-            :class:`openpyxl.preserve.receipts.EditReceipt` comparing the
+            `openpyxl.preserve.receipts.EditReceipt` comparing the
             saved file against the AS-LOADED source bytes. NOTE: after several saves from one session the receipt
             is cumulative — it describes the session, not the last call.
 
         .. warning::
             When creating your workbook using `write_only` set to True,
             you will only be able to call this function once. Subsequent attempts to
-            modify or save the file will raise an :class:`openpyxl.shared.exc.WorkbookAlreadySaved` exception.
+            modify or save the file will raise an `openpyxl.shared.exc.WorkbookAlreadySaved` exception.
         """
         if self.read_only:
             raise TypeError("""Workbook is read-only""")
