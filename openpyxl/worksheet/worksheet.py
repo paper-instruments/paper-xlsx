@@ -854,8 +854,9 @@ class Worksheet(_WorkbookChild):
                 for row in range(cr.min_row, cr.max_row + 1):
                     for col in range(cr.min_col, cr.max_col + 1):
                         cell = self._cells.get((row, col))
-                        if cell is not None:
-                            check_protection(cell)
+                        if cell is None:
+                            cell = self.cell(row, col)
+                        check_protection(cell)
             mcr = MergedCellRange(self, range_string)
             self.merged_cells.add(mcr)
             self._clean_merge_range(mcr)

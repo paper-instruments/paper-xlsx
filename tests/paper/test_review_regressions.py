@@ -8,7 +8,7 @@ import zipfile
 
 import pytest
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.errors import PaperRefusal, UnsupportedStructureError
 from openpyxl.package import diff_package
 from openpyxl.styles import Font
@@ -240,6 +240,57 @@ class TestMiscRefusalsAndCrashes:
         archive = zf.ZipFile(str(tmp_path / "o.xlsx"), "w")
         with pytest.raises(UnsupportedStructureError, match="ExcelWriter"):
             ExcelWriter(wb, archive)
+
+
+class TestLateReviewContracts:
+
+    def test_lexical_paths_distinguish_extension_namespace_twins(self):
+        from openpyxl.preserve.lexical import patch_xml
+
+        main = b"http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        original = (
+            b'<dataValidations xmlns="' + main + b'" xmlns:x="urn:ext" '
+            b'count="1"><x:dataValidation type="extension"/>'
+            b'<dataValidation type="list"/></dataValidations>'
+        )
+        baseline = (
+            b'<dataValidations xmlns="' + main + b'" count="1">'
+            b'<dataValidation type="list"/></dataValidations>'
+        )
+        current = baseline.replace(b'type="list"', b'type="whole"')
+
+        patched = patch_xml(
+            original, baseline, current, "dataValidations")
+
+        assert patched is not None
+        assert b'<x:dataValidation type="extension"/>' in patched
+        assert b'<dataValidation type="whole"/>' in patched
+
+    def test_blank_locked_merge_range_obeys_protection_contract(
+            self, tmp_path):
+        from openpyxl.errors import ProtectedWriteWarning
+
+        source = tmp_path / "protected-blank.xlsx"
+        workbook = Workbook()
+        workbook.active.protection.sheet = True
+        workbook.save(source)
+
+        strict = load_workbook(source, preserve=True)
+        strict.strict_protection = True
+        strict_sheet = strict.active
+        before_cells = set(strict_sheet._cells)
+        with pytest.raises(UnsupportedStructureError,
+                           match="strict_protection"):
+            strict_sheet.merge_cells("C3:D4")
+        assert set(strict_sheet._cells) == before_cells
+        assert "C3:D4" not in {
+            str(item) for item in strict_sheet.merged_cells.ranges}
+
+        advisory = load_workbook(source, preserve=True)
+        with pytest.warns(ProtectedWriteWarning, match="locked cell"):
+            advisory.active.merge_cells("C3:D4")
+        assert "C3:D4" in {
+            str(item) for item in advisory.active.merged_cells.ranges}
 
 
 class TestOracleRegressions:

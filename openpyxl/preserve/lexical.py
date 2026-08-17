@@ -23,19 +23,53 @@ def _local(name):
     return name.split(":", 1)[-1]
 
 
+def _namespace_context(node, default_ns=None, prefixes=None):
+    """Return the namespace context in scope for ``node`` itself."""
+    current_default = node.attrs.get("xmlns", default_ns)
+    current_prefixes = dict(prefixes or {})
+    for key, value in node.attrs.items():
+        if key.startswith("xmlns:"):
+            current_prefixes[key.split(":", 1)[1]] = value
+    return current_default, current_prefixes
+
+
+def _expanded_scan_name(node, default_ns, prefixes):
+    raw = node.name.decode("latin-1") \
+        if isinstance(node.name, bytes) else node.name
+    if ":" in raw:
+        prefix, local = raw.split(":", 1)
+        if prefix not in prefixes:
+            raise ValueError("undeclared XML namespace prefix")
+        return prefixes[prefix], local
+    return default_ns, raw
+
+
+def _expanded_element_name(name):
+    if name.startswith("{"):
+        namespace, local = name[1:].split("}", 1)
+        return namespace, local
+    return None, name
+
+
 def _nodes_by_path(root):
     out = {}
 
-    def visit(node, path):
+    def visit(node, path, default_ns, prefixes):
         out[path] = node
         counts = {}
         for child in node.children:
-            tag = child.local()
+            child_default, child_prefixes = _namespace_context(
+                child, default_ns, prefixes)
+            tag = _expanded_scan_name(
+                child, child_default, child_prefixes)
             index = counts.get(tag, 0)
             counts[tag] = index + 1
-            visit(child, path + ((tag, index),))
+            visit(child, path + ((tag, index),),
+                  child_default, child_prefixes)
 
-    visit(root, ((root.local(), 0),))
+    default_ns, prefixes = _namespace_context(root)
+    root_tag = _expanded_scan_name(root, default_ns, prefixes)
+    visit(root, ((root_tag, 0),), default_ns, prefixes)
     return out
 
 
@@ -47,12 +81,12 @@ def _elements_by_path(data):
         out[path] = element
         counts = {}
         for child in list(element):
-            tag = _local(child.tag)
+            tag = _expanded_element_name(child.tag)
             index = counts.get(tag, 0)
             counts[tag] = index + 1
             visit(child, path + ((tag, index),))
 
-    visit(root, ((_local(root.tag), 0),))
+    visit(root, ((_expanded_element_name(root.tag), 0),))
     return out
 
 

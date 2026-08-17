@@ -249,6 +249,50 @@ def test_image_replacement_receipt_reports_specific_cause(
     )
 
 
+def test_image_replacement_refuses_shared_drawing_relationship(
+        fixture_copy, tmp_path):
+    from openpyxl.errors import UnsupportedStructureError
+
+    source = fixture_copy("features/chart_image.xlsx")
+    shared = tmp_path / "shared-image-relationship.xlsx"
+    drawing_part = "xl/drawings/drawing1.xml"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(shared, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == drawing_part:
+                start = payload.index(
+                    b"<oneCellAnchor><from><col>7</col><colOff>0</colOff>"
+                    b"<row>19</row>")
+                end = payload.index(b"</oneCellAnchor>", start) \
+                    + len(b"</oneCellAnchor>")
+                duplicate = payload[start:end]
+                duplicate = duplicate.replace(
+                    b"<row>19</row>", b"<row>29</row>", 1)
+                duplicate = duplicate.replace(
+                    b'id="2" name="Image 2"',
+                    b'id="3" name="Image 3"', 1)
+                payload = payload.replace(
+                    b"</wsDr>", duplicate + b"</wsDr>")
+            zout.writestr(info, payload)
+
+    with zipfile.ZipFile(shared) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement-shared.png"
+    replacement.write_bytes(media)
+    workbook = load_workbook(shared, preserve=True)
+    images = workbook["Model"]._images
+    assert len(images) == 2
+    assert {image._paper_rel_id for image in images} == {"rId2"}
+
+    with pytest.raises(
+            UnsupportedStructureError,
+            match="shares drawing relationship") as caught:
+        workbook["Model"].replace_image("H20", replacement)
+
+    assert caught.value.kind == "shared-image-relationship"
+    assert not workbook._paper_ledger.image_replacements
+
+
 def test_receipt_reports_deterministic_derived_effects(
         fixture_copy, tmp_path):
     workbook = load_workbook(
@@ -263,6 +307,20 @@ def test_receipt_reports_deterministic_derived_effects(
     assert "recalculation_metadata_changed" in kinds
     assert json.loads(json.dumps(payload))["derived_effects"] == \
         payload["derived_effects"]
+
+
+def test_receipt_does_not_report_unchanged_calc_properties(
+        fixture_copy, tmp_path):
+    workbook = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    workbook.create_sheet("Added")
+
+    receipt = workbook.save(tmp_path / "added-sheet.xlsx", receipt=True)
+
+    assert not any(
+        effect["kind"] == "recalculation_metadata_changed"
+        for effect in receipt.derived_effects
+    )
 
 
 def test_chart_repoint_removes_only_its_matching_cache(

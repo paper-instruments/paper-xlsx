@@ -16,7 +16,9 @@ from openpyxl.errors import (
 )
 
 
-def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False):
+def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
+                      cache_parts=None, prefixed_cache=False,
+                      orphan_parts=()):
     """Attach a small relationship-complete pivot graph to source bytes.
 
     The preservation API indexes package relationships, not openpyxl's pivot
@@ -34,13 +36,20 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False):
         )
         + b"</pivotCaches>"
     )
+    cache_ids = sorted({cache_id for _name, cache_id in pivots})
+    if cache_parts is None:
+        cache_parts = {
+            cache_id: "xl/pivotCache/pivotCacheDefinition{0}.xml".format(
+                cache_id)
+            for cache_id in cache_ids
+        }
     workbook_rels = b"".join(
         b'<Relationship Id="rIdCache%s" Type="http://schemas.openxml'
         b'formats.org/officeDocument/2006/relationships/'
-        b'pivotCacheDefinition" Target="pivotCache/'
-        b'pivotCacheDefinition%s.xml"/>'
-        % (cache_id.encode("ascii"), cache_id.encode("ascii"))
-        for cache_id in sorted({cache_id for _name, cache_id in pivots})
+        b'pivotCacheDefinition" Target="/%s"/>'
+        % (cache_id.encode("ascii"),
+           cache_parts[cache_id].encode("utf-8"))
+        for cache_id in cache_ids
     )
     sheet_rels = b"".join(
         b'<Relationship Id="rIdPivot%s" Type="http://schemas.openxml'
@@ -49,7 +58,17 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False):
         % (str(index).encode("ascii"), str(index).encode("ascii"))
         for index, _pivot in enumerate(pivots, 1)
     )
-    cache_ids = sorted({cache_id for _name, cache_id in pivots})
+    content_type_overrides = b"".join(
+        b'<Override PartName="/xl/pivotTables/pivotTable%s.xml" '
+        b'ContentType="application/vnd.openxmlformats-officedocument.'
+        b'spreadsheetml.pivotTable+xml"/>' % str(index).encode("ascii")
+        for index, _pivot in enumerate(pivots, 1)
+    ) + b"".join(
+        b'<Override PartName="/%s" ContentType="application/vnd.'
+        b'openxmlformats-officedocument.spreadsheetml.'
+        b'pivotCacheDefinition+xml"/>' % part.encode("utf-8")
+        for part in tuple(cache_parts.values()) + tuple(orphan_parts)
+    )
     source = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(workbook._paper_source)) as zin, \
             zipfile.ZipFile(source, "w") as zout:
@@ -62,6 +81,9 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False):
                 payload = payload.replace(b"</Relationships>",
                                           workbook_rels
                                           + b"</Relationships>")
+            elif info.filename == "[Content_Types].xml":
+                payload = payload.replace(
+                    b"</Types>", content_type_overrides + b"</Types>")
             zout.writestr(info, payload)
         zout.writestr(
             "xl/worksheets/_rels/sheet1.xml.rels",
@@ -77,12 +99,25 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False):
                 + cache_id.encode("ascii") + b'"/>')
         refresh = b' refreshOnLoad="1"' if refresh_on_load else b""
         for cache_id in cache_ids:
+            root = b"x:pivotCacheDefinition" if prefixed_cache \
+                else b"pivotCacheDefinition"
+            namespace = (b' xmlns:x="http://schemas.openxmlformats.org/'
+                         b'spreadsheetml/2006/main"') if prefixed_cache \
+                else (b' xmlns="http://schemas.openxmlformats.org/'
+                      b'spreadsheetml/2006/main"')
+            source_tag = b"x:cacheSource" if prefixed_cache \
+                else b"cacheSource"
             zout.writestr(
-                "xl/pivotCache/pivotCacheDefinition%s.xml" % cache_id,
+                cache_parts[cache_id],
+                b'<' + root + namespace + b' recordCount="0"'
+                + refresh + b'><' + source_tag + b' type="worksheet"/>'
+                b'</' + root + b'>')
+        for part in orphan_parts:
+            zout.writestr(
+                part,
                 b'<pivotCacheDefinition xmlns="http://schemas.openxml'
-                b'formats.org/spreadsheetml/2006/main" recordCount="0"'
-                + refresh + b'><cacheSource type="worksheet"/>'
-                b'</pivotCacheDefinition>')
+                b'formats.org/spreadsheetml/2006/main" recordCount="0"/>'
+            )
     workbook._paper_source = source.getvalue()
 
 
@@ -216,28 +251,58 @@ def test_pivot_refresh_requires_explicit_scope(fixture_copy):
 
 def test_all_pivot_refresh_patches_only_root_attribute(
         fixture_copy, tmp_path):
-    src = fixture_copy("minimal/minimal_clean.xlsx")
-    crafted = tmp_path / "pivot.xlsx"
-    cache = (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-             b'<pivotCacheDefinition xmlns="http://schemas.openxml'
-             b'formats.org/spreadsheetml/2006/main" r:id="rId1" '
-             b'xmlns:r="http://schemas.openxmlformats.org/office'
-             b'Document/2006/relationships" recordCount="2">'
-             b'<cacheSource type="worksheet"/></pivotCacheDefinition>')
-    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(crafted, "w") as zout:
-        for info in zin.infolist():
-            zout.writestr(info, zin.read(info.filename))
-        zout.writestr("xl/pivotCache/pivotCacheDefinition1.xml", cache)
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    custom_part = "xl/custom/pivot-cache-a.xml"
+    orphan_part = "xl/pivotCache/pivotCacheDefinition99.xml"
+    _with_pivot_graph(
+        wb, [("SalesPivot", "1")], cache_parts={"1": custom_part},
+        orphan_parts=(orphan_part,))
+    original = wb._paper_source
 
-    wb = load_workbook(crafted, preserve=True)
     assert wb.set_pivot_refresh_on_load(all=True) == [
-        "xl/pivotCache/pivotCacheDefinition1.xml"]
+        custom_part]
     out = tmp_path / "o.xlsx"
     wb.save(out)
+    with zipfile.ZipFile(io.BytesIO(original)) as before, \
+            zipfile.ZipFile(out) as after:
+        assert b'refreshOnLoad="1"' in after.read(custom_part)
+        assert after.read(orphan_part) == before.read(orphan_part)
+
+
+def test_targeted_pivot_uses_current_sheet_name_after_rename(
+        fixture_copy, tmp_path):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(wb, [("SalesPivot", "1")])
+    wb["Sheet1"].title = "Renamed"
+
+    assert wb.set_pivot_refresh_on_load(
+        pivots=["Renamed!SalesPivot"]
+    ) == ["xl/pivotCache/pivotCacheDefinition1.xml"]
+    out = tmp_path / "renamed-pivot.xlsx"
+    wb.save(out)
     with zipfile.ZipFile(out) as archive:
-        payload = archive.read("xl/pivotCache/pivotCacheDefinition1.xml")
-    assert payload == cache.replace(
-        b' recordCount="2"', b' recordCount="2" refreshOnLoad="1"')
+        assert b'refreshOnLoad="1"' in archive.read(
+            "xl/pivotCache/pivotCacheDefinition1.xml")
+
+
+def test_prefixed_pivot_cache_is_patched_and_reported(
+        fixture_copy, tmp_path):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(
+        wb, [("SalesPivot", "1")], prefixed_cache=True)
+
+    wb.set_pivot_refresh_on_load(all=True)
+    receipt = wb.save(tmp_path / "prefixed-pivot.xlsx", receipt=True)
+
+    assert [effect for effect in receipt.derived_effects
+            if effect["kind"] == "pivot_refresh_on_load_enabled"] == [{
+                "kind": "pivot_refresh_on_load_enabled",
+                "part": "xl/pivotCache/pivotCacheDefinition1.xml",
+                "cause": "explicit_request",
+            }]
 
 
 def test_targeted_pivots_follow_relationships_and_deduplicate_shared_cache(

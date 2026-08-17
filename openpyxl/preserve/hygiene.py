@@ -42,7 +42,7 @@ def _formula_errors(formula, address):
 
     try:
         tokens = Tokenizer(formula).items
-    except TokenizerError as exc:
+    except (TokenizerError, IndexError) as exc:
         raise UnsupportedStructureError(
             "scan_errors() cannot tokenize formula {0}: {1}. No partial "
             "formula-error report was returned.".format(address, exc),

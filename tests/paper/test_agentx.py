@@ -85,6 +85,19 @@ class TestSearchAndScan:
                            match="No partial formula-error report"):
             scan_errors(wb)
 
+    def test_scan_errors_normalizes_tokenizer_index_error(self):
+        from openpyxl.preserve import scan_errors
+
+        wb = Workbook()
+        wb.active["A1"] = "=)"
+
+        with pytest.raises(
+                UnsupportedStructureError,
+                match="No partial formula-error report") as caught:
+            scan_errors(wb)
+        assert caught.value.kind == "unscannable-formula"
+        assert caught.value.anchor == "Sheet!A1"
+
     def test_allowed_values_literal_and_range(self, fixture_copy):
         from openpyxl.worksheet.datavalidation import DataValidation
 

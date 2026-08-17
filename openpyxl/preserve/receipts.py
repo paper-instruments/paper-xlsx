@@ -8,8 +8,10 @@ import hashlib
 import re
 import zipfile
 from collections import Counter
+from xml.etree.ElementTree import ParseError, fromstring
 
 from openpyxl.errors import UnsupportedStructureError
+from openpyxl.xml.constants import SHEET_MAIN_NS
 
 class EditReceipt:
 
@@ -80,12 +82,24 @@ def _cell_formula_cache_state(payload):
     return out
 
 
+def _pivot_refresh_enabled(payload):
+    """Return whether a main-namespace pivot cache requests refresh."""
+    try:
+        root = fromstring(payload)
+    except (ParseError, ValueError, TypeError):
+        return False
+    expected = "{{{0}}}pivotCacheDefinition".format(SHEET_MAIN_NS)
+    return root.tag == expected and root.attrib.get("refreshOnLoad") in (
+        "1", "true", "True")
+
+
 def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
     effects = []
     image_rels = {
         request["rels_part"]
         for request in getattr(ledger, "image_replacements", {}).values()
     }
+    pivot_parts = set(getattr(ledger, "pivot_refresh_requests", ()))
     cause = "formula_changed" if getattr(ledger, "formulas_changed", False) \
         else "input_changed"
     if "xl/calcChain.xml" in names_a and "xl/calcChain.xml" not in names_b:
@@ -115,13 +129,10 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
                     "kind": "chart_cache_removed", "part": name,
                     "cause": "chart_repointed",
                 })
-        elif name.startswith("xl/pivotCache/pivotCacheDefinition"):
-            old_enabled = re.search(
-                br"<pivotCacheDefinition\b[^>]*\brefreshOnLoad=(?:\"1\"|'1')",
-                before)
-            new_enabled = re.search(
-                br"<pivotCacheDefinition\b[^>]*\brefreshOnLoad=(?:\"1\"|'1')",
-                after)
+        elif name in pivot_parts \
+                or name.startswith("xl/pivotCache/pivotCacheDefinition"):
+            old_enabled = _pivot_refresh_enabled(before)
+            new_enabled = _pivot_refresh_enabled(after)
             if not old_enabled and new_enabled:
                 effects.append({
                     "kind": "pivot_refresh_on_load_enabled", "part": name,
@@ -147,10 +158,12 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
         workbook_part, _sheets = _package_info(za)
         if workbook_part in names_b \
                 and za.read(workbook_part) != zb.read(workbook_part):
-            before_calc = re.search(
+            before_match = re.search(
                 br"<(?:(?:\w+):)?calcPr\b[^>]*/?>", za.read(workbook_part))
-            after_calc = re.search(
+            after_match = re.search(
                 br"<(?:(?:\w+):)?calcPr\b[^>]*/?>", zb.read(workbook_part))
+            before_calc = before_match.group(0) if before_match else None
+            after_calc = after_match.group(0) if after_match else None
             if before_calc != after_calc:
                 effects.append({
                     "kind": "recalculation_metadata_changed",

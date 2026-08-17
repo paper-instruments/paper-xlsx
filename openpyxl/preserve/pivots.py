@@ -4,8 +4,14 @@
 
 import io
 import zipfile
+from xml.etree.ElementTree import ParseError, fromstring
 
-from openpyxl.errors import AmbiguousTargetError, TargetNotFoundError
+from openpyxl.errors import (
+    AmbiguousTargetError,
+    TargetNotFoundError,
+    UnsupportedStructureError,
+)
+from openpyxl.xml.constants import SHEET_MAIN_NS
 
 from . import crosspart
 from .tables import _rels_path, _resolve_target
@@ -13,6 +19,24 @@ from .tables import _rels_path, _resolve_target
 
 _PIVOT_TABLE_REL = "/pivotTable"
 _PIVOT_CACHE_REL = "/pivotCacheDefinition"
+
+
+def _cache_root(payload):
+    """Validate a pivot-cache root, including legal prefixed spelling."""
+    try:
+        element = fromstring(payload)
+    except (ParseError, ValueError, TypeError) as exc:
+        raise UnsupportedStructureError(
+            "pivot cache definition XML is malformed",
+            kind="unsupported-pivot-cache") from exc
+    expected = "{{{0}}}pivotCacheDefinition".format(SHEET_MAIN_NS)
+    if element.tag != expected:
+        raise UnsupportedStructureError(
+            "pivot cache definition has an unexpected root element",
+            kind="unsupported-pivot-cache")
+    return crosspart.scan_small(
+        payload, "pivotCacheDefinition", max_depth=1,
+        allow_prefixed_root=True)
 
 
 def _relationship_targets(zin, owner_part, suffix):
@@ -58,7 +82,13 @@ def _index(wb):
                 cache_by_id[cache_id] = target
 
         qualified = {}
+        ledger = getattr(wb, "_paper_ledger", None)
+        current_by_original = {
+            original: ws.title
+            for ws, original in getattr(ledger, "renames", {}).items()
+        }
         for title, sheet_part in sheets.items():
+            current_title = current_by_original.get(title, title)
             pivot_targets = _relationship_targets(
                 zin, sheet_part, _PIVOT_TABLE_REL)
             for pivot_part in pivot_targets.values():
@@ -70,11 +100,8 @@ def _index(wb):
                 cache_part = cache_by_id.get(root.attrs.get("cacheId"))
                 if pivot_name and cache_part:
                     qualified.setdefault(pivot_name, []).append(
-                        (title, cache_part))
-        cache_parts = sorted(
-            name for name in names
-            if name.startswith("xl/pivotCache/pivotCacheDefinition")
-            and name.endswith(".xml"))
+                        (current_title, cache_part))
+        cache_parts = sorted(set(cache_by_id.values()))
         return qualified, cache_parts
 
 
@@ -122,8 +149,7 @@ def plan_refresh(zin, parts, plan):
     patched = []
     for part in sorted(parts):
         payload = plan.get(part, zin.read(part))
-        root = crosspart.scan_small(payload, "pivotCacheDefinition",
-                                    max_depth=1)
+        root = _cache_root(payload)
         if root.attrs.get("refreshOnLoad") in ("1", "true", "True"):
             continue
         start, end, head = crosspart._patch_attr(

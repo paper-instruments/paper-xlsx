@@ -65,6 +65,18 @@ def request_replacement(ws, target, replacement, *, name=None):
         raise UnsupportedStructureError(
             "the selected image relationship cannot be resolved safely",
             kind="unresolved-image-relationship", anchor=str(target))
+    shared = [
+        other for other in images
+        if other is not image
+        and getattr(other, "_paper_drawing_part", None) == drawing_part
+        and getattr(other, "_paper_rel_id", None) == rel_id
+    ]
+    if shared:
+        raise UnsupportedStructureError(
+            "the selected image shares drawing relationship {0!r} with "
+            "another loaded image; replacing the relationship would change "
+            "multiple anchors. Nothing was changed.".format(rel_id),
+            kind="shared-image-relationship", anchor=str(target))
     from openpyxl.drawing.image import Image
 
     candidate = replacement if isinstance(replacement, Image) \
