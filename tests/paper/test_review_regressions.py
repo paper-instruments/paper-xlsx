@@ -266,6 +266,22 @@ class TestLateReviewContracts:
         assert b'<x:dataValidation type="extension"/>' in patched
         assert b'<dataValidation type="whole"/>' in patched
 
+    def test_lexical_paths_normalize_cleared_default_namespace(self):
+        from openpyxl.preserve.lexical import patch_xml
+
+        original = (
+            b'<root xmlns="urn:main"><item flag="old"/>'
+            b'<scope xmlns=""><leaf>preserved</leaf></scope></root>'
+        )
+        baseline = original
+        current = baseline.replace(b'flag="old"', b'flag="new"')
+
+        patched = patch_xml(original, baseline, current, "root")
+
+        assert patched is not None
+        assert b'<item flag="new"/>' in patched
+        assert b'<scope xmlns=""><leaf>preserved</leaf></scope>' in patched
+
     def test_blank_locked_merge_range_obeys_protection_contract(
             self, tmp_path):
         from openpyxl.errors import ProtectedWriteWarning

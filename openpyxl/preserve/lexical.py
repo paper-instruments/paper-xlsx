@@ -25,7 +25,10 @@ def _local(name):
 
 def _namespace_context(node, default_ns=None, prefixes=None):
     """Return the namespace context in scope for ``node`` itself."""
-    current_default = node.attrs.get("xmlns", default_ns)
+    # ElementTree represents both an absent default namespace and an explicit
+    # namespace undeclaration (xmlns="") as ``None``.  Normalize the byte
+    # scanner's context the same way so both path maps identify the same node.
+    current_default = node.attrs.get("xmlns", default_ns) or None
     current_prefixes = dict(prefixes or {})
     for key, value in node.attrs.items():
         if key.startswith("xmlns:"):
@@ -157,6 +160,9 @@ def patch_xml(original, baseline, current, expected_root):
     if model_paths != set(current_nodes):
         return None
     if not model_paths.issubset(original_nodes):
+        return None
+    if model_paths != set(baseline_elements) \
+            or model_paths != set(current_elements):
         return None
 
     edits = []
