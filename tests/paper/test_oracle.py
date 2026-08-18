@@ -103,6 +103,25 @@ class TestRecalc:
             assert b'fullCalcOnLoad="1"' in workbook_xml
             assert b'forceFullCalc="1"' in workbook_xml
 
+    def test_recalc_writes_date_cache_when_source_style_round_trips(
+            self, lo, tmp_path):
+        import datetime
+
+        workbook = Workbook()
+        cell = workbook.active["A1"]
+        cell.value = "=DATE(2025,1,2)+TIME(3,4,5)"
+        cell.number_format = "yyyy-mm-dd h:mm:ss"
+        source = tmp_path / "date-formula.xlsx"
+        workbook.save(source)
+
+        output = tmp_path / "date-candidate.xlsx"
+        result = oracle.recalc(source, output_path=output)
+
+        assert result.cells_written == 1
+        candidate = load_workbook(output, data_only=True)
+        assert candidate.active["A1"].value == \
+            datetime.datetime(2025, 1, 2, 3, 4, 5)
+
     def test_error_scan_finds_tokens(self, lo, tmp_path):
         wb = Workbook()
         ws = wb.active

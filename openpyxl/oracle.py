@@ -524,8 +524,10 @@ def _preserved_recalc_candidate(data, recalculated, wb_computed_formulas,
         if computed_type == "e":
             excluded[address] = "formula-error"
             continue
+        source_cell = wb_source_formulas[sheet]._cells.get((row, col))
         if not _cache_write_preserves_type(
-                computed, computed_type, wb_computed_values.epoch):
+                computed, computed_type, wb_candidate.epoch,
+                number_format=getattr(source_cell, "number_format", None)):
             excluded[address] = "computed-cache-type-not-writable"
             continue
         if cached not in (None, "") and _formula_results_match(
@@ -1363,16 +1365,41 @@ def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
                 _shutil.rmtree(root, ignore_errors=True)
 
 
-def _cache_write_preserves_type(value, data_type, epoch):
-    """Whether the value-only cache splicer preserves the OOXML type."""
+def _cache_write_preserves_type(value, data_type, epoch,
+                                number_format=None):
+    """Whether a value-only cache splice round-trips through the target.
+
+    Temporal formula caches are numeric Excel serials. They are eligible
+    only when the source cell's preserved number format will decode that
+    serial back to the same Python temporal type and value under the source
+    workbook's epoch.
+    """
     import datetime
 
     if isinstance(value, (datetime.datetime, datetime.date, datetime.time,
                           datetime.timedelta)):
-        # The cache splicer emits temporal values as untyped Excel serials.
-        # Without also proving the target style, reloading can expose a
-        # number instead of the computed temporal value.
-        return False
+        from openpyxl.styles.numbers import (
+            is_date_format,
+            is_timedelta_format,
+        )
+        from openpyxl.utils.datetime import from_excel
+        from openpyxl.preserve.splice import _serialize_cached_value
+
+        if data_type != "d" or not is_date_format(number_format):
+            return False
+        timedelta_style = is_timedelta_format(number_format)
+        if isinstance(value, datetime.timedelta) != timedelta_style:
+            return False
+        type_attr, payload = _serialize_cached_value(value, epoch)
+        if type_attr is not None:
+            return False
+        try:
+            round_trip = from_excel(
+                float(payload), epoch, timedelta=timedelta_style)
+        except (OverflowError, TypeError, ValueError):
+            return False
+        return (type(round_trip) is type(value)
+                and _values_match(value, round_trip, epoch=epoch))
     from openpyxl.preserve.splice import _serialize_cached_value
 
     type_attr, _payload = _serialize_cached_value(value, epoch)

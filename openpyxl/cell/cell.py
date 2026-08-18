@@ -79,13 +79,19 @@ class _CellBindTransaction:
             return
         self.ws = ws
         self.coordinate = (cell.row, cell.column)
-        self.value = cell._value
-        self.data_type = cell._data_type
+        # MergedCell interiors are styleable coordinates but deliberately
+        # carry no mutable value, hyperlink, or comment storage. Number-
+        # format assignment still needs the same style/registry/ledger
+        # transaction without pretending the interior is a full Cell.
+        self.has_cell_content = isinstance(cell, Cell)
+        if self.has_cell_content:
+            self.value = cell._value
+            self.data_type = cell._data_type
+            self.hyperlink = cell._hyperlink
+            self.hyperlink_ref = getattr(self.hyperlink, "ref", None)
+            self.comment = getattr(cell, "_comment", None)
+            self.comment_parent = getattr(self.comment, "_parent", None)
         self.style = copy(cell._style) if cell._style is not None else None
-        self.hyperlink = cell._hyperlink
-        self.hyperlink_ref = getattr(self.hyperlink, "ref", None)
-        self.comment = getattr(cell, "_comment", None)
-        self.comment_parent = getattr(self.comment, "_parent", None)
         self.cells = self.ledger.cells
         self.cell_state = self._capture_coordinate(self.cells, set)
         self.overwrites = self.ledger.value_overwrites
@@ -140,19 +146,20 @@ class _CellBindTransaction:
     def rollback(self):
         if not self.active:
             return
-        self.cell._value = self.value
-        self.cell._data_type = self.data_type
         self.cell._style = self.style
-        current_comment = getattr(self.cell, "_comment", None)
-        if current_comment is not self.comment \
-                and getattr(current_comment, "_parent", None) is self.cell:
-            current_comment._parent = None
-        self.cell._hyperlink = self.hyperlink
-        if self.hyperlink is not None:
-            self.hyperlink.ref = self.hyperlink_ref
-        self.cell._comment = self.comment
-        if self.comment is not None:
-            self.comment._parent = self.comment_parent
+        if self.has_cell_content:
+            self.cell._value = self.value
+            self.cell._data_type = self.data_type
+            current_comment = getattr(self.cell, "_comment", None)
+            if current_comment is not self.comment \
+                    and getattr(current_comment, "_parent", None) is self.cell:
+                current_comment._parent = None
+            self.cell._hyperlink = self.hyperlink
+            if self.hyperlink is not None:
+                self.hyperlink.ref = self.hyperlink_ref
+            self.cell._comment = self.comment
+            if self.comment is not None:
+                self.comment._parent = self.comment_parent
         self._restore_coordinate(self.cells, self.cell_state)
         self._restore_coordinate(self.overwrites, self.overwrite_state)
         self._restore_coordinate(self.cache_writes, self.cache_state)

@@ -106,6 +106,55 @@ def test_explicit_number_format_failure_restores_registry(monkeypatch):
     assert (list(registry), dict(registry._dict), registry.clean) == before
 
 
+def test_merged_interior_number_format_assignment_is_atomic(tmp_path,
+                                                            monkeypatch):
+    import openpyxl.styles.styleable as styleable
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.merge_cells("A1:B1")
+    source = tmp_path / "merged.xlsx"
+    workbook.save(source)
+
+    workbook = load_workbook(source, preserve=True)
+    sheet = workbook.active
+    interior = sheet["B1"]
+    registry = workbook._number_formats
+    before_style = copy(interior._style)
+    before_registry = (list(registry), dict(registry._dict), registry.clean)
+    real_mark = styleable._mark_styleable_dirty
+
+    def fail_after_mark(*args, **kwargs):
+        real_mark(*args, **kwargs)
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(styleable, "_mark_styleable_dirty", fail_after_mark)
+    with pytest.raises(RuntimeError, match="injected"):
+        interior.number_format = '0.0000 "units"'
+
+    assert interior._style == before_style
+    assert interior.number_format == "General"
+    assert (list(registry), dict(registry._dict), registry.clean) \
+        == before_registry
+    assert workbook._paper_ledger.cells.get(sheet, set()) == set()
+
+
+def test_merged_interior_number_format_assignment_saves(tmp_path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.merge_cells("A1:B1")
+    source = tmp_path / "merged.xlsx"
+    workbook.save(source)
+
+    workbook = load_workbook(source, preserve=True)
+    interior = workbook.active["B1"]
+    interior.number_format = "0.00"
+    assert interior.number_format == "0.00"
+    output = tmp_path / "formatted.xlsx"
+    workbook.save(output)
+    assert output.exists()
+
+
 def test_append_refuses_reentrancy_and_rolls_back_partial_row():
     workbook = _preserved_workbook()
     sheet = workbook["Data"]
