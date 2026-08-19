@@ -30,7 +30,17 @@ def sheet_has_comment_machinery(zin, sheet_part, names):
 
 
 def comment_machinery_kind(zin, sheet_part, names):
-    """Classify sheet relationships as comments, other VML, or absent."""
+    """Classify a sheet's comment and VML relationships.
+
+    :param zin: Open workbook package.
+    :type zin: zipfile.ZipFile
+    :param sheet_part: Worksheet part name in the package.
+    :type sheet_part: str
+    :param names: Part names present in the package.
+    :type names: builtins.set[str]
+    :return: ``"comments"``, ``"other-vml"``, or ``None``.
+    :rtype: str or None
+    """
     rels_part = _rels_path(sheet_part)
     if rels_part not in names:
         return None

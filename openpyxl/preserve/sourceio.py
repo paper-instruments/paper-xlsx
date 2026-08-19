@@ -20,7 +20,15 @@ def _read_stream(stream, context):
 
 
 def read_source_bytes(source, *, context="workbook package"):
-    """Read bytes in chunks while preserving a seekable stream's position."""
+    """Read package bytes while preserving a seekable stream's position.
+
+    :param source: Package bytes, path, or seekable binary stream.
+    :type source: bytes or path-like or binary file-like
+    :param context: Name used in source validation errors.
+    :type context: str
+    :return: Complete package contents.
+    :rtype: bytes
+    """
     if isinstance(source, (bytes, bytearray, memoryview)):
         return bytes(source)
     if hasattr(source, "read"):

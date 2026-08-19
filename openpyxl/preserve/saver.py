@@ -307,6 +307,13 @@ def validate_preserved(workbook, *, allow_formula_loss=False):
     Serializer helpers used during planning can mutate model registries, so
     validation uses the same planning-state guard as delivery and restores the
     workbook before returning or raising.
+
+    :param workbook: Preserve-mode workbook to validate.
+    :type workbook: openpyxl.workbook.workbook.Workbook
+    :param allow_formula_loss: Allow edited cached values to replace formulas.
+    :type allow_formula_loss: bool
+    :return: ``None``.
+    :rtype: None
     """
     source_identity = workbook._paper_source_identity
     if source_identity is not None:

@@ -106,6 +106,13 @@ def allowed_values(ws, cell):
     ``None`` means no list validation covers the cell. A matching validation
     whose vocabulary cannot be reported exactly raises a typed refusal.
     Blank cells in a static source range are returned as ``None`` entries.
+
+    :param ws: Worksheet containing the validated cell.
+    :type ws: openpyxl.worksheet.worksheet.Worksheet
+    :param cell: Cell object or coordinate to inspect.
+    :type cell: openpyxl.cell.cell.Cell or str
+    :return: Allowed values, or ``None`` when no list validation applies.
+    :rtype: list or None
     """
     from openpyxl.cell.cell import MergedCell
     from openpyxl.errors import AmbiguousTargetError

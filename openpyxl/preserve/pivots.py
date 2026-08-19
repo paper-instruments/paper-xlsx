@@ -106,7 +106,17 @@ def _index(wb):
 
 
 def resolve_requests(wb, pivots=None, *, all=False):
-    """Resolve the requested pivot scope to cache-definition parts."""
+    """Resolve requested pivots to their cache-definition parts.
+
+    :param wb: Preserve-mode workbook containing the pivots.
+    :type wb: openpyxl.workbook.workbook.Workbook
+    :param pivots: Pivot names, optionally qualified by worksheet name.
+    :type pivots: iterable of str or None
+    :param all: Select every loaded pivot cache instead of named pivots.
+    :type all: bool
+    :return: Sorted package part names for the selected pivot caches.
+    :rtype: list of str
+    """
     if (pivots is None) == (not all):
         raise ValueError("pass exactly one of pivots=[...] or all=True")
     index, cache_parts = _index(wb)
@@ -145,7 +155,17 @@ def resolve_requests(wb, pivots=None, *, all=False):
 
 
 def plan_refresh(zin, parts, plan):
-    """Compose refresh requests into the per-part byte plan."""
+    """Add pivot refresh requests to a package byte plan.
+
+    :param zin: Open workbook package.
+    :type zin: zipfile.ZipFile
+    :param parts: Pivot cache-definition part names to update.
+    :type parts: iterable of str
+    :param plan: Planned replacement bytes keyed by part name.
+    :type plan: dict
+    :return: Part names whose refresh metadata changed.
+    :rtype: list of str
+    """
     patched = []
     for part in sorted(parts):
         payload = plan.get(part, zin.read(part))

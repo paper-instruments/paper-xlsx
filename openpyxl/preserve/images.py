@@ -24,7 +24,19 @@ def _anchor_coordinate(image):
 
 
 def request_replacement(ws, target, replacement, *, name=None):
-    """Validate and record one relationship-owned image replacement."""
+    """Validate and record one relationship-owned image replacement.
+
+    :param ws: Worksheet containing the loaded image.
+    :type ws: openpyxl.worksheet.worksheet.Worksheet
+    :param target: Loaded image or its anchor coordinate.
+    :type target: openpyxl.drawing.image.Image or str
+    :param replacement: Replacement image or image source.
+    :type replacement: openpyxl.drawing.image.Image or path-like
+    :param name: Optional image name used to resolve an ambiguous anchor.
+    :type name: str or None
+    :return: The loaded image selected for replacement.
+    :rtype: openpyxl.drawing.image.Image
+    """
     ledger = getattr(ws.parent, "_paper_ledger", None)
     if ledger is None or not ledger.armed:
         raise ValueError("replace_image() is only available in preserve mode")
@@ -135,7 +147,21 @@ def _relative_target(owner, target):
 
 
 def plan_replacements(zin, requests, part_plan, names, plan):
-    """Add fresh media parts and compose exact relationship retargets."""
+    """Add replacement media parts and retarget their relationships.
+
+    :param zin: Open workbook package.
+    :type zin: zipfile.ZipFile
+    :param requests: Validated replacement requests keyed by image identity.
+    :type requests: mapping
+    :param part_plan: Package lifecycle plan to update.
+    :type part_plan: openpyxl.preserve.lifecycle.PartPlan
+    :param names: Part names present in the package.
+    :type names: builtins.set[str]
+    :param plan: Planned replacement bytes keyed by part name.
+    :type plan: dict
+    :return: ``None``.
+    :rtype: None
+    """
     taken = set(names) | set(part_plan.added)
     next_media = _next_number(taken, r"xl/media/image(\d+)\.\w+$")
     for offset, (_key, request) in enumerate(sorted(

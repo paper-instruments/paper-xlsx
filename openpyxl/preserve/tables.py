@@ -1190,6 +1190,15 @@ def append_table_row(ws, table_name, values):
     protection, table geometry, and retained OOXML before changing the model.
     Unsupported connected, extended, merged, spill, sorted, or ambiguous table
     states raise a typed refusal and leave the workbook unchanged.
+
+    :param ws: Worksheet containing the table.
+    :type ws: openpyxl.worksheet.worksheet.Worksheet
+    :param table_name: Name of the table to expand.
+    :type table_name: str
+    :param values: Row values as a sequence or column-name mapping.
+    :type values: iterable or mapping
+    :return: ``None``.
+    :rtype: None
     """
     if table_name not in ws.tables:
         from openpyxl.errors import TargetNotFoundError

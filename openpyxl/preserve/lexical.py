@@ -141,6 +141,17 @@ def patch_xml(original, baseline, current, expected_root):
     ``None`` means the edit changed element shape or could not be mapped
     unambiguously.  Callers may then use a guarded structural fallback, but
     must not silently normalize XML that carries unowned content.
+
+    :param original: Original XML bytes to preserve.
+    :type original: bytes
+    :param baseline: Model serialization captured before editing.
+    :type baseline: bytes
+    :param current: Model serialization after editing.
+    :type current: bytes
+    :param expected_root: Expected local name of the XML root element.
+    :type expected_root: str
+    :return: Patched XML bytes, or ``None`` when a safe patch is unavailable.
+    :rtype: bytes or None
     """
     if not original or not baseline or not current:
         return None
