@@ -8,9 +8,9 @@ import zipfile
 
 import pytest
 
-from openpyxl import load_workbook
-from openpyxl.chart import BarChart, Reference
-from openpyxl.errors import UnsupportedStructureError
+from openpyxl import Workbook, load_workbook
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.errors import TargetNotFoundError, UnsupportedStructureError
 
 from .support.partdiff import part_payloads
 
@@ -30,6 +30,26 @@ def _chart_for(ws, min_col=1, min_row=1, max_row=3):
     chart.add_data(Reference(ws, min_col=min_col, min_row=min_row,
                              max_row=max_row))
     return chart
+
+
+def _combined_chart_fixture(tmp_path):
+    path = str(tmp_path / "combined.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    for row in range(1, 5):
+        ws.cell(row, 2, row)
+        ws.cell(row, 3, row * 10)
+    primary = BarChart()
+    primary.add_data(Reference(
+        ws, min_col=2, min_row=1, max_row=4))
+    secondary = LineChart()
+    secondary.add_data(Reference(
+        ws, min_col=3, min_row=1, max_row=4))
+    primary += secondary
+    ws.add_chart(primary, "E2")
+    wb.save(path)
+    return path
 
 
 class TestAddedSheetDrawings:
@@ -174,6 +194,44 @@ class TestExistingDrawingAppend:
 
 class TestChartPropertyEdits:
 
+    def test_loaded_combined_child_repoint_lands(self, tmp_path):
+        src = _combined_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        chart = wb["Data"]._charts[0]
+        assert len(chart._charts) == 2
+
+        chart._charts[1].repoint(0, "Data!$B$1:$B$4")
+        out = str(tmp_path / "repointed.xlsx")
+        wb.save(out)
+
+        saved = load_workbook(out)
+        child = saved["Data"]._charts[0]._charts[1]
+        assert child.series[0].val.numRef.f == "Data!$B$1:$B$4"
+
+    def test_loaded_combined_child_title_refuses(self, tmp_path):
+        src = _combined_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        wb["Data"]._charts[0]._charts[1].title = "Not serialized"
+
+        with pytest.raises(
+                UnsupportedStructureError,
+                match="serializer does not represent"):
+            wb.save(str(tmp_path / "title.xlsx"))
+
+    def test_loaded_combined_chart_addition_refuses(self, tmp_path):
+        src = _combined_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Data"]
+        extra = LineChart()
+        extra.add_data(Reference(
+            ws, min_col=2, min_row=1, max_row=4))
+        ws._charts[0] += extra
+
+        with pytest.raises(
+                UnsupportedStructureError,
+                match="added or removed"):
+            wb.save(str(tmp_path / "extra.xlsx"))
+
     def test_repoint_patches_series_bytes(self, fixture_copy, tmp_path):
         src = fixture_copy("features/chart_image.xlsx")
         wb = load_workbook(src, preserve=True)
@@ -197,17 +255,53 @@ class TestChartPropertyEdits:
         with pytest.raises(ValueError, match="series"):
             chart.repoint(5, "Model!$B$1:$B$4")        # no such series
 
-    def test_repoint_to_missing_sheet_refuses_at_save(self, fixture_copy,
-                                                      tmp_path):
+    def test_repoint_to_missing_sheet_refuses_before_mutation(
+            self, fixture_copy):
         src = fixture_copy("features/chart_image.xlsx")
         with open(src, "rb") as f:
             before = f.read()
         wb = load_workbook(src, preserve=True)
-        wb["Model"]._charts[0].repoint(0, "Nowhere!$B$1:$B$4")
-        with pytest.raises(UnsupportedStructureError, match="Nowhere"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        chart = wb["Model"]._charts[0]
+        original = chart.series[0].val.numRef.f
+        with pytest.raises(TargetNotFoundError, match="Nowhere"):
+            chart.repoint(0, "Nowhere!$B$1:$B$4")
+        assert chart.series[0].val.numRef.f == original
         with open(src, "rb") as f:
             assert f.read() == before
+
+    def test_repoint_restores_range_when_complete_preflight_refuses(
+            self, fixture_copy):
+        wb = load_workbook(
+            fixture_copy("features/chart_image.xlsx"), preserve=True)
+        chart = wb["Model"]._charts[0]
+        original = chart.series[0].val.numRef.f
+        chart.style = 31
+        with pytest.raises(UnsupportedStructureError, match="property"):
+            chart.repoint(0, "Model!$B$1:$B$4")
+        assert chart.series[0].val.numRef.f == original
+        assert chart.style == 31
+
+    def test_repoint_preflights_attached_combined_chart_component(
+            self, fixture_copy):
+        wb = load_workbook(
+            fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+        ws = wb["Sheet1"]
+        for row in range(1, 4):
+            ws.cell(row, 2, row)
+            ws.cell(row, 3, row * 2)
+        primary = BarChart()
+        primary.add_data(Reference(
+            ws, min_col=2, min_row=1, max_row=3))
+        secondary = LineChart()
+        secondary.add_data(Reference(
+            ws, min_col=3, min_row=1, max_row=3))
+        primary += secondary
+        ws.add_chart(primary, "E2")
+
+        secondary.repoint(0, "Sheet1!$B$1:$B$3")
+
+        assert secondary._parent_sheet is ws
+        assert secondary.series[0].val.numRef.f == "Sheet1!$B$1:$B$3"
 
     def test_title_edit_lands_and_reloads(self, fixture_copy, tmp_path):
         src = fixture_copy("features/chart_image.xlsx")
@@ -244,17 +338,132 @@ class TestChartPropertyEdits:
                            match="added or removed"):
             wb.save(str(tmp_path / "o.xlsx"))
 
-    def test_shift_plus_property_edit_refuses(self, fixture_copy,
-                                              tmp_path):
-        # the shift already rewrote the chart's <c:f> texts; a same-session
-        # property edit cannot verify against the arm state — refuse, never
-        # guess (separate sessions compose fine)
+    def test_shift_plus_property_edit_composes(self, fixture_copy,
+                                               tmp_path):
         src = fixture_copy("features/chart_image.xlsx")
         wb = load_workbook(src, preserve=True)
         ws = wb["Model"]
         chart = ws._charts[0]
         ws.insert_rows(1)
         chart.repoint(0, "Model!$D$1:$D$4")
-        with pytest.raises(UnsupportedStructureError,
-                           match="separate sessions"):
-            wb.save(str(tmp_path / "o.xlsx"))
+        out = str(tmp_path / "o.xlsx")
+        wb.save(out)
+        chart_xml = next(
+            payload for name, payload in part_payloads(out).items()
+            if name.startswith("xl/charts/chart"))
+        assert b"Model!$D$1:$D$4" in chart_xml
+
+
+def test_image_replacement_retargets_one_relationship_and_keeps_old_media(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    with zipfile.ZipFile(source) as archive:
+        old_media = archive.read("xl/media/image1.png")
+        old_rels = archive.read("xl/drawings/_rels/drawing1.xml.rels")
+    replacement = tmp_path / "replacement.png"
+    replacement.write_bytes(old_media)
+
+    workbook = load_workbook(source, preserve=True)
+    selected = workbook["Model"].replace_image("H20", replacement)
+    assert selected is workbook["Model"]._images[0]
+    output = tmp_path / "replaced.xlsx"
+    workbook.save(output)
+
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read("xl/media/image1.png") == old_media
+        assert archive.read("xl/media/image2.png") == old_media
+        new_rels = archive.read("xl/drawings/_rels/drawing1.xml.rels")
+    assert new_rels != old_rels
+    assert b'Target="/xl/media/image2.png"' in new_rels
+
+
+def test_image_replacement_preserves_relative_relationship_form(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    relative = tmp_path / "relative-image.xlsx"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(relative, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == "xl/drawings/_rels/drawing1.xml.rels":
+                payload = payload.replace(
+                    b'Target="/xl/media/image1.png"',
+                    b'Target="../media/image1.png"')
+            zout.writestr(info, payload)
+
+    with zipfile.ZipFile(relative) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement-relative.png"
+    replacement.write_bytes(media)
+
+    workbook = load_workbook(relative, preserve=True)
+    workbook["Model"].replace_image("H20", replacement)
+    output = tmp_path / "relative-replaced.xlsx"
+    workbook.save(output)
+
+    with zipfile.ZipFile(output) as archive:
+        rels = archive.read("xl/drawings/_rels/drawing1.xml.rels")
+    assert b'Target="../media/image2.png"' in rels
+
+
+def test_image_replacement_receipt_reports_specific_cause(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    with zipfile.ZipFile(source) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement.png"
+    replacement.write_bytes(media)
+
+    workbook = load_workbook(source, preserve=True)
+    workbook["Model"].replace_image("H20", replacement)
+    receipt = workbook.save(tmp_path / "replaced.xlsx", receipt=True)
+
+    assert any(
+        effect == {
+            "kind": "relationship_changed",
+            "part": "xl/drawings/_rels/drawing1.xml.rels",
+            "cause": "image_replaced",
+        }
+        for effect in receipt.derived_effects
+    )
+
+
+def test_image_replacement_refuses_shared_drawing_relationship(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    shared = tmp_path / "shared-image-relationship.xlsx"
+    drawing_part = "xl/drawings/drawing1.xml"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(shared, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == drawing_part:
+                start = payload.index(
+                    b"<oneCellAnchor><from><col>7</col><colOff>0</colOff>"
+                    b"<row>19</row>")
+                end = payload.index(b"</oneCellAnchor>", start) \
+                    + len(b"</oneCellAnchor>")
+                duplicate = payload[start:end]
+                duplicate = duplicate.replace(
+                    b"<row>19</row>", b"<row>29</row>", 1)
+                duplicate = duplicate.replace(
+                    b'id="2" name="Image 2"',
+                    b'id="3" name="Image 3"', 1)
+                payload = payload.replace(
+                    b"</wsDr>", duplicate + b"</wsDr>")
+            zout.writestr(info, payload)
+
+    with zipfile.ZipFile(shared) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement-shared.png"
+    replacement.write_bytes(media)
+    workbook = load_workbook(shared, preserve=True)
+    images = workbook["Model"]._images
+    assert len(images) == 2
+    assert {image._paper_rel_id for image in images} == {"rId2"}
+
+    with pytest.raises(
+            UnsupportedStructureError,
+            match="shares drawing relationship") as caught:
+        workbook["Model"].replace_image("H20", replacement)
+
+    assert caught.value.kind == "shared-image-relationship"
+    assert not workbook._paper_ledger.image_replacements

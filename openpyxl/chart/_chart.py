@@ -98,6 +98,9 @@ class ChartBase(Serialisable):
         """
         if not isinstance(other, ChartBase):
             raise TypeError("Only other charts can be added")
+        parent_sheet = getattr(self, "_parent_sheet", None)
+        if parent_sheet is not None:
+            other._parent_sheet = parent_sheet
         self._charts.append(other)
         return self
 
@@ -202,7 +205,7 @@ class ChartBase(Serialisable):
         change as a byte patch of the chart's <c:f> text."""
         from openpyxl.preserve.chartpatch import parse_series_range
 
-        parse_series_range(new_range)      # raises ValueError with detail
+        sheet_title, _range = parse_series_range(new_range)
         try:
             ser = self.series[series_index]
         except (IndexError, TypeError):
@@ -216,10 +219,51 @@ class ChartBase(Serialisable):
             raise ValueError(
                 "series {0} has no numeric reference to repoint".format(
                     series_index))
+        old_range = target.numRef.f
+        if old_range == new_range:
+            return
+
+        owner = getattr(self, "_parent_sheet", None)
+        workbook = getattr(owner, "parent", None)
+        if workbook is not None and not any(
+                title.casefold() == sheet_title.casefold()
+                for title in workbook.sheetnames):
+            from openpyxl.errors import TargetNotFoundError
+
+            raise TargetNotFoundError(
+                "chart series range {0!r} references missing worksheet "
+                "{1!r}. Nothing was changed.".format(
+                    new_range, sheet_title),
+                kind="missing-chart-range-sheet",
+                anchor=sheet_title,
+            )
+
+        ledger = getattr(workbook, "_paper_ledger", None)
+        if ledger is not None and ledger.armed:
+            if owner is None or not any(
+                    self in getattr(candidate, "_charts", (candidate,))
+                    for candidate in getattr(owner, "_charts", ())):
+                from openpyxl.errors import TargetNotFoundError
+
+                raise TargetNotFoundError(
+                    "the loaded chart is no longer attached to its source "
+                    "sheet; its preserve patch cannot be identified. Nothing "
+                    "was changed.",
+                    kind="detached-chart",
+                )
+            # Exercise the complete preserve planner against prospective
+            # state, including exact formula-node mapping, cache removal,
+            # extension blockers, and composition with earlier edits. The
+            # temporary assignment is always restored, even on interrupts.
+            target.numRef.f = new_range
+            try:
+                workbook.validate()
+            finally:
+                target.numRef.f = old_range
         target.numRef.f = new_range
-        # the cached values are now stale, but they stay: Excel re-reads
-        # series from cells when it renders, and dropping the cache would
-        # be whole-element surgery under preserve mode
+        # Preserve save removes the corresponding serialized cache. The
+        # in-memory cache remains available only as arm-state evidence for
+        # the byte planner; it is never emitted beside the new range.
 
 
     @property

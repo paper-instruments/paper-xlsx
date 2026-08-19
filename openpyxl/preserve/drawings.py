@@ -391,12 +391,12 @@ def plan_drawing_append(workbook, ws, part_plan, names, drawing_part,
     reserved = []
     for i, (local_rid, rtype, target, mode) in enumerate(local_rels, 1):
         rid = part_plan.reserve_rid(drawing_rels_part, existing_rels)
-        body = body.replace(b'"rId%d"' % i, b'"__paperRid%d__"' % i, 1)
+        body = body.replace(b'"rId%d"' % i, b'"__paperRid%d__"' % i)
         reserved.append((i, rid))
         rel_appends.append((rid, rtype, target, mode))
     for i, rid in reserved:
         body = body.replace(b'"__paperRid%d__"' % i,
-                            b'"%s"' % rid.encode("ascii"), 1)
+                            b'"%s"' % rid.encode("ascii"))
     part_plan.rel_appends.setdefault(drawing_rels_part,
                                      []).extend(rel_appends)
 

@@ -40,41 +40,6 @@ def test_duplicate_entries_refuse_diff_and_receipt():
         receipt(duplicate, duplicate)
 
 
-def test_package_bounds_are_checked_before_member_reads(monkeypatch):
-    import openpyxl.package.diff as package_diff
-    import openpyxl.preserve.receipts as receipts
-
-    payload = _book_bytes("bounded")
-    monkeypatch.setattr(package_diff, "_MAX_ZIP_UNCOMPRESSED", 1)
-    monkeypatch.setattr(receipts, "_MAX_ZIP_UNCOMPRESSED", 1)
-    with pytest.raises(UnsupportedStructureError, match="aggregate uncompressed"):
-        diff_package(payload, payload)
-    with pytest.raises(UnsupportedStructureError, match="aggregate uncompressed"):
-        receipt(payload, payload)
-
-
-def test_package_part_bounds_are_checked_before_member_reads(monkeypatch):
-    import openpyxl.package.diff as package_diff
-    import openpyxl.preserve.receipts as receipts
-
-    payload = _book_bytes("bounded")
-    monkeypatch.setattr(package_diff, "_MAX_ZIP_PART", 1)
-    monkeypatch.setattr(receipts, "_MAX_ZIP_PART", 1)
-    with pytest.raises(UnsupportedStructureError, match="part .* diff cap"):
-        diff_package(payload, payload)
-    with pytest.raises(UnsupportedStructureError, match="part .* receipt cap"):
-        receipt(payload, payload)
-
-
-def test_preserve_loader_enforces_aggregate_bound(monkeypatch):
-    import openpyxl.reader.excel as excel
-
-    monkeypatch.setattr(excel, "_DECOMPRESSION_MAX_TOTAL", 1)
-    with pytest.raises(UnsupportedStructureError, match="aggregate uncompressed"):
-        excel.load_workbook(
-            io.BytesIO(_book_bytes("bounded")), preserve=True)
-
-
 def test_xml_leaf_and_xml_space_whitespace_are_significant():
     assert not xml_equivalent(b"<t> </t>", b"<t></t>")
     assert not xml_equivalent(

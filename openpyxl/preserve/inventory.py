@@ -3,12 +3,12 @@
 """Scan a source archive for content the stock save path cannot preserve.
 
 The inventory must be CONTENT-level, not part-list-level: a stock round trip
-of a sparkline-bearing file removes zero parts while gutting the sparklines
-. Scans are cheap byte searches over payloads,
-never XML parses — the inventory may not crash on files the reader accepts.
+of a sparkline-bearing file removes zero parts while gutting the sparklines.
+Scans are cheap byte searches over payloads and never XML parses, so inventory
+generation cannot reject a file that the reader accepts.
 
-Built at load time (the archive is gone by save time on the stock path) and
-stashed on the workbook; the stock save path warns from it.
+Receipts compare inventories from the source and delivered archives to report
+newly introduced preservation losses.
 """
 
 import posixpath

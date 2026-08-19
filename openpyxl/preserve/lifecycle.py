@@ -16,17 +16,6 @@ from openpyxl.errors import (
 
 from . import crosspart
 
-# parts the model actively manages: replacing them raw would desync the
-# model from the file
-_MODEL_MANAGED = (
-    "[Content_Types].xml",
-    "xl/workbook.xml",
-    "xl/styles.xml",
-    "xl/sharedStrings.xml",
-)
-_MANAGED_PREFIXES = ("xl/worksheets/", "xl/tables/")
-
-
 class PartPlan:
     """Adds/removals of whole parts for one save, with their content-type
     and relationship consequences planned in lockstep."""
@@ -69,8 +58,8 @@ class PartPlan:
         if name in self.existing or name in self.added:
             raise RelationshipPolicyError(
                 "part {0!r} already exists in the package; the lifecycle "
-                "engine never overwrites parts (use wb.replace_part for "
-                "byte swaps). Nothing was written.".format(name))
+                "planner never overwrites existing parts. Nothing was "
+                "written.".format(name))
         self.added[name] = payload
         if content_type is not None:
             # crosspart.ct_append_overrides prefixes the "/" itself
@@ -211,28 +200,6 @@ def _resolve_target(from_part, target):
         elif piece != ".":
             base.append(piece)
     return "/".join(base)
-
-
-def check_replace_part(wb, name):
-    """Guards for Workbook.replace_part: the part must exist,
-    and model-managed or sheet parts refuse — replacing them raw would
-    desync the model."""
-    import io
-    import zipfile
-
-    source = wb._paper_source
-    with zipfile.ZipFile(io.BytesIO(source)) as z:
-        names = set(z.namelist())
-    if name not in names:
-        raise TargetNotFoundError(
-            "part {0!r} does not exist in the package. Nothing was "
-            "changed.".format(name))
-    if name in _MODEL_MANAGED or name.startswith(_MANAGED_PREFIXES) \
-            or "_rels" in name.split("/"):
-        raise RelationshipPolicyError(
-            "part {0!r} is actively managed by the model; replacing its "
-            "bytes raw would desync the model from the file. Edit it "
-            "through the API instead. Nothing was changed.".format(name))
 
 
 def _rels_path(part_name):

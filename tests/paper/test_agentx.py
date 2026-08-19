@@ -1,6 +1,4 @@
-"""Perception and the agent experience —
-locate, search, scan_errors, allowed_values, validate, model map,
-receipts, structured refusals, findings, diffs."""
+"""Supported perception, validation, receipt, and diff APIs."""
 from __future__ import annotations
 
 import io
@@ -11,43 +9,9 @@ import pytest
 from openpyxl import Workbook, load_workbook
 from openpyxl.errors import (
     AmbiguousTargetError,
-    PaperRefusal,
     TargetNotFoundError,
     UnsupportedStructureError,
 )
-
-
-class TestLocate:
-
-    def test_locate_right_and_below(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        ws = wb["Summary"]
-        assert ws.locate("Grand total").coordinate == "B1"
-        ws["D1"] = "Rate"
-        ws["D2"] = 0.05
-        assert ws.locate("Rate", prefer="below").value == 0.05
-
-    def test_normalized_match(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        ws = wb["Summary"]
-        assert ws.locate("  GRAND   TOTAL ").coordinate == "B1"
-
-    def test_exact_beats_normalized(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        ws = wb["Summary"]
-        ws["A5"] = "grand total"              # normalized twin
-        ws["B5"] = 42
-        # exact match wins outright: no ambiguity
-        assert ws.locate("Grand total").coordinate == "B1"
-        assert ws.locate("grand total").coordinate == "B5"
-
-    def test_refusals_carry_structured_fields(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        ws = wb["Summary"]
-        with pytest.raises(TargetNotFoundError) as exc:
-            ws.locate("Nothing Here")
-        assert exc.value.kind == "label-not-found"
-        assert isinstance(exc.value, PaperRefusal)
 
 
 class TestSearchAndScan:
@@ -88,6 +52,52 @@ class TestSearchAndScan:
         sources = {r["source"] for r in results}
         assert {"cache", "formula"} <= sources
 
+    def test_scan_errors_uses_formula_operands_not_string_substrings(self):
+        from openpyxl.preserve import scan_errors
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Model"
+        ws["A1"] = '=IF(B1="#REF!", 1, 0)'
+        ws["A2"] = "=#REF!+1"
+        ws["A3"] = "=Other!#REF!"
+        ws["A4"] = "=#SPILL!"
+        results = scan_errors(wb)
+        assert results == [
+            {"address": "Model!A2", "value": "#REF!",
+             "source": "formula"},
+            {"address": "Model!A3", "value": "#REF!",
+             "source": "formula"},
+            {"address": "Model!A4", "value": "#SPILL!",
+             "source": "formula"},
+        ]
+
+    def test_scan_errors_refuses_unscannable_formula_without_partial_report(
+            self):
+        from openpyxl.preserve import scan_errors
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "=#REF!"
+        ws["A2"] = '="unterminated'
+
+        with pytest.raises(UnsupportedStructureError,
+                           match="No partial formula-error report"):
+            scan_errors(wb)
+
+    def test_scan_errors_normalizes_tokenizer_index_error(self):
+        from openpyxl.preserve import scan_errors
+
+        wb = Workbook()
+        wb.active["A1"] = "=)"
+
+        with pytest.raises(
+                UnsupportedStructureError,
+                match="No partial formula-error report") as caught:
+            scan_errors(wb)
+        assert caught.value.kind == "unscannable-formula"
+        assert caught.value.anchor == "Sheet!A1"
+
     def test_allowed_values_literal_and_range(self, fixture_copy):
         from openpyxl.worksheet.datavalidation import DataValidation
 
@@ -104,6 +114,83 @@ class TestSearchAndScan:
         assert ws.allowed_values(ws["D2"]) == ["Item 1", "Item 2",
                                                "Item 3"]
         assert ws.allowed_values("E9") is None
+
+    def test_allowed_values_preserves_literal_text_and_blanks(self):
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "Yes"
+        ws["A3"] = " No "
+        literal = DataValidation(
+            type="list", formula1='" Yes,No ,A""B,"')
+        literal.add("D1")
+        ws.add_data_validation(literal)
+        ranged = DataValidation(type="list", formula1="=$A$1:$A$3")
+        ranged.add("D2")
+        ws.add_data_validation(ranged)
+        assert ws.allowed_values("D1") == [" Yes", "No ", 'A"B', ""]
+        assert ws.allowed_values("D2") == ["Yes", None, " No "]
+
+    def test_allowed_values_handles_quoted_cross_sheet_and_reversed_ranges(
+            self):
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        wb = Workbook()
+        ws = wb.active
+        source = wb.create_sheet("Owner's Inputs")
+        source["A1"] = "Low"
+        source["A2"] = "High"
+        validation = DataValidation(
+            type="list", formula1="='Owner''s Inputs'!$A$2:$A$1")
+        validation.add("B1")
+        ws.add_data_validation(validation)
+
+        assert ws.allowed_values("B1") == ["Low", "High"]
+
+    def test_allowed_values_refuses_unsupported_or_ambiguous_sources(self):
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "=1+1"
+        cases = {
+            "D1": "=ModelInputs",
+            "D2": "=Missing!$A$1:$A$2",
+            "D3": "=$A$1:$A$2",
+            "D4": "=$A$1:$B$2",
+        }
+        for target, formula in cases.items():
+            validation = DataValidation(type="list", formula1=formula)
+            validation.add(target)
+            ws.add_data_validation(validation)
+        with pytest.raises(UnsupportedStructureError, match="defined name"):
+            ws.allowed_values("D1")
+        with pytest.raises(TargetNotFoundError, match="missing worksheet"):
+            ws.allowed_values("D2")
+        with pytest.raises(UnsupportedStructureError, match="formula cell"):
+            ws.allowed_values("D3")
+        with pytest.raises(UnsupportedStructureError,
+                           match="two-dimensional"):
+            ws.allowed_values("D4")
+
+        first = DataValidation(type="list", formula1='"A,B"')
+        second = DataValidation(type="list", formula1='"C,D"')
+        first.add("E1")
+        second.add("E1")
+        ws.add_data_validation(first)
+        ws.add_data_validation(second)
+        with pytest.raises(AmbiguousTargetError,
+                           match="covered by 2 list validations"):
+            ws.allowed_values("E1")
+
+        ws.merge_cells("F1:G1")
+        merged = DataValidation(type="list", formula1='"A,B"')
+        merged.add("G1")
+        ws.add_data_validation(merged)
+        with pytest.raises(UnsupportedStructureError,
+                           match="non-anchor merged cell"):
+            ws.allowed_values("G1")
 
 
 class TestValidateAndReceipt:
@@ -132,7 +219,7 @@ class TestValidateAndReceipt:
         assert isinstance(result, EditReceipt)
         payload = result.to_dict()
         assert payload["schema"] == "edit_receipt"
-        assert payload["version"] == 1
+        assert payload["version"] == 2
         sheet_part = next(iter(result.cells_changed))
         assert result.cells_changed[sheet_part] == {"A2": "changed"}
         assert sheet_part in result.parts_changed
@@ -142,76 +229,6 @@ class TestValidateAndReceipt:
             fixture_copy("features/schedule.xlsx"), preserve=False)
         with pytest.raises(ValueError, match="preserve"):
             wb.save(str(tmp_path / "o.xlsx"), receipt=True)
-
-
-class TestModelMap:
-
-    def test_roles_and_schema(self, fixture_copy):
-        wb = load_workbook(fixture_copy("features/schedule_calc.xlsx"))
-        mm = wb.model_map()
-        payload = mm.to_dict()
-        assert payload["schema"] == "model_map"
-        assert payload["version"] == 1
-        schedule = payload["sheets"]["Schedule"]
-        # B2:B5 feed B12 -> inputs; B12 feeds B13 and Summary!B1 ->
-        # calculation; B13 unreferenced -> output
-        for addr in ("B2", "B3", "B4", "B5"):
-            assert addr in schedule["inputs"]
-        assert "B12" in schedule["calculations"]
-        assert "B13" in schedule["outputs"]
-        assert "A1" in schedule["constants"]  # header text
-        assert mm.inputs("Schedule")
-
-class TestFindings:
-
-    def test_taxonomy_measurements(self, fixture_copy, tmp_path):
-        from openpyxl.preserve import findings
-        from openpyxl.preserve.hygiene import FINDING_KINDS, Finding
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "M"
-        for i in range(1, 6):
-            ws.cell(row=i, column=1, value=i * 10)
-            ws.cell(row=i, column=2, value="=A{0}*1.17".format(i))
-        ws["B3"] = "=A3*2+99.5"               # breaks the run + hardcode
-        ws["C1"] = "=NOW()"                   # volatile
-        ws["D1"] = "#REF!"
-        ws["A9"] = 5
-        ws["A10"] = 6
-        ws["A11"] = 7
-        ws["A12"] = 8
-        ws["A13"] = 90000000                  # magnitude outlier
-        hidden = wb.create_sheet("Hidden")
-        hidden["A1"] = 1
-        hidden.sheet_state = "hidden"
-        ws.row_dimensions[7].hidden = True
-        results = findings(wb)
-        kinds = {f.kind for f in results}
-        assert all(isinstance(f, Finding) for f in results)
-        assert all(f.kind in FINDING_KINDS for f in results)
-        assert "inconsistent-row-formula" in kinds
-        assert "hardcode-in-formula" in kinds
-        assert "volatile" in kinds
-        assert "error-cell" in kinds
-        assert "hidden-sheet" in kinds
-        assert "hidden-rows" in kinds
-        assert "magnitude-outlier" in kinds
-        for f in results:
-            assert f.evidence                 # measurements carry evidence
-
-    def test_orphaned_name(self, fixture_copy):
-        from openpyxl.preserve import findings
-        from openpyxl.workbook.defined_name import DefinedName
-
-        wb = Workbook()
-        wb.active["A1"] = 1
-        wb.active["B1"] = "=A1"
-        wb.defined_names["dead"] = DefinedName(
-            "dead", attr_text="Gone!$A$1")
-        kinds = {f.kind: f for f in findings(wb)}
-        assert "orphaned-name" in kinds
-        assert any("dead" in e for e in kinds["orphaned-name"].evidence)
 
 
 class TestDiffWorkbooks:

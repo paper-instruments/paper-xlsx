@@ -1,3 +1,3 @@
 """paper-xlsx distribution version, shared by runtime and build metadata."""
 
-__paper_version__ = "0.1.3"
+__paper_version__ = "0.2.0"

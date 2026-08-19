@@ -7,7 +7,9 @@ machine. Instead it routes to a real implementation of
 Excel's semantics and reports MEASUREMENTS, never judgments:
 
 - :func:`recalc` recomputes all cells on a TEMP COPY and scans for Excel
-  error tokens, returning the skill-compatible JSON shape.
+  error tokens. When given an output path, it splices eligible calculated
+  caches into a separate copy of the original package; LibreOffice's
+  rewritten archive is never delivered.
 - :func:`certify` checks whether LibreOffice reproduces the file's own
   cached values (Excel's answer key for its current inputs) within the
   pinned tolerance, excluding cells downstream of nondeterministic volatile
@@ -35,15 +37,12 @@ import tempfile
 import zipfile
 
 from openpyxl.errors import OracleTimeoutError, OracleUnavailableError
+from openpyxl.formula.tokenizer import EXCEL_ERROR_CODES
 
 _DARWIN_APP = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
 
-# Excel error tokens shared by oracle scans and preserve-mode cache write-back.
-ERROR_TOKENS = frozenset((
-    "#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!",
-    "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#UNKNOWN!",
-    "#CONNECT!", "#BUSY!", "#PYTHON!", "#GETTING_DATA",
-))
+# Excel error tokens shared by oracle and preserve-mode scans.
+ERROR_TOKENS = frozenset(EXCEL_ERROR_CODES)
 
 _MAX_MULTI_CELL_FORMULA_RESULTS = 1000000
 
@@ -91,10 +90,10 @@ def available():
 
 
 def _read_source(source):
-    from openpyxl.preserve.limits import read_bounded
+    from openpyxl.preserve.sourceio import read_source_bytes
 
     try:
-        return read_bounded(source, context="oracle workbook")
+        return read_source_bytes(source, context="oracle workbook")
     except TypeError as exc:
         raise ValueError(
             "file-like oracle sources must be seekable so the complete "
@@ -304,29 +303,60 @@ def _recalculate_bytes(data, timeout, suffix=".xlsx", profile_root=None):
 class RecalcResult:
 
     SCHEMA = "oracle_recalc"
-    VERSION = 1
+    VERSION = 2
+    NO_DETECTED_FORMULA_ERRORS = "NO_DETECTED_FORMULA_ERRORS"
+    FORMULA_ERRORS_DETECTED = "FORMULA_ERRORS_DETECTED"
 
     def __init__(self, cells_scanned, formula_cells, errors,
-                 artifact_sha256=None):
+                 *, output_kind=None, written=None,
+                 verified_unchanged=None, excluded=None,
+                 package_diff=None, artifact_sha256=None,
+                 calculation_artifact_sha256=None):
         self.cells_scanned = cells_scanned
         self.formula_cells = formula_cells
         self.errors = errors          # [{"sheet", "cell", "value"}]
+        self.engine = "libreoffice"
+        self.output_kind = output_kind
+        self.written = list(written or ())
+        self.verified_unchanged = list(verified_unchanged or ())
+        self.excluded = dict(excluded or {})
+        self.package_diff = list(package_diff or ())
         self.artifact_sha256 = artifact_sha256
+        self.calculation_artifact_sha256 = calculation_artifact_sha256
 
     @property
     def status(self):
-        return "errors" if self.errors else "ok"
+        return (self.FORMULA_ERRORS_DETECTED if self.errors
+                else self.NO_DETECTED_FORMULA_ERRORS)
+
+    @property
+    def cells_written(self):
+        """Return the number of formula caches written to the candidate.
+
+        :return: Number of entries in `written`.
+        :rtype: int
+        """
+        return len(self.written)
 
     def to_dict(self):
         return {
             "schema": self.SCHEMA,
             "version": self.VERSION,
             "status": self.status,
+            "engine": self.engine,
+            "output_kind": self.output_kind,
             "cells_scanned": self.cells_scanned,
             "formula_cells": self.formula_cells,
             "error_cells": len(self.errors),
             "errors": list(self.errors),
+            "cells_written": self.cells_written,
+            "written": list(self.written),
+            "verified_unchanged": list(self.verified_unchanged),
+            "excluded": dict(self.excluded),
+            "package_diff": list(self.package_diff),
             "artifact_sha256": self.artifact_sha256,
+            "calculation_artifact_sha256":
+                self.calculation_artifact_sha256,
         }
 
     def __repr__(self):
@@ -334,66 +364,20 @@ class RecalcResult:
             self.status, len(self.errors))
 
 
-def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
-    """Recalculate every cell with LibreOffice and scan for error tokens.
-
-    ``source``: path, bytes, or binary file-like. The source is NEVER
-    handed to LibreOffice or modified — unless ``in_place=True``, in which
-    case the recalculated bytes replace the source path atomically after a
-    successful run. ``output_path`` writes them elsewhere instead. At most
-    one of the two may be given.
-    """
-    if output_path is not None and in_place:
-        raise ValueError("pass either output_path or in_place=True, not both")
-    if in_place and not isinstance(source, (str, os.PathLike)):
-        raise ValueError("in_place=True requires a filesystem path source")
-
-    data, source_identity = _read_source_with_custody(source)
-
-    destination = source if in_place else output_path
-    if destination is not None and os.path.splitext(
-            os.fspath(destination))[1].lower() in (".xltx", ".xltm"):
-        from openpyxl.errors import UnsupportedStructureError
-
-        raise UnsupportedStructureError(
-            "recalc cannot write plain .xlsx content to an Excel template "
-            "(.xltx/.xltm) destination. Nothing was written.")
-
-    expected_identity = None
-    if destination is not None:
-        from openpyxl.preserve import zipio
-
-        expected_identity = source_identity if in_place else \
-            zipio.path_identity(output_path, allow_missing=True)
-
-    if output_path is not None or in_place:
-        # LibreOffice converts to plain xlsx: writing that output over a
-        # macro workbook would strip the entire VBA project silently
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            if "xl/vbaProject.bin" in z.namelist():
-                from openpyxl.errors import UnsupportedStructureError
-
-                raise UnsupportedStructureError(
-                    "recalc output for a macro-enabled workbook would strip "
-                    "its VBA project (LibreOffice converts to plain .xlsx). "
-                    "Run recalc() without output_path/in_place for the "
-                    "error scan, or use certify() for value checking. "
-                    "Nothing was written.")
-    recalculated = _recalculate_bytes(data, timeout)
-
+def _recalc_scan(recalculated):
+    """Return loaded formula/value views and narrow error-scan evidence."""
     from openpyxl.reader.excel import load_workbook
 
     wb_values = load_workbook(io.BytesIO(recalculated), data_only=True)
     wb_formulas = load_workbook(io.BytesIO(recalculated), data_only=False)
-
     cells_scanned = 0
     formula_cells = 0
     errors = []
     for ws in wb_values.worksheets:
         ws_f = wb_formulas[ws.title]
-        for (row, col), cell in sorted(ws._cells.items()):
+        for coordinate, cell in sorted(ws._cells.items()):
             cells_scanned += 1
-            fcell = ws_f._cells.get((row, col))
+            fcell = ws_f._cells.get(coordinate)
             if fcell is not None and fcell.data_type == "f":
                 formula_cells += 1
             value = cell._value
@@ -401,25 +385,223 @@ def recalc(source, *, output_path=None, in_place=False, timeout=120.0):
                     and value.strip() in ERROR_TOKENS:
                 errors.append({"sheet": ws.title, "cell": cell.coordinate,
                                "value": value.strip()})
+    return wb_formulas, wb_values, cells_scanned, formula_cells, errors
 
-    def validate_source():
-        if source_identity is not None:
-            zipio._assert_path_identity(source_identity)
 
+def _assert_separate_output(source, output_path):
+    """Refuse aliases of the source path before recalculation starts."""
+    from openpyxl.errors import UnsupportedStructureError
+
+    if not isinstance(output_path, (str, os.PathLike)):
+        raise TypeError("recalc output_path must be a filesystem path")
+    source_name = source if isinstance(source, (str, os.PathLike)) \
+        else getattr(source, "name", None)
+    source_path = os.path.realpath(os.fspath(source_name)) \
+        if isinstance(source_name, (str, os.PathLike)) else None
+    output = os.path.realpath(os.fspath(output_path))
+    same = source_path == output if source_path is not None else False
+    if source_path is not None and not same:
+        try:
+            same = os.path.samefile(source_path, output)
+        except (FileNotFoundError, OSError):
+            pass
+    if not same and hasattr(source, "fileno"):
+        try:
+            source_stat = os.fstat(source.fileno())
+            output_stat = os.stat(output)
+            same = (source_stat.st_dev, source_stat.st_ino) == \
+                (output_stat.st_dev, output_stat.st_ino)
+        except (AttributeError, FileNotFoundError, OSError, ValueError):
+            pass
+    if same:
+        raise UnsupportedStructureError(
+            "recalc output_path must be separate from the source; in-place "
+            "recalculation is not supported. Nothing was written.",
+            kind="oracle-in-place-output",
+            anchor=os.fspath(output_path),
+        )
+
+
+def _validate_candidate_extension(data, output_path):
+    """A preserved candidate must retain the source package's file type."""
+    from openpyxl.errors import UnsupportedStructureError
+    from openpyxl.xml.constants import XLSM, XLSX
+
+    content_type = _workbook_content_type(data)
+    expected = ".xlsm" if content_type == XLSM else ".xlsx" \
+        if content_type == XLSX else None
+    actual = os.path.splitext(os.fspath(output_path))[1].lower()
+    if expected is None:
+        _refuse_template_conversion(data)
+    if actual != expected:
+        raise UnsupportedStructureError(
+            "recalc preserves the source package type; output_path for this "
+            "workbook must end in {0}, not {1!r}. Nothing was written."
+            .format(expected, actual or "<no extension>"),
+            kind="oracle-output-type-mismatch",
+            anchor=os.fspath(output_path),
+        )
+
+
+def _formula_result_signature(wb_formulas, wb_values):
+    return tuple(
+        (sheet, row, col, anchor)
+        for sheet, row, col, _coord, _value, _type, anchor
+        in _formula_result_cells(wb_formulas, wb_values)
+    )
+
+
+def _package_diff(before, after):
+    changed = []
+    with zipfile.ZipFile(io.BytesIO(before)) as za, \
+            zipfile.ZipFile(io.BytesIO(after)) as zb:
+        names_a, names_b = set(za.namelist()), set(zb.namelist())
+        for name in sorted(names_a | names_b):
+            if name not in names_a or name not in names_b \
+                    or za.read(name) != zb.read(name):
+                changed.append(name)
+    return changed
+
+
+def _preserved_recalc_candidate(data, recalculated, wb_computed_formulas,
+                                wb_computed_values, timeout):
+    """Build a source-based candidate containing only eligible LO caches."""
+    from openpyxl.errors import UnsupportedStructureError
+    from openpyxl.reader.excel import load_workbook
+
+    wb_source_formulas = load_workbook(io.BytesIO(data), data_only=False)
+    wb_source_values = load_workbook(io.BytesIO(data), data_only=True)
+    if wb_source_formulas.sheetnames != wb_computed_formulas.sheetnames:
+        raise UnsupportedStructureError(
+            "LibreOffice changed the workbook sheet topology during "
+            "recalculation; calculated caches cannot be mapped safely. "
+            "Nothing was written.",
+            kind="oracle-formula-topology-mismatch",
+        )
+    source_signature = _formula_result_signature(
+        wb_source_formulas, wb_source_values)
+    computed_signature = _formula_result_signature(
+        wb_computed_formulas, wb_computed_values)
+    if source_signature != computed_signature:
+        raise UnsupportedStructureError(
+            "LibreOffice changed the formula-result topology during "
+            "recalculation; calculated caches cannot be mapped safely. "
+            "Nothing was written.",
+            kind="oracle-formula-topology-mismatch",
+        )
+
+    certification, _ = _certify_impl(
+        data, timeout, recalculated=recalculated)
+    excluded = {}
+    for address in certification.volatile_excluded:
+        excluded[address] = "volatile-or-dependent"
+    for address in certification.external_excluded:
+        excluded[address] = "external-link-or-dependent"
+    for item in certification.unsupported_excluded:
+        address, _separator, reason = item.rpartition(" (")
+        if not _separator:
+            address, reason = item, ""
+        excluded[address] = ("oracle-unsupported"
+                             if not reason else
+                             "oracle-unsupported:{0}".format(
+                                 reason.rstrip(")")))
+    for address in certification.input_excluded:
+        excluded[address] = "input-dependent"
+
+    wb_candidate = load_workbook(io.BytesIO(data), preserve=True)
+    ledger = wb_candidate._paper_ledger
+    written = []
+    verified_unchanged = []
+    source_results = _formula_result_cells(
+        wb_source_formulas, wb_source_values)
+    for sheet, row, col, coord, cached, cached_type, _anchor \
+            in source_results:
+        address = "{0}!{1}".format(sheet, coord)
+        if address in excluded:
+            continue
+        computed_cell = wb_computed_values[sheet]._cells.get((row, col))
+        computed = computed_cell._value if computed_cell is not None else None
+        computed_type = computed_cell.data_type \
+            if computed_cell is not None else None
+        if computed is None:
+            excluded[address] = "no-computed-value"
+            continue
+        if computed_type == "e":
+            excluded[address] = "formula-error"
+            continue
+        source_cell = wb_source_formulas[sheet]._cells.get((row, col))
+        if not _cache_write_preserves_type(
+                computed, computed_type, wb_candidate.epoch,
+                number_format=getattr(source_cell, "number_format", None)):
+            excluded[address] = "computed-cache-type-not-writable"
+            continue
+        if cached not in (None, "") and _formula_results_match(
+                cached, cached_type, computed, computed_type,
+                epoch=wb_source_formulas.epoch):
+            verified_unchanged.append(address)
+            continue
+        ws = wb_candidate[sheet]
+        ledger.cache_writes.setdefault(ws, {})[(row, col)] = computed
+        written.append(address)
+
+    buf = io.BytesIO()
+    wb_candidate.save(buf)
+    candidate = _with_forced_recalc(buf.getvalue())
+    package_diff = _package_diff(data, candidate)
+    if not package_diff:
+        candidate = data
+    return (candidate, written, verified_unchanged, excluded, package_diff)
+
+
+def recalc(source, *, output_path=None, timeout=120.0):
+    """Recalculate a temporary copy with LibreOffice.
+
+    With no ``output_path``, return error-scan evidence and write nothing.
+    With a separate ``output_path``, build a Paper-preserved candidate by
+    splicing eligible calculated caches into the original package structure.
+    LibreOffice's rewritten package is never delivered, and the result makes
+    no claim of Excel equivalence or financial correctness.
+    """
+    if output_path is not None:
+        _assert_separate_output(source, output_path)
+    data, source_identity = _read_source_with_custody(source)
+    expected_identity = None
     if output_path is not None:
         from openpyxl.preserve import zipio
-        zipio.deliver(
-            recalculated, output_path, expected_identity=expected_identity,
-            precommit=validate_source, postcommit=validate_source)
-    elif in_place:
-        from openpyxl.preserve import zipio
-        zipio.deliver(
-            recalculated, os.fspath(source),
-            expected_identity=expected_identity,
-            precommit=validate_source)
 
-    return RecalcResult(cells_scanned, formula_cells, errors,
-                        _artifact_sha256(recalculated))
+        _validate_candidate_extension(data, output_path)
+        expected_identity = zipio.path_identity(
+            output_path, allow_missing=True)
+
+    recalculated = _recalculate_bytes(data, timeout)
+    wb_formulas, wb_values, cells_scanned, formula_cells, errors = \
+        _recalc_scan(recalculated)
+    output_kind = None
+    written = []
+    verified_unchanged = []
+    excluded = {}
+    package_diff = []
+    artifact_sha256 = None
+    if output_path is not None:
+        candidate, written, verified_unchanged, excluded, package_diff = \
+            _preserved_recalc_candidate(
+                data, recalculated, wb_formulas, wb_values, timeout)
+
+        def validate_source():
+            if source_identity is not None:
+                zipio._assert_path_identity(source_identity)
+
+        zipio.deliver(
+            candidate, output_path, expected_identity=expected_identity,
+            precommit=validate_source, postcommit=validate_source)
+        output_kind = "paper-preserved-candidate"
+        artifact_sha256 = _artifact_sha256(candidate)
+    return RecalcResult(
+        cells_scanned, formula_cells, errors,
+        output_kind=output_kind, written=written,
+        verified_unchanged=verified_unchanged, excluded=excluded,
+        package_diff=package_diff, artifact_sha256=artifact_sha256,
+        calculation_artifact_sha256=_artifact_sha256(recalculated))
 
 
 class CertificationResult:
@@ -480,9 +662,8 @@ def _values_match(cached, computed, epoch=None):
                             else WINDOWS_EPOCH)
         return v
 
-    # a date SERIAL and its parsed datetime are the same value: compare
-    # numerically (write_back's own serials were judged
-    # DIVERGED by its own certification)
+    # A date serial and its parsed datetime are the same value; compare them
+    # numerically so certification does not manufacture a divergence.
     temporal = (
         isinstance(cached, (_dt.datetime, _dt.date, _dt.time,
                             _dt.timedelta))
@@ -675,10 +856,9 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
     if all(cached is None or cached == ""
            for (_s, _r, _c, _coord, cached, _cached_type, _anchor)
            in formula_cells):
-        # openpyxl-written files carry empty <v></v>: no answer key
-        # exists — but the exclusion classes still ride along, so
-        # write_back(allow_uncertified=True) never writes volatile/
-        # external/unsupported cells
+        # openpyxl-written files carry empty <v></v>: no answer key exists.
+        # The exclusion classes still ride along so recalc output never
+        # splices volatile, external, or unsupported calculated caches.
         vol, ext, uns, inp = _bucket_reasons()
         return CertificationResult(
             CertificationResult.BASELINE_UNVERIFIABLE, 0, [], vol,
@@ -934,7 +1114,9 @@ class Evaluation:
     LibreOffice recalculated, outputs harvested. Pinned surface."""
 
     SCHEMA = "evaluation"
-    VERSION = 1
+    VERSION = 2
+    NO_DETECTED_FORMULA_ERRORS = "NO_DETECTED_FORMULA_ERRORS"
+    FORMULA_ERRORS_DETECTED = "FORMULA_ERRORS_DETECTED"
 
     def __init__(self, inputs, outputs, errors, certification,
                  artifact_sha256=None):
@@ -946,7 +1128,8 @@ class Evaluation:
 
     @property
     def status(self):
-        return "errors" if self.errors else "ok"
+        return (self.FORMULA_ERRORS_DETECTED if self.errors
+                else self.NO_DETECTED_FORMULA_ERRORS)
 
     @property
     def error_cells(self):
@@ -1187,92 +1370,41 @@ def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
                 _shutil.rmtree(root, ignore_errors=True)
 
 
-# ---------------------------------------------------------------------
-# certification-gated write-back
+def _cache_write_preserves_type(value, data_type, epoch,
+                                number_format=None):
+    """Whether a value-only cache splice round-trips through the target.
 
-class WriteBackResult:
-
-    SCHEMA = "oracle_write_back"
-    VERSION = 1
-
-    def __init__(self, cells_written, written, verified_unchanged,
-                 excluded, uncertified, cleared_fullcalc, certification,
-                 package_diff, artifact_sha256=None):
-        self.cells_written = cells_written
-        self.written = written                    # addresses updated
-        self.verified_unchanged = verified_unchanged
-        self.excluded = excluded                  # {address: reason}
-        self.uncertified = uncertified
-        self.cleared_fullcalc = cleared_fullcalc
-        self.certification = certification
-        self.package_diff = package_diff          # part names that changed
-        self.artifact_sha256 = artifact_sha256
-
-    def to_dict(self):
-        return {
-            "schema": self.SCHEMA,
-            "version": self.VERSION,
-            "cells_written": self.cells_written,
-            "written": list(self.written),
-            "verified_unchanged": list(self.verified_unchanged),
-            "excluded": dict(self.excluded),
-            "uncertified": self.uncertified,
-            "cleared_fullcalc": self.cleared_fullcalc,
-            "certification": self.certification.to_dict()
-            if self.certification is not None else None,
-            "package_diff": list(self.package_diff),
-            "artifact_sha256": self.artifact_sha256,
-        }
-
-    def __repr__(self):
-        return ("WriteBackResult(written={0}, excluded={1}, "
-                "uncertified={2})".format(
-                    self.cells_written, len(self.excluded),
-                    self.uncertified))
-
-
-def _clear_fullcalc(package_bytes):
-    """Remove fullCalcOnLoad/forceFullCalc from the package's calcPr.
-    Returns (new_bytes, changed)."""
-    from openpyxl.preserve import crosspart
-
-    with zipfile.ZipFile(io.BytesIO(package_bytes)) as zin:
-        wb_part = _find_workbook_part_name(zin)
-        payload = zin.read(wb_part)
-    changed = False
-    for attr in ("fullCalcOnLoad", "forceFullCalc"):
-        root = crosspart.scan_small(payload, "workbook", max_depth=1)
-        for child in root.children:
-            if child.local() == "calcPr" and attr in child.attrs:
-                start, end, head = crosspart._patch_attr(
-                    payload, child, attr, "1", drop_value="1")
-                payload = payload[:start] + head + payload[end:]
-                changed = True
-                break
-    if not changed:
-        return package_bytes, False
-    out = io.BytesIO()
-    with zipfile.ZipFile(io.BytesIO(package_bytes)) as zin, \
-            zipfile.ZipFile(out, "w") as zout:
-        from openpyxl.preserve import zipio
-        for info in zin.infolist():
-            if info.filename == wb_part:
-                zipio.write_entry(zout, wb_part, payload)
-            else:
-                zipio.copy_entry(zin, info, zout)
-    return out.getvalue(), True
-
-
-def _cache_write_preserves_type(value, data_type, epoch):
-    """Whether the value-only cache splicer preserves the OOXML type."""
+    Temporal formula caches are numeric Excel serials. They are eligible
+    only when the source cell's preserved number format will decode that
+    serial back to the same Python temporal type and value under the source
+    workbook's epoch.
+    """
     import datetime
 
     if isinstance(value, (datetime.datetime, datetime.date, datetime.time,
                           datetime.timedelta)):
-        # The cache splicer emits temporal values as untyped Excel serials.
-        # Without also proving the target style, reloading can expose a
-        # number instead of the computed temporal value.
-        return False
+        from openpyxl.styles.numbers import (
+            is_date_format,
+            is_timedelta_format,
+        )
+        from openpyxl.utils.datetime import from_excel
+        from openpyxl.preserve.splice import _serialize_cached_value
+
+        if data_type != "d" or not is_date_format(number_format):
+            return False
+        timedelta_style = is_timedelta_format(number_format)
+        if isinstance(value, datetime.timedelta) != timedelta_style:
+            return False
+        type_attr, payload = _serialize_cached_value(value, epoch)
+        if type_attr is not None:
+            return False
+        try:
+            round_trip = from_excel(
+                float(payload), epoch, timedelta=timedelta_style)
+        except (OverflowError, TypeError, ValueError):
+            return False
+        return (type(round_trip) is type(value)
+                and _values_match(value, round_trip, epoch=epoch))
     from openpyxl.preserve.splice import _serialize_cached_value
 
     type_attr, _payload = _serialize_cached_value(value, epoch)
@@ -1282,137 +1414,3 @@ def _cache_write_preserves_type(value, data_type, epoch):
         serialized_type = {b"b": "b", b"e": "e", b"str": "s"}.get(
             type_attr)
     return serialized_type == data_type
-
-
-def write_back(source, *, timeout=120.0, allow_uncertified=False):
-    """Recalculate a temp copy with LibreOffice and splice the computed
-    cached values into the ORIGINAL package at ``source`` (a filesystem
-    path) — values only, formulas untouched, LibreOffice bytes never
-    enter the output (macro-safe by construction).
-
-    Certification-gated: on DIVERGED or
-    BASELINE_UNVERIFIABLE the call refuses unless
-    ``allow_uncertified=True``, and then the result carries a loud
-    ``uncertified=True``. Cells excluded from certification
-    (volatile/external/unsupported and their downstream) are never
-    written. fullCalcOnLoad clears only when every formula cell ended
-    verified or written."""
-    from openpyxl.errors import UnsupportedStructureError
-    from openpyxl.reader.excel import load_workbook
-
-    if not isinstance(source, (str, os.PathLike)):
-        raise ValueError(
-            "write_back writes the recalculated values INTO the source; "
-            "pass a filesystem path")
-    data, source_identity = _read_source_with_custody(source)
-
-    certification, recalculated = _certify_impl(data, timeout)
-    uncertified = certification.status != CertificationResult.CERTIFIED
-    if uncertified and not allow_uncertified:
-        raise UnsupportedStructureError(
-            "write-back is certification-gated and this workbook is {0} "
-            "({1} divergences, {2} unverifiable). Nothing was written. "
-            "Inspect certify(...).to_dict(), or pass "
-            "allow_uncertified=True to write anyway with a loud "
-            "uncertified stamp.".format(
-                certification.status, len(certification.divergences),
-                len(certification.unverifiable)))
-    if recalculated is None:
-        recalculated = _recalculate_bytes(data, timeout)
-
-    wb = load_workbook(io.BytesIO(data), preserve=True)
-    wb_computed = load_workbook(io.BytesIO(recalculated), data_only=True)
-
-    excluded = {}
-    for a in certification.volatile_excluded:
-        excluded[a] = "volatile"
-    for a in certification.external_excluded:
-        excluded[a] = "external-link"
-    for a in certification.unsupported_excluded:
-        addr = a.rsplit(" (", 1)[0]
-        excluded[addr] = "oracle-unsupported"
-    for a in certification.input_excluded:
-        excluded[a] = "input-dependent"
-    diverged = {d["address"] for d in certification.divergences}
-
-    led = wb._paper_ledger
-    written = []
-    verified_unchanged = []
-    covered = True
-    unverifiable = set(certification.unverifiable)
-    planned_writes = []
-    for sheet, row, col, coord, _computed, computed_type, _anchor in \
-            _formula_result_cells(wb, wb_computed):
-        ws = wb[sheet]
-        computed_ws = wb_computed[ws.title]
-        address = "{0}!{1}".format(ws.title, coord)
-        if address in excluded:
-            covered = False
-            continue
-        ccell = computed_ws._cells.get((row, col))
-        computed = ccell._value if ccell is not None else None
-        computed_type = ccell.data_type if ccell is not None else None
-        if computed is None:
-            excluded[address] = "no-computed-value"
-            covered = False
-            continue
-        if address in diverged:
-            if computed_type == "e":
-                excluded[address] = "formula-error"
-                covered = False
-                continue
-            if not _cache_write_preserves_type(
-                    computed, computed_type, wb_computed.epoch):
-                excluded[address] = "computed-cache-type-not-writable"
-                covered = False
-                continue
-            planned_writes.append((ws, row, col, computed, address))
-            continue
-        if address in unverifiable:
-            if computed_type == "e":
-                excluded[address] = "formula-error"
-                covered = False
-                continue
-            if not _cache_write_preserves_type(
-                    computed, computed_type, wb_computed.epoch):
-                excluded[address] = "computed-cache-type-not-writable"
-                covered = False
-                continue
-            planned_writes.append((ws, row, col, computed, address))
-            continue
-        # verified: the cache already equals the computed value
-        verified_unchanged.append(address)
-
-    for ws, row, col, computed, address in planned_writes:
-        led.cache_writes.setdefault(ws, {})[(row, col)] = computed
-        written.append(address)
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    out = buf.getvalue()
-    cleared = False
-    if covered and not uncertified:
-        # an UNCERTIFIED write must leave the recalc-on-load flag alone:
-        # clearing it would make Excel trust caches nobody verified
-        out, cleared = _clear_fullcalc(out)
-
-    package_diff = []
-    with zipfile.ZipFile(io.BytesIO(data)) as za, \
-            zipfile.ZipFile(io.BytesIO(out)) as zb:
-        names_a, names_b = set(za.namelist()), set(zb.namelist())
-        for name in sorted(names_a | names_b):
-            if name not in names_a or name not in names_b \
-                    or za.read(name) != zb.read(name):
-                package_diff.append(name)
-
-    from openpyxl.preserve import zipio
-
-    def validate_source():
-        zipio._assert_path_identity(source_identity)
-
-    zipio.deliver(
-        out, os.fspath(source), expected_identity=source_identity,
-        precommit=validate_source)
-    return WriteBackResult(len(written), written, verified_unchanged,
-                           excluded, uncertified, cleared, certification,
-                           package_diff, _artifact_sha256(out))

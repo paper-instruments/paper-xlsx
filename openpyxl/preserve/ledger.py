@@ -20,7 +20,6 @@ What the ledger holds:
   recalc-on-load flag;
 - sheets added in-session (generated whole at save; also exempt from the
   rename/remove refusals that protect loaded sheets);
-- explicit part-level dirt from :meth:`Workbook.mark_dirty`;
 - a fingerprint of the interned style components taken when the ledger
   armed, so the save can refuse if a shared style object was mutated in
   place (the StyleProxy nested-leak — silent fan-out corruption upstream).
@@ -39,22 +38,22 @@ from openpyxl.errors import (
 
 class DirtyLedger:
 
-    __slots__ = ("armed", "cells", "parts", "formulas_changed",
+    __slots__ = ("armed", "cells", "formulas_changed",
                  "added_sheets", "loaded_sheet_titles", "_style_lengths",
                  "_style_fingerprint", "region_snapshots", "row_attr_snapshots",
                  "comment_snapshots", "workbook_snapshot", "core_snapshot",
                  "custom_snapshot", "chartsheet_snapshots", "pinned_regions",
                  "object_snapshots", "external_links_snapshot",
-                 "protection_warned", "replaced_parts", "renames",
+                 "protection_warned", "renames",
                  "sheet_order", "removed_sheets", "value_overwrites",
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
-                 "template_flag", "cache_writes")
+                 "template_flag", "cache_writes", "pivot_refresh_requests",
+                 "image_replacements")
 
     def __init__(self):
         self.armed = False
         self.cells = {}                # ws object -> set[(row, col)]
-        self.parts = set()             # part names marked via mark_dirty
         self.formulas_changed = False
         self.added_sheets = set()      # ws objects created after arming
         self.loaded_sheet_titles = frozenset()
@@ -74,7 +73,6 @@ class DirtyLedger:
         self.object_snapshots = {}     # ws -> preserved-part-backed objects
         self.external_links_snapshot = ()
         self.protection_warned = set()   # sheets warned once
-        self.replaced_parts = {}         # raw byte swaps
         self.renames = {}                # ws -> ORIGINAL title
         self.sheet_order = []            # _sheets titles at arm
         self.removed_sheets = []         # ORIGINAL titles removed
@@ -87,7 +85,9 @@ class DirtyLedger:
         self.shifts = {}               # ws -> [(operation, index, amount)]
         self.template_flag = False
         self.cache_writes = {}         # ws -> {(row, col): computed value}
-                                       # (oracle write-back)
+                                       # (preserved recalc candidate)
+        self.pivot_refresh_requests = set()
+        self.image_replacements = {}
 
     # -- arming --------------------------------------------------------
 
@@ -217,16 +217,15 @@ def _object_snapshot(ws):
     (refusal is fully acceptable; silence is not)."""
     from openpyxl.xml.functions import tostring
 
-    snap = {"unstable": set()}
+    snap = {"fingerprints": {}}
 
     tables = {}
     ws_tables = getattr(ws, "tables", None) or {}
     for name in ws_tables:
         tbl = ws_tables[name]
-        rendered, ok = _settled(lambda t=tbl: tostring(t.to_tree()))
+        rendered, _ok = _settled(lambda t=tbl: tostring(t.to_tree()))
         tables[name] = rendered
-        if not ok:
-            snap["unstable"].add(("table", name))
+        snap["fingerprints"][("table", name)] = _canonical_object(tbl)
     snap["table"] = tables
 
     charts = {}
@@ -234,31 +233,30 @@ def _object_snapshot(ws):
         # the anchor is NOT part of chart._write() (it lives in the
         # preserved drawing part) — snapshot it too, or a chart move
         # vanishes silently
-        rendered, ok = _settled(lambda c=chart: tostring(c._write()))
+        rendered, _ok = _settled(lambda c=chart: tostring(c._write()))
         charts[i] = (rendered, _anchor_fingerprint(chart))
-        if not ok:
-            snap["unstable"].add(("chart", i))
+        snap["fingerprints"][("chart", i)] = (
+            _chart_model_fingerprint(chart),
+            _canonical_object(chart.anchor))
     snap["chart"] = charts
 
     images = {}
     for i, image in enumerate(getattr(ws, "_images", []) or []):
         anchor = getattr(image, "anchor", None)
         if anchor is not None and hasattr(anchor, "to_tree"):
-            rendered, ok = _settled(lambda a=anchor: tostring(a.to_tree()))
+            rendered, _ok = _settled(lambda a=anchor: tostring(a.to_tree()))
         else:
-            rendered, ok = repr(anchor).encode("utf-8"), True
+            rendered = repr(anchor).encode("utf-8")
         images[i] = (rendered, getattr(image, "path", None),
-                     _image_data_digest(image))
-        if not ok:
-            snap["unstable"].add(("image", i))
+                     _image_data_digest(image, ws=ws, index=i))
+        snap["fingerprints"][("image", i)] = images[i]
     snap["image"] = images
 
     pivots = {}
     for i, pivot in enumerate(getattr(ws, "_pivots", []) or []):
-        rendered, ok = _settled(lambda p=pivot: tostring(p.to_tree()))
+        rendered, _ok = _settled(lambda p=pivot: tostring(p.to_tree()))
         pivots[i] = rendered
-        if not ok:
-            snap["unstable"].add(("pivot", i))
+        snap["fingerprints"][("pivot", i)] = _canonical_object(pivot)
     snap["pivot"] = pivots
 
     return snap
@@ -285,12 +283,77 @@ def _anchor_fingerprint(obj):
     if hasattr(anchor, "to_tree"):
         try:
             return tostring(anchor.to_tree())
-        except Exception:
-            pass
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise UnsupportedStructureError(
+                "cannot fingerprint a drawing anchor: {0}. Nothing was "
+                "loaded or written.".format(exc),
+                kind="untrackable-drawing-anchor",
+            ) from exc
     return repr(anchor).encode("utf-8")
 
 
-def _image_data_digest(image):
+def _canonical_object(value, seen=None):
+    """Stable descriptor-state fingerprint independent of XML serializers."""
+    import hashlib
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return ("bytes", hashlib.sha256(value).hexdigest())
+    if isinstance(value, (list, tuple)):
+        return tuple(_canonical_object(item, seen) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted(
+            (repr(key), _canonical_object(item, seen))
+            for key, item in value.items()))
+    if seen is None:
+        seen = set()
+    marker = id(value)
+    if marker in seen:
+        return ("cycle", value.__class__.__module__,
+                value.__class__.__qualname__)
+    seen.add(marker)
+    try:
+        names = tuple(dict.fromkeys(
+            tuple(getattr(value, "__attrs__", ()))
+            + tuple(getattr(value, "__elements__", ()))))
+        if names:
+            extra = ()
+            if hasattr(value, "__dict__"):
+                extra = tuple(sorted(
+                    (name, _canonical_object(item, seen))
+                    for name, item in vars(value).items()
+                    if name not in names
+                    and name not in ("_charts", "_paper_part")
+                    and not name.startswith("_parent")))
+            return (
+                value.__class__.__module__, value.__class__.__qualname__,
+                tuple((name, _canonical_object(getattr(value, name, None),
+                                               seen))
+                      for name in names),
+                extra,
+            )
+        if hasattr(value, "__dict__"):
+            return (
+                value.__class__.__module__, value.__class__.__qualname__,
+                tuple(sorted(
+                    (name, _canonical_object(item, seen))
+                    for name, item in vars(value).items()
+                    if not name.startswith("_parent"))),
+            )
+        return (value.__class__.__module__, value.__class__.__qualname__,
+                repr(value))
+    finally:
+        seen.discard(marker)
+
+
+def _chart_model_fingerprint(chart):
+    """Fingerprint every component serialized by a combined chart."""
+    components = getattr(chart, "_charts", None) or (chart,)
+    return tuple(_canonical_object(component) for component in components)
+
+
+def _image_data_digest(image, *, ws=None, index=None):
     # a data swap with identical anchor+path must not vanish silently
     # fingerprint the backing bytes. NEVER via
     # image._data() — it closes the ref stream (a destructive read that
@@ -311,8 +374,13 @@ def _image_data_digest(image):
         else:
             return repr(type(ref))
         return hashlib.sha256(data).hexdigest()
-    except Exception:
-        return None
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        raise UnsupportedStructureError(
+            "cannot fingerprint image {0} on sheet {1!r}: {2}. Nothing "
+            "was loaded or written.".format(index, getattr(ws, "title", None),
+                                             exc),
+            kind="unreadable-image", anchor=getattr(ws, "title", None),
+        ) from exc
 
 
 def diff_objects(ws, armed):
@@ -321,22 +389,10 @@ def diff_objects(ws, armed):
     if not armed:
         return []
     current = _object_snapshot(ws)
-    unstable = armed.get("unstable", set()) | current.get("unstable", set())
-    changed = []
-    for kind in ("table", "chart", "image", "pivot"):
-        before = armed.get(kind, {})
-        after = current.get(kind, {})
-        for key in set(before) | set(after):
-            if (kind, key) in unstable:
-                # a serializer that disagrees with itself cannot express
-                # edits: skip the compare (no false refusals on no-ops) —
-                # the 0.3 pin discipline applied to objects. No stable
-                # real-world instance is known; if one appears, its edits
-                # are untrackable and this skip is the documented limit.
-                continue
-            if before.get(key) != after.get(key):
-                changed.append((kind, key))
-    return sorted(changed)
+    before = armed.get("fingerprints", {})
+    after = current.get("fingerprints", {})
+    return sorted(key for key in set(before) | set(after)
+                  if before.get(key) != after.get(key))
 
 
 def _external_links_snapshot(wb):
@@ -401,8 +457,13 @@ def mark_cell_dirty(cell, formula_involved=False, value_change=False):
         return
     led.mark_cell(ws, cell.row, cell.column)
     if value_change:
-        led.value_overwrites.setdefault(ws, set()).add(
-            (cell.row, cell.column))
+        coordinate = (cell.row, cell.column)
+        led.value_overwrites.setdefault(ws, set()).add(coordinate)
+        staged = led.cache_writes.get(ws)
+        if staged is not None:
+            staged.pop(coordinate, None)
+            if not staged:
+                led.cache_writes.pop(ws, None)
     if formula_involved:
         led.formulas_changed = True
 
@@ -861,15 +922,7 @@ def record_rename(sheet_child, new_title):
             if surface.cell:
                 check_protection(surface.owner)
 
-    # These rewrites are derived from already-accepted formulas and refer to
-    # the new title before it lands on the sheet object. Formula lint must not
-    # reject the temporary state.
-    _saved_lint = getattr(wb, "formula_lint", "warn")
-    wb.formula_lint = "off"
-    try:
-        apply_rewrites(graph_rewrites)
-    finally:
-        wb.formula_lint = _saved_lint
+    apply_rewrites(graph_rewrites)
 
     # ledger bookkeeping: the sheet keeps counting as LOADED under its
     # new name, state patches re-key, and the save patches the name attr
@@ -881,111 +934,6 @@ def record_rename(sheet_child, new_title):
     if old_title in led.sheet_states:
         led.sheet_states[new_title] = led.sheet_states.pop(old_title)
     led.formulas_changed = True
-
-# ---------------------------------------------------------------------
-# Workbook.mark_dirty
-
-def mark_dirty_target(wb, target):
-    """Implementation of ``Workbook.mark_dirty(target)``."""
-    led = _armed_ledger_for_wb(wb)
-    if led is None:
-        raise ValueError(
-            "mark_dirty() is only meaningful on a workbook loaded with "
-            "preserve=True")
-    if not isinstance(target, str) or not target:
-        raise TypeError("mark_dirty() takes a sheet-qualified A1 range "
-                        "('Model!B7:C9') or a package part name "
-                        "('xl/media/image1.png')")
-    if "!" in target:
-        title, bounds = _parse_sheet_range(target)
-        for ws in wb.worksheets:
-            if ws.title == title:
-                min_col, min_row, max_col, max_row = bounds
-                # open-ended (whole-row/column) bounds clamp to the model's
-                # populated extent — those are the only splice-able cells
-                if min_row is None:
-                    min_row, max_row = ws.min_row or 1, ws.max_row or 1
-                if min_col is None:
-                    min_col, max_col = ws.min_column or 1, ws.max_column or 1
-                # bounded ranges clamp too: a
-                # coordinate with no model cell is a DELETION marker to
-                # the splice, so an oversized range (A1:XFD1048576) would
-                # both explode the loop and delete beyond the intent
-                max_row = min(max_row, ws.max_row or 1)
-                max_col = min(max_col, ws.max_column or 1)
-                min_row = max(1, min_row)
-                min_col = max(1, min_col)
-                cells = led.cells
-                before = {
-                    sheet: set(values) for sheet, values in cells.items()}
-                overwrites = led.value_overwrites
-                before_overwrites = {
-                    sheet: set(values)
-                    for sheet, values in overwrites.items()}
-                try:
-                    for row in range(min_row, max_row + 1):
-                        for col in range(min_col, max_col + 1):
-                            led.mark_cell(ws, row, col)
-                            overwrites.setdefault(ws, set()).add((row, col))
-                except BaseException:
-                    cells.clear()
-                    cells.update(before)
-                    overwrites.clear()
-                    overwrites.update(before_overwrites)
-                    raise
-                return
-        raise TargetNotFoundError(
-            "mark_dirty: no worksheet named {0!r}".format(title))
-    # part-name form
-    import io
-    import zipfile
-
-    source = getattr(wb, "_paper_source", None)
-    names = set()
-    if source:
-        with zipfile.ZipFile(io.BytesIO(source)) as z:
-            names = set(z.namelist())
-    if target not in names:
-        raise TargetNotFoundError(
-            "mark_dirty: no part named {0!r} in the retained package "
-            "(part names are exact, e.g. 'xl/media/image1.png')".format(target))
-    raise UnsupportedStructureError(
-        "mark_dirty({0!r}): part-level re-serialization is not supported "
-        "because the part has no faithful model source. For a raw byte swap "
-        "of an unmanaged part, use wb.replace_part(name, payload). Nothing "
-        "was changed.".format(target),
-        kind="unsupported-part-dirty",
-        anchor=target,
-    )
-
-
-def _parse_sheet_range(target):
-    """Parse sheet-qualified A1 (pinned addressing), fixing the two upstream
-    warts: doubled-quote un-escaping and '$' tolerance."""
-    from openpyxl.utils.cell import range_to_tuple
-
-    title, bounds = range_to_tuple(target)
-    # upstream keeps escaped quotes in the title group; undo that
-    title = title.replace("''", "'")
-    return title, bounds
-
-
-class RemovalReport:
-    """What a sheet deletion removed and remapped."""
-
-    def __init__(self, removed_parts, remapped_names):
-        self.removed_parts = list(removed_parts)
-        self.remapped_names = remapped_names
-
-    def to_dict(self):
-        return {"schema": "removal_report", "version": 1,
-                "removed_parts": list(self.removed_parts),
-                "remapped_names": self.remapped_names}
-
-    def __repr__(self):
-        return "RemovalReport({0} parts, {1} names)".format(
-            len(self.removed_parts), self.remapped_names)
-
 
 def _victim_exclusive_parts(wb, original_title):
     """Package parts that die WITH the sheet if it is removed (its
@@ -1241,7 +1189,7 @@ def begin_move_range(ws, move_spec):
                         problems.append(
                             "defined name {0!r} points into the moved/"
                             "target block".format(nm))
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 continue
 
     sketch = dependency_sketch(ws.parent)
@@ -1257,7 +1205,7 @@ def begin_move_range(ws, move_spec):
         bare = title.strip("'").replace("''", "'")
         try:
             rc = coordinate_to_tuple(coord)
-        except Exception:
+        except (TypeError, ValueError):
             problems.append("formula {0}".format(address))
             continue
         if bare.casefold() != ws.title.casefold() or rc not in inside:

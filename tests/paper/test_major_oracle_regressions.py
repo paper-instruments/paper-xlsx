@@ -95,7 +95,7 @@ def _formula_package(cached_values):
 
 class TestArrayFormulaCoverage:
 
-    def test_stale_follower_diverges_and_write_back_updates_it(
+    def test_stale_follower_recalc_updates_separate_candidate(
             self, tmp_path, monkeypatch):
         stale = _array_package([1, 999, 3])
         computed = _array_package([1, 2, 3])
@@ -111,16 +111,13 @@ class TestArrayFormulaCoverage:
 
         path = tmp_path / "array.xlsx"
         path.write_bytes(stale)
-        first = oracle.write_back(path, allow_uncertified=True)
-        assert first.written == ["Array!A2"]
-        assert first.cleared_fullcalc is False
-        assert load_workbook(path, data_only=True)["Array"]["A2"].value == 2
-
-        second = oracle.write_back(path)
-        assert second.certification.status == "CERTIFIED"
-        assert second.certification.checked == 3
-        assert second.cells_written == 0
-        assert second.cleared_fullcalc is True
+        candidate = tmp_path / "array-candidate.xlsx"
+        result = oracle.recalc(path, output_path=candidate)
+        assert result.written == ["Array!A2"]
+        assert result.verified_unchanged == ["Array!A1", "Array!A3"]
+        assert path.read_bytes() == stale
+        assert load_workbook(candidate, data_only=True)["Array"]["A2"].value \
+            == 2
 
     @pytest.mark.lo_smoke
     def test_libreoffice_array_results_are_all_certified(self, lo, tmp_path):
@@ -256,7 +253,7 @@ def test_template_conversion_and_template_destination_refuse(tmp_path, monkeypat
     wb = Workbook()
     raw = io.BytesIO()
     wb.save(raw)
-    with pytest.raises(UnsupportedStructureError, match="template"):
+    with pytest.raises(UnsupportedStructureError, match="source package type"):
         oracle.recalc(raw.getvalue(), output_path=tmp_path / "result.xltx")
 
 
@@ -293,7 +290,7 @@ def test_oracle_input_assignment_never_overwrites_formula():
     assert ws["A1"].value == "=1+1"
 
 
-def test_set_input_resolves_unique_local_name_and_refuses_ambiguity():
+def test_oracle_resolver_refuses_ambiguous_local_names():
     wb = Workbook()
     first = wb.active
     first.title = "First"
@@ -301,24 +298,19 @@ def test_set_input_resolves_unique_local_name_and_refuses_ambiguity():
     first.defined_names.add(DefinedName(
         "LocalInput", attr_text="'First'!$A$1"))
 
-    assert wb.set_input("LocalInput", 7) is first["A1"]
-    assert first["A1"].value == 7
-
     second.defined_names.add(DefinedName(
         "LocalInput", attr_text="'Second'!$A$1"))
-    with pytest.raises(AmbiguousTargetError, match="exists on 2 sheets"):
-        wb.set_input("LocalInput", 9)
     with pytest.raises(AmbiguousTargetError, match="exists on 2 sheets"):
         oracle._resolve_single_cell(wb, "LocalInput")
 
 
-def test_set_input_missing_defined_name_sheet_is_typed():
+def test_oracle_resolver_missing_defined_name_sheet_is_typed():
     wb = Workbook()
     wb.defined_names.add(DefinedName(
         "Missing", attr_text="'Gone'!$A$1"))
 
-    with pytest.raises(TargetNotFoundError, match="missing sheet"):
-        wb.set_input("Missing", 1)
+    with pytest.raises(TargetNotFoundError, match="does not exist"):
+        oracle._resolve_single_cell(wb, "Missing")
 
 
 def test_data_table_result_range_is_excluded_as_one_unsupported_unit(

@@ -79,14 +79,7 @@ def _guard_data_only_range_mutation(workbook, worksheet, bounds, operation,
     ledger = getattr(workbook, "_paper_ledger", None)
     anchor = anchor or "{0}!{1}".format(worksheet.title, bounds)
     if ledger is None or not ledger.armed:
-        raise UnsupportedStructureError(
-            "{0} cannot prove whether {1} was a formula because this "
-            "workbook was loaded with data_only=True without retained "
-            "source custody. Reload with data_only=False or preserve=True. "
-            "Nothing was changed.".format(operation, anchor),
-            kind="data-only-input-model-unavailable",
-            anchor=anchor,
-        )
+        return
     if worksheet in ledger.added_sheets:
         return
 
@@ -156,10 +149,6 @@ def _guard_data_only_range_mutation(workbook, worksheet, bounds, operation,
         )
 
 
-def _guard_data_only_input(workbook, target):
-    _guard_data_only_cell_mutation(workbook, target, "set_input")
-
-
 class Workbook:
     """Workbook is the container for all other parts of the document."""
 
@@ -170,17 +159,15 @@ class Workbook:
     _paper_source = None            # retained source-package bytes
     _paper_source_identity = None   # content-bound source path identity
     _paper_content_type = None      # source workbook type under preserve
-    _paper_loss_inventory = None    # content the stock save cannot preserve
     _paper_ledger = None            # the dirty ledger; armed after load
+    # distinguishes stock-loaded workbooks from new in-memory workbooks
+    _paper_loaded_from_package = False
     # protection awareness: True turns writes to locked
     # cells on protected sheets into typed refusals (default: warn once
     # per sheet). Protection is reported, never enforced or bypassed.
     # preserve-mode workbooks only (the check rides the armed
     # ledger); on stock loads the flag is inert.
     strict_protection = False
-    # formula pre-flight lint mode at the value-bind chokepoint
-    # (preserve-mode workbooks only): "off"|"warn"|"refuse"
-    formula_lint = "warn"
     template = False
     path = "/xl/workbook.xml"
 
@@ -271,356 +258,20 @@ class Workbook:
         lossless splice of recorded edits into them."""
         return self._preserve
 
-    def mark_dirty(self, target):
-        """Escape hatch for anyone reaching below the public API in
-        preserve mode: declare that ``target`` was
-        mutated so the splice save re-emits it from the model.
+    def set_pivot_refresh_on_load(self, pivots=None, *, all=False):
+        """Request refresh-on-load for named pivots or explicitly all pivots.
 
-        ``target`` is a sheet-qualified A1 range (``"Model!B7"`` or
-        ``"'My Sheet'!B2:D10"``). Exact package part names are recognized but
-        refuse immediately because there is no model serializer for them; use
-        :meth:`replace_part` for raw unmanaged-part swaps. Raises
-        :class:`openpyxl.errors.TargetNotFoundError` for unknown targets and
-        ``ValueError`` outside preserve mode.
-        """
-        _ledger.mark_dirty_target(self, target)
-
-    def replace_part(self, name, payload):
-        """Raw byte swap of one unmanaged package part under preserve
-        mode — media swaps are the intended use
-        (``wb.replace_part("xl/media/image1.png", new_png_bytes)``).
-
-        The part must exist (:class:`~openpyxl.errors.TargetNotFoundError`
-        otherwise); parts the model actively manages (sheets, workbook,
-        styles, sharedStrings, content types) refuse with
-        :class:`~openpyxl.errors.RelationshipPolicyError` — replacing them
-        raw would desync the model. Guards run NOW; bytes land at save.
+        Pivot names may be sheet-qualified (``"Sheet!PivotName"``). Multiple
+        pivots that share a cache necessarily share this cache-level setting.
         """
         if self._paper_ledger is None or not self._paper_ledger.armed:
             raise ValueError(
-                "replace_part is only meaningful in preserve mode "
-                "(load_workbook(..., preserve=True)).")
-        from openpyxl.preserve.lifecycle import check_replace_part
+                "pivot refresh is only available under preserve mode")
+        from openpyxl.preserve.pivots import resolve_requests
 
-        check_replace_part(self, name)
-        if not isinstance(payload, bytes):
-            raise TypeError("payload must be bytes")
-        self._paper_ledger.replaced_parts[name] = payload
-
-    def set_input(self, name_or_label, value):
-        """Set a model INPUT by defined name or text label (paper-xlsx): resolution order is defined names, then
-        ``locate`` over every sheet (a label found on several sheets is
-        ambiguous). Refuses to overwrite a formula cell — set_input never
-        destroys a calculation. Returns the Cell written."""
-        from openpyxl.errors import (
-            AmbiguousTargetError,
-            TargetNotFoundError,
-            UnsupportedStructureError,
-        )
-
-        target = None
-        dn = self.defined_names.get(name_or_label)
-        local_definitions = []
-        if dn is None:
-            local_definitions = [
-                (ws, ws.defined_names[name_or_label])
-                for ws in self.worksheets
-                if name_or_label in ws.defined_names
-            ]
-            if len(local_definitions) > 1:
-                options = [ws.title for ws, _dn in local_definitions]
-                raise AmbiguousTargetError(
-                    "sheet-scoped defined name {0!r} exists on {1} sheets: "
-                    "{2}. Use a sheet-qualified address.".format(
-                        name_or_label, len(options), ", ".join(options)),
-                    kind="ambiguous-name",
-                    options=options,
-                )
-            if local_definitions:
-                dn = local_definitions[0][1]
-        if dn is not None:
-            try:
-                destinations = list(dn.destinations)
-            except Exception as exc:
-                raise TargetNotFoundError(
-                    "defined name {0!r} cannot be resolved to a worksheet "
-                    "cell: {1}".format(name_or_label, exc),
-                    kind="input-not-found",
-                ) from exc
-            if len(destinations) != 1:
-                raise AmbiguousTargetError(
-                    "defined name {0!r} resolves to {1} areas; single "
-                    "cells only.".format(name_or_label, len(destinations)),
-                    kind="ambiguous-name", options=[
-                        "{0}!{1}".format(t, r) for t, r in destinations])
-            title, coord = destinations[0]
-            from openpyxl.utils.cell import range_boundaries
-
-            try:
-                min_col, min_row, max_col, max_row = range_boundaries(coord)
-            except ValueError as exc:
-                raise TargetNotFoundError(
-                    "defined name {0!r} has invalid destination {1!r}."
-                    .format(name_or_label, coord),
-                    kind="input-not-found",
-                ) from exc
-            if (min_col, min_row) != (max_col, max_row) \
-                    or min_col is None or min_row is None:
-                raise AmbiguousTargetError(
-                    "defined name {0!r} resolves to a RANGE ({1}); "
-                    "set_input takes single cells only.".format(
-                        name_or_label, coord),
-                    kind="ambiguous-name",
-                    options=["{0}!{1}".format(title, coord)])
-            matches = [ws for ws in self.worksheets
-                       if ws.title.casefold() == title.casefold()]
-            if not matches:
-                raise TargetNotFoundError(
-                    "defined name {0!r} targets missing sheet {1!r}."
-                    .format(name_or_label, title),
-                    kind="input-not-found",
-                )
-            target = matches[0].cell(row=min_row, column=min_col)
-        else:
-            hits = []
-            for ws in self.worksheets:
-                try:
-                    hits.append(ws.locate(name_or_label))
-                except TargetNotFoundError:
-                    continue
-            if not hits:
-                raise TargetNotFoundError(
-                    "{0!r} is neither a defined name nor a label on any "
-                    "sheet.".format(name_or_label),
-                    kind="input-not-found")
-            if len(hits) > 1:
-                options = ["{0}!{1}".format(c.parent.title, c.coordinate)
-                           for c in hits]
-                raise AmbiguousTargetError(
-                    "label {0!r} resolves on {1} sheets: {2}. Qualify the "
-                    "request.".format(name_or_label, len(hits),
-                                      ", ".join(options)),
-                    kind="ambiguous-input", options=options)
-            target = hits[0]
-        from openpyxl.cell.cell import MergedCell
-
-        if isinstance(target, MergedCell):
-            raise UnsupportedStructureError(
-                "{0}!{1} is inside a merged range; write the input to the "
-                "merge's anchor cell instead. Nothing was changed.".format(
-                    target.parent.title, target.coordinate),
-                kind="input-is-merged-interior",
-                anchor="{0}!{1}".format(target.parent.title,
-                                        target.coordinate))
-        _guard_data_only_input(self, target)
-        if target.data_type == "f":
-            raise UnsupportedStructureError(
-                "{0}!{1} holds a formula; set_input never overwrites "
-                "calculations. Nothing was changed.".format(
-                    target.parent.title, target.coordinate),
-                kind="input-is-calculation",
-                anchor="{0}!{1}".format(target.parent.title,
-                                        target.coordinate))
-        target.value = value
-        return target
-
-    def protect_for_delivery(self, password=None):
-        """Lock every populated cell EXCEPT the model map's classified
-        inputs, and enable sheet protection (paper-xlsx). Every non-input cell is ACTIVELY locked (a workbook authored
-        with locked=False cells — templates, LibreOffice output — would
-        otherwise ship editable under a "protected" sheet). Each cell's other protection flags (hidden) are preserved.
-        Protection is advisory in the file format and REPORTED here —
-        returns {"locked_sheets", "unlocked_inputs", "locked_cells"}."""
-        if password is not None and not isinstance(password, str):
-            raise TypeError("password must be a string or None")
-
-        from copy import copy as _copy
-
-        from openpyxl.styles import Protection
-
-        mm = self.model_map()
-        planned = []
-        unlocked = []
-        locked_count = 0
-        locked_sheets = []
-
-        for ws in self.worksheets:
-            inputs = set(mm.sheets.get(ws.title, {}).get("inputs", []))
-            for (row, col), cell in sorted(ws._cells.items()):
-                if cell._value is None:
-                    continue
-                address = cell.coordinate
-                if address in inputs:
-                    prot = _copy(cell.protection) \
-                        if cell.protection is not None else Protection()
-                    prot.locked = False
-                    planned.append((cell, prot))
-                    unlocked.append("{0}!{1}".format(ws.title, address))
-                else:
-                    prot = _copy(cell.protection) \
-                        if cell.protection is not None else Protection()
-                    prot.locked = True
-                    planned.append((cell, prot))
-                    locked_count += 1
-            locked_sheets.append(ws.title)
-        password_hash = None
-        if password:
-            from openpyxl.utils.protection import hash_password
-
-            password_hash = hash_password(password)
-        for cell, protection in planned:
-            cell.protection = protection
-        for ws in self.worksheets:
-            ws.protection.sheet = True
-            if password_hash is not None:
-                ws.protection.set_password(password_hash,
-                                           already_hashed=True)
-        return {"locked_sheets": locked_sheets,
-                "unlocked_inputs": unlocked,
-                "locked_cells": locked_count}
-
-    def scrub(self, remove=("comments", "metadata", "personal",
-                            "hidden-sheets")):
-        """Strip delivery-inappropriate content (paper-xlsx). Returns a scrub REPORT — everything removed is listed,
-        everything that could NOT be removed is reported with its reason
-        (hidden sheets whose removal would strand references refuse the
-        removal and land in "skipped"; never silent).
-
-        remove: any of "comments" (in-session comment objects; sheets
-        with PRESERVED comment machinery are reported, not silently
-        stripped), "metadata" (core document properties reset),
-        "personal" (creator/lastModifiedBy cleared), "hidden-sheets"
-        (removed via the audited removal path)."""
-        from openpyxl.errors import PaperRefusal
-
-        report = {"removed": [], "skipped": []}
-        options = set(remove)
-        unknown = options - {"comments", "metadata", "personal",
-                             "hidden-sheets"}
-        if unknown:
-            raise ValueError("unknown scrub targets: {0}".format(
-                sorted(unknown)))
-        if "comments" in options:
-            # a sheet whose comments come from PRESERVED machinery cannot
-            # have them removed (the saver refuses editing preserved
-            # comment parts) — nulling them would both LIE in the report
-            # and brick the save. Detect
-            # per sheet FIRST, then only null in-session comments on
-            # comment-free sheets (compute-then-mutate keeps scrub atomic
-            # and its report honest).
-            preserved_sheets = set()
-            if self._paper_source is not None:
-                import io as _io
-                import zipfile as _zipfile
-
-                from openpyxl.preserve.comments import (
-                    sheet_has_comment_machinery,
-                )
-                from openpyxl.preserve.saver import _package_info
-
-                with _zipfile.ZipFile(
-                        _io.BytesIO(self._paper_source)) as zin:
-                    names = set(zin.namelist())
-                    _wb, mapping = _package_info(zin)
-                    led = self._paper_ledger
-                    for ws in self.worksheets:
-                        original = (led.renames.get(ws, ws.title)
-                                    if led is not None else ws.title)
-                        part = mapping.get(original)
-                        if part is not None and sheet_has_comment_machinery(
-                                zin, part, names):
-                            preserved_sheets.add(ws.title)
-            for ws in self.worksheets:
-                if ws.title in preserved_sheets:
-                    commented = sorted(
-                        cell.coordinate for cell in ws._cells.values()
-                        if cell._comment is not None)
-                    if commented:
-                        report["skipped"].append(
-                            "sheet {0!r} carries preserved comment "
-                            "machinery; its comments ({1}) cannot be "
-                            "removed without rewriting preserved parts "
-                            "(unsupported). Nothing on this sheet was "
-                            "changed.".format(ws.title,
-                                              ", ".join(commented)))
-                    continue
-                for (row, col), cell in sorted(ws._cells.items()):
-                    if cell._comment is not None:
-                        cell.comment = None
-                        report["removed"].append(
-                            "comment at {0}!{1}".format(ws.title,
-                                                        cell.coordinate))
-        if "metadata" in options:
-            props = self.properties
-            for attr in ("title", "subject", "description", "keywords",
-                         "category", "contentStatus", "identifier"):
-                if getattr(props, attr, None):
-                    setattr(props, attr, None)
-                    report["removed"].append(
-                        "core property {0}".format(attr))
-        if "personal" in options:
-            props = self.properties
-            for attr in ("creator", "lastModifiedBy"):
-                if getattr(props, attr, None):
-                    setattr(props, attr, None)
-                    report["removed"].append(
-                        "core property {0}".format(attr))
-        if "hidden-sheets" in options:
-            for ws in list(self.worksheets):
-                if ws.sheet_state == "visible":
-                    continue
-                try:
-                    self.remove(ws)
-                    report["removed"].append(
-                        "hidden sheet {0!r}".format(ws.title))
-                except PaperRefusal as exc:
-                    report["skipped"].append(
-                        "hidden sheet {0!r}: {1}".format(ws.title,
-                                                         exc))
-        return report
-
-    def set_pivot_refresh_on_load(self):
-        """Byte-patch ``refreshOnLoad="1"`` onto every pivotCacheDefinition
-        in the preserved package (paper-xlsx): pivots
-        are preserved verbatim, so refresh-on-load is how their data stays
-        honest after cell edits. Preserve mode only. Returns the list of
-        parts patched."""
-        if self._paper_ledger is None or not self._paper_ledger.armed:
-            raise ValueError(
-                "set_pivot_refresh_on_load() patches preserved pivot "
-                "parts and is only available under preserve mode.")
-        import io as _io
-        import zipfile as _zipfile
-
-        from openpyxl.preserve import crosspart
-
-        replacements = {}
-        with _zipfile.ZipFile(_io.BytesIO(self._paper_source)) as zin:
-            for name in sorted(zin.namelist()):
-                if not (name.startswith("xl/pivotCache/pivotCacheDefinition")
-                        and name.endswith(".xml")):
-                    continue
-                payload = zin.read(name)
-                root = crosspart.scan_small(payload,
-                                            "pivotCacheDefinition",
-                                            max_depth=1)
-                if root.attrs.get("refreshOnLoad") == "1":
-                    continue
-                start, end, head = crosspart._patch_attr(
-                    payload, root, "refreshOnLoad", "1")
-                replacements[name] = (
-                    payload[:start] + head + payload[end:])
-        self._paper_ledger.replaced_parts.update(replacements)
-        return sorted(replacements)
-
-    def model_map(self):
-        """Role classification of every populated cell on formula-bearing
-        sheets — inputs / calculations / outputs / constants (paper-xlsx). Returns
-        :class:`openpyxl.preserve.modelmap.ModelMap`."""
-        from openpyxl.preserve.modelmap import build_model_map
-
-        _require_materialized_cells(self, "model_map()")
-        return build_model_map(self)
+        parts = resolve_requests(self, pivots, all=all)
+        self._paper_ledger.pivot_refresh_requests.update(parts)
+        return parts
 
     def search(self, text_or_regex, *, regex=False, values=True,
                formulas=True):
@@ -677,43 +328,15 @@ class Workbook:
         return results
 
     def validate(self):
-        """Run the preserve saver's FULL validation pass without
-        delivering a file (paper-xlsx): every refusal
-        a save would raise is raised now; on success returns None and
-        nothing is written anywhere."""
+        """Run the preserve save planner without assembling an archive."""
         if not self._preserve or self._paper_ledger is None:
             raise ValueError(
-                "validate() replays the preserve save machinery and is "
+                "validate() runs the preserve save planner and is "
                 "only available on workbooks loaded with preserve=True.")
-        import io as _io
+        from openpyxl.preserve.saver import validate_preserved
 
-        self.save(_io.BytesIO())
+        validate_preserved(self)
         return None
-
-    def evaluate(self, set, read, *, timeout=120.0):
-        """What-if scenario against THIS workbook's preserved source
-        bytes: inputs applied to a temp copy through the
-        spine, LibreOffice recalculates, outputs harvested. Neither the
-        original file nor this live workbook is touched.
-
-        NOTE: the run starts from the preserved AS-LOADED bytes — unsaved
-        in-session edits are not part of the scenario (save first if they
-        should be).
-
-        ``set``: {address: value} single-cell inputs; ``read``: list of
-        addresses to harvest. Addresses are sheet-qualified A1
-        ("Model!B2") or defined names. Returns
-        :class:`openpyxl.oracle.Evaluation`.
-        """
-        if not self._preserve or self._paper_source is None:
-            raise ValueError(
-                "evaluate() runs against the preserved source bytes and "
-                "is only available on workbooks loaded with "
-                "preserve=True.")
-        from openpyxl import oracle
-
-        return oracle.evaluate(self._paper_source, set, read,
-                               timeout=timeout)
 
     @property
     def data_only(self):
@@ -831,11 +454,8 @@ class Workbook:
     def remove(self, worksheet):
         """Remove `worksheet` from this workbook.
 
-        Under preserve mode a LOADED sheet's removal runs the reference
-        audit first (anything on another sheet pointing at the victim
-        refuses with the enumeration) and returns a
-        :class:`~openpyxl.preserve.ledger.RemovalReport`; the part
-        cascade happens at save."""
+        Under preserve mode a loaded sheet's removal runs the reference
+        audit first. The package-part cascade happens at save."""
         if getattr(worksheet, "parent", None) is not self \
                 or worksheet not in self._sheets:
             raise ValueError("Worksheet is not part of this workbook.")
@@ -847,12 +467,10 @@ class Workbook:
         if ledger is not None and ledger.armed:
             from openpyxl.preserve.structural import _capture_structural_state
             snapshot = _capture_structural_state(self)
-        report = None
         try:
             if not _ledger.allow_sheet_removal(self, worksheet):
                 _ledger.audit_sheet_removal(self, worksheet)
                 _ledger.record_sheet_removal(self, worksheet)
-                report = True
             self._sheets.remove(worksheet)
         except BaseException:
             if snapshot is not None:
@@ -862,13 +480,6 @@ class Workbook:
                 self._sheets = sheets
                 sheets[:] = sheet_values
             raise
-        if report:
-            from openpyxl.preserve.ledger import RemovalReport
-
-            # parts enumerate at save; the report carries what is known now
-            return RemovalReport([], remapped_names=len([
-                n for ws in self._sheets
-                for n in getattr(ws, "defined_names", {})]))
         return None
 
 
@@ -1056,7 +667,8 @@ class Workbook:
             save_workbook(
                 self, staged, allow_formula_loss=allow_formula_loss)
             data = staged.getvalue()
-            result = _receipt(self._paper_source, data)
+            result = _receipt(
+                self._paper_source, data, _ledger=self._paper_ledger)
 
             def validate_source():
                 if self._paper_source_identity is not None:

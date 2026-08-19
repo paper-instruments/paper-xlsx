@@ -12,8 +12,7 @@ on such files, or by LibreOffice conversion — the sidecar says which, exactly.
 Nothing here may ever be relabeled as Excel-authored. The real-Excel bucket
 (the load-bearing one: charts with styling, pivots + caches, real VBA, shared
 formulas as Excel writes them, 1904 date system, Google Sheets exports) is
-requested precisely in `/FIXTURE-REQUESTS.md` and lands here with sidecars
-filled in by the human who authored each file.
+accepted only with sidecars filled in by the human who authored each file.
 
 ## Contents
 
@@ -36,10 +35,6 @@ filled in by the human who authored each file.
 | `legacy/legacy.xls` | legacy | real BIFF .xls (LibreOffice-written) — refusal tests only |
 | `legacy/binary.xlsb` | legacy | DUMMY bytes (extension-trigger only; LO cannot write xlsb) — refusal tests only |
 | `large/large150k.xlsx` | large | 10,000×15 = 150k cells, 10k SUMs — perf smoke |
-
-Missing buckets, tracked in `/FIXTURE-REQUESTS.md`: authored-in-real-Excel
-(all of it), Google Sheets exports, pivot table + cache, external links,
-real `.xlsb`, 1904 date system.
 
 ## Sidecar schema (pinned, CONVENTIONS §4)
 

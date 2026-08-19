@@ -67,9 +67,9 @@ _TYPES = {int:'n', float:'n', str:'s', bool:'b'}
 
 
 class _CellBindTransaction:
-    """Rollback the public value setter if its ledger hook fails."""
+    """Coordinate-local rollback for one public cell mutation."""
 
-    def __init__(self, cell):
+    def __init__(self, cell, *, capture_number_formats=False):
         self.cell = cell
         ws = cell.parent
         wb = getattr(ws, "parent", None) if ws is not None else None
@@ -77,80 +77,116 @@ class _CellBindTransaction:
         self.active = bool(self.ledger is not None and self.ledger.armed)
         if not self.active:
             return
-        self.value = cell._value
-        self.data_type = cell._data_type
-        self.style = cell._style
-        self.hyperlink = cell._hyperlink
-        self.hyperlink_ref = getattr(self.hyperlink, "ref", None)
-        self.comment = getattr(cell, "_comment", None)
-        self.comment_parent = getattr(self.comment, "_parent", None)
+        self.ws = ws
+        self.coordinate = (cell.row, cell.column)
+        # MergedCell interiors are styleable coordinates but deliberately
+        # carry no mutable value, hyperlink, or comment storage. Number-
+        # format assignment still needs the same style/registry/ledger
+        # transaction without pretending the interior is a full Cell.
+        self.has_cell_content = isinstance(cell, Cell)
+        if self.has_cell_content:
+            self.value = cell._value
+            self.data_type = cell._data_type
+            self.hyperlink = cell._hyperlink
+            self.hyperlink_ref = getattr(self.hyperlink, "ref", None)
+            self.comment = getattr(cell, "_comment", None)
+            self.comment_parent = getattr(self.comment, "_parent", None)
+        self.style = copy(cell._style) if cell._style is not None else None
         self.cells = self.ledger.cells
-        self.cell_sets = self._capture_mapping(self.cells)
+        self.cell_state = self._capture_coordinate(self.cells, set)
         self.overwrites = self.ledger.value_overwrites
-        self.overwrite_sets = self._capture_mapping(self.overwrites)
+        self.overwrite_state = self._capture_coordinate(self.overwrites, set)
         self.formulas_changed = self.ledger.formulas_changed
         self.protection_warned = self.ledger.protection_warned
-        self.protection_warned_values = set(self.protection_warned)
+        self.was_protection_warned = ws in self.protection_warned
         self.cache_writes = self.ledger.cache_writes
-        self.cache_values = self._capture_mapping(self.cache_writes)
-        self.number_formats = wb._number_formats
-        self.number_format_values = list(self.number_formats)
-        self.number_format_clean = self.number_formats.clean
-        self.number_format_index = self.number_formats._dict
-        self.number_format_index_values = dict(self.number_format_index)
+        self.cache_state = self._capture_coordinate(self.cache_writes, dict)
+        self.number_formats = wb._number_formats \
+            if capture_number_formats else None
+        if self.number_formats is not None:
+            self.number_format_length = len(self.number_formats)
+            self.number_format_clean = self.number_formats.clean
+            self.number_format_index = self.number_formats._dict
 
-    @staticmethod
-    def _capture_mapping(mapping):
-        snapshots = []
-        for key, value in mapping.items():
-            if isinstance(value, set):
-                copied = set(value)
-            elif isinstance(value, dict):
-                copied = dict(value)
+    def _capture_coordinate(self, mapping, bucket_type):
+        bucket = mapping.get(self.ws)
+        if bucket is None:
+            return (False, None, False, None, bucket_type)
+        if bucket_type is set:
+            present = self.coordinate in bucket
+            value = None
+        else:
+            present = self.coordinate in bucket
+            value = bucket.get(self.coordinate)
+        return (True, bucket, present, value, bucket_type)
+
+    def _restore_coordinate(self, mapping, state):
+        existed, original, present, value, bucket_type = state
+        current = mapping.get(self.ws)
+        if existed:
+            if current is not original:
+                mapping[self.ws] = original
+            bucket = original
+        else:
+            bucket = current
+            if bucket is None:
+                return
+        if bucket_type is set:
+            if present:
+                bucket.add(self.coordinate)
             else:
-                copied = value
-            snapshots.append((key, value, copied))
-        return snapshots
-
-    @staticmethod
-    def _restore_mapping(mapping, snapshots):
-        mapping.clear()
-        for key, original, copied in snapshots:
-            if isinstance(original, set):
-                original.clear()
-                original.update(copied)
-            elif isinstance(original, dict):
-                original.clear()
-                original.update(copied)
-            mapping[key] = original
+                bucket.discard(self.coordinate)
+        elif present:
+            bucket[self.coordinate] = value
+        else:
+            bucket.pop(self.coordinate, None)
+        if not existed and not bucket:
+            mapping.pop(self.ws, None)
 
     def rollback(self):
         if not self.active:
             return
-        self.cell._value = self.value
-        self.cell._data_type = self.data_type
         self.cell._style = self.style
-        current_comment = getattr(self.cell, "_comment", None)
-        if current_comment is not self.comment \
-                and getattr(current_comment, "_parent", None) is self.cell:
-            current_comment._parent = None
-        self.cell._hyperlink = self.hyperlink
-        if self.hyperlink is not None:
-            self.hyperlink.ref = self.hyperlink_ref
-        self.cell._comment = self.comment
-        if self.comment is not None:
-            self.comment._parent = self.comment_parent
-        self._restore_mapping(self.cells, self.cell_sets)
-        self._restore_mapping(self.overwrites, self.overwrite_sets)
-        self._restore_mapping(self.cache_writes, self.cache_values)
-        self.number_formats[:] = self.number_format_values
-        self.number_formats.clean = self.number_format_clean
-        self.number_format_index.clear()
-        self.number_format_index.update(self.number_format_index_values)
-        self.number_formats._dict = self.number_format_index
-        self.ledger.formulas_changed = self.formulas_changed
-        self.protection_warned.clear()
-        self.protection_warned.update(self.protection_warned_values)
+        if self.has_cell_content:
+            self.cell._value = self.value
+            self.cell._data_type = self.data_type
+            current_comment = getattr(self.cell, "_comment", None)
+            if current_comment is not self.comment \
+                    and getattr(current_comment, "_parent", None) is self.cell:
+                current_comment._parent = None
+            self.cell._hyperlink = self.hyperlink
+            if self.hyperlink is not None:
+                self.hyperlink.ref = self.hyperlink_ref
+            self.cell._comment = self.comment
+            if self.comment is not None:
+                self.comment._parent = self.comment_parent
+        self._restore_coordinate(self.cells, self.cell_state)
+        self._restore_coordinate(self.overwrites, self.overwrite_state)
+        self._restore_coordinate(self.cache_writes, self.cache_state)
+        if self.number_formats is not None:
+            del self.number_formats[self.number_format_length:]
+            if self.number_formats._dict is not self.number_format_index:
+                self.number_formats._dict = self.number_format_index
+            for key, index in list(self.number_formats._dict.items()):
+                if index >= self.number_format_length:
+                    del self.number_formats._dict[key]
+            self.number_formats.clean = self.number_format_clean
+        if self.formulas_changed:
+            self.ledger.formulas_changed = True
+        elif self.ledger.formulas_changed:
+            self.ledger.formulas_changed = any(
+                other.data_type == "f"
+                for sheet, coordinates in self.ledger.cells.items()
+                for coordinate in coordinates
+                if sheet is not self.ws or coordinate != self.coordinate
+                for other in [sheet._cells.get(coordinate)]
+                if other is not None)
+        else:
+            self.ledger.formulas_changed = False
+        if self.was_protection_warned:
+            self.protection_warned.add(self.ws)
+        else:
+            self.protection_warned.discard(self.ws)
         self.active = False
 
 
@@ -300,7 +336,8 @@ class Cell(StyleableObject):
 
 
     def _bind_value(self, value):
-        transaction = _CellBindTransaction(self)
+        transaction = _CellBindTransaction(
+            self, capture_number_formats=isinstance(value, TIME_TYPES))
         try:
             return self._bind_value_impl(value)
         except BaseException:
@@ -344,19 +381,6 @@ class Cell(StyleableObject):
         if dt:
             self._data_type = dt
 
-        if dt == "f" and paper_armed:
-            # ArrayFormula/DataTableFormula objects carry their text out
-            # of band: they must not bypass the lint chokepoint
-            #
-            text = getattr(value, "text", None)
-            if isinstance(text, str) and text.startswith("="):
-                from openpyxl.formula.lint import lint_on_bind
-                try:
-                    lint_on_bind(self, text)
-                except Exception:
-                    self._data_type = old_data_type
-                    raise
-
         if dt == 'd':
             if not is_date_format(self.number_format):
                 self.number_format = get_time_format(t)
@@ -364,16 +388,6 @@ class Cell(StyleableObject):
         elif dt == "s" and not isinstance(value, CellRichText):
             value = self.check_string(value)
             if len(value) > 1 and value.startswith("="):
-                if paper_armed:
-                    # pre-flight lint: warns or refuses
-                    # BEFORE the value lands (a refusal restores the
-                    # pre-bind type; nothing was assigned yet)
-                    from openpyxl.formula.lint import lint_on_bind
-                    try:
-                        lint_on_bind(self, value)
-                    except Exception:
-                        self._data_type = old_data_type
-                        raise
                 self._data_type = 'f'
             elif value in ERROR_CODES:
                 self._data_type = 'e'

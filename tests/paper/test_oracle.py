@@ -9,7 +9,11 @@ import pytest
 
 from openpyxl import Workbook, load_workbook
 from openpyxl import oracle
-from openpyxl.errors import OracleTimeoutError, OracleUnavailableError
+from openpyxl.errors import (
+    OracleTimeoutError,
+    OracleUnavailableError,
+    UnsupportedStructureError,
+)
 
 
 class TestDriverRules:
@@ -20,17 +24,6 @@ class TestDriverRules:
             oracle.recalc(fixture_copy("features/schedule.xlsx"))
         with pytest.raises(OracleUnavailableError):
             oracle.certify(fixture_copy("features/schedule_calc.xlsx"))
-
-    def test_output_path_and_in_place_are_exclusive(self, fixture_copy):
-        with pytest.raises(ValueError, match="not both"):
-            oracle.recalc(fixture_copy("features/schedule.xlsx"),
-                          output_path="/tmp/x.xlsx", in_place=True)
-
-    def test_in_place_requires_a_path(self, fixture_copy):
-        with open(fixture_copy("features/schedule.xlsx"), "rb") as f:
-            data = f.read()
-        with pytest.raises(ValueError, match="path"):
-            oracle.recalc(data, in_place=True)
 
     @pytest.mark.lo_smoke
     def test_original_path_never_reaches_libreoffice(
@@ -62,26 +55,72 @@ class TestDriverRules:
             oracle.recalc(fixture_copy("features/schedule.xlsx"),
                           timeout=0.001)
 
+    def test_output_must_be_separate_from_source(self, fixture_copy):
+        src = fixture_copy("features/schedule.xlsx")
+        with pytest.raises(UnsupportedStructureError,
+                           match="separate from the source"):
+            oracle.recalc(src, output_path=src)
+
+    def test_output_alias_refuses_before_libreoffice(
+            self, fixture_copy, tmp_path, monkeypatch):
+        src = fixture_copy("features/schedule.xlsx")
+        alias = tmp_path / "alias.xlsx"
+        os.link(src, alias)
+        invoked = []
+        monkeypatch.setattr(
+            oracle, "_recalculate_bytes",
+            lambda *args, **kwargs: invoked.append(True))
+
+        with pytest.raises(UnsupportedStructureError,
+                           match="separate from the source"):
+            oracle.recalc(src, output_path=alias)
+
+        assert invoked == []
+
 
 @pytest.mark.lo_smoke
 class TestRecalc:
 
     def test_recalc_computes_cached_values(self, lo, fixture_copy, tmp_path):
         src = fixture_copy("features/schedule.xlsx")   # empty <v></v> caches
+        with open(src, "rb") as handle:
+            before = handle.read()
         out = str(tmp_path / "recalced.xlsx")
         result = oracle.recalc(src, output_path=out)
-        assert result.status == "ok"
+        assert result.status == "NO_DETECTED_FORMULA_ERRORS"
+        assert result.output_kind == "paper-preserved-candidate"
+        assert result.cells_written == 3
+        assert result.engine == "libreoffice"
         assert result.formula_cells == 3
         assert result.to_dict()["error_cells"] == 0
+        with open(src, "rb") as handle:
+            assert handle.read() == before
         wb = load_workbook(out, data_only=True)
         assert wb["Schedule"]["B12"].value == 6500
         assert wb["Summary"]["B1"].value == 6500
+        with zipfile.ZipFile(out) as archive:
+            workbook_xml = archive.read("xl/workbook.xml")
+            assert b'fullCalcOnLoad="1"' in workbook_xml
+            assert b'forceFullCalc="1"' in workbook_xml
 
-    def test_in_place_replaces_atomically(self, lo, fixture_copy):
-        src = fixture_copy("features/schedule.xlsx")
-        oracle.recalc(src, in_place=True)
-        wb = load_workbook(src, data_only=True)
-        assert wb["Schedule"]["B12"].value == 6500
+    def test_recalc_writes_date_cache_when_source_style_round_trips(
+            self, lo, tmp_path):
+        import datetime
+
+        workbook = Workbook()
+        cell = workbook.active["A1"]
+        cell.value = "=DATE(2025,1,2)+TIME(3,4,5)"
+        cell.number_format = "yyyy-mm-dd h:mm:ss"
+        source = tmp_path / "date-formula.xlsx"
+        workbook.save(source)
+
+        output = tmp_path / "date-candidate.xlsx"
+        result = oracle.recalc(source, output_path=output)
+
+        assert result.cells_written == 1
+        candidate = load_workbook(output, data_only=True)
+        assert candidate.active["A1"].value == \
+            datetime.datetime(2025, 1, 2, 3, 4, 5)
 
     def test_error_scan_finds_tokens(self, lo, tmp_path):
         wb = Workbook()
@@ -92,7 +131,7 @@ class TestRecalc:
         src = str(tmp_path / "err.xlsx")
         wb.save(src)
         result = oracle.recalc(src)
-        assert result.status == "errors"
+        assert result.status == "FORMULA_ERRORS_DETECTED"
         doc = result.to_dict()
         assert doc["error_cells"] == 1
         assert doc["errors"][0]["value"] == "#DIV/0!"
@@ -107,7 +146,6 @@ class TestRecalc:
         with open(src, "rb") as f:
             assert f.read() == before
         assert os.listdir(str(tmp_path)) == [os.path.basename(src)]
-
 
 class TestCertify:
 

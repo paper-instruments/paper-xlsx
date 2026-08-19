@@ -8,7 +8,7 @@ import zipfile
 
 import pytest
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.errors import PaperRefusal, UnsupportedStructureError
 from openpyxl.package import diff_package
 from openpyxl.styles import Font
@@ -211,13 +211,6 @@ class TestMiscRefusalsAndCrashes:
         if not len(wb.custom_doc_props):
             pytest.skip("fixture has no custom properties")
 
-    def test_mark_dirty_full_column_range(self, fixture_copy, tmp_path):
-        src = fixture_copy("features/schedule.xlsx")
-        wb = load_workbook(src, preserve=True)
-        wb.mark_dirty("Schedule!A:B")            # was: TypeError
-        led = wb._paper_ledger
-        assert (12, 2) in led.dirty_coordinates(wb["Schedule"])
-
     def test_create_chartsheet_refuses(self, fixture_copy):
         wb = load_workbook(fixture_copy("minimal/minimal_clean.xlsx"),
                            preserve=True)
@@ -249,6 +242,73 @@ class TestMiscRefusalsAndCrashes:
             ExcelWriter(wb, archive)
 
 
+class TestLateReviewContracts:
+
+    def test_lexical_paths_distinguish_extension_namespace_twins(self):
+        from openpyxl.preserve.lexical import patch_xml
+
+        main = b"http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        original = (
+            b'<dataValidations xmlns="' + main + b'" xmlns:x="urn:ext" '
+            b'count="1"><x:dataValidation type="extension"/>'
+            b'<dataValidation type="list"/></dataValidations>'
+        )
+        baseline = (
+            b'<dataValidations xmlns="' + main + b'" count="1">'
+            b'<dataValidation type="list"/></dataValidations>'
+        )
+        current = baseline.replace(b'type="list"', b'type="whole"')
+
+        patched = patch_xml(
+            original, baseline, current, "dataValidations")
+
+        assert patched is not None
+        assert b'<x:dataValidation type="extension"/>' in patched
+        assert b'<dataValidation type="whole"/>' in patched
+
+    def test_lexical_paths_normalize_cleared_default_namespace(self):
+        from openpyxl.preserve.lexical import patch_xml
+
+        original = (
+            b'<root xmlns="urn:main"><item flag="old"/>'
+            b'<scope xmlns=""><leaf>preserved</leaf></scope></root>'
+        )
+        baseline = original
+        current = baseline.replace(b'flag="old"', b'flag="new"')
+
+        patched = patch_xml(original, baseline, current, "root")
+
+        assert patched is not None
+        assert b'<item flag="new"/>' in patched
+        assert b'<scope xmlns=""><leaf>preserved</leaf></scope>' in patched
+
+    def test_blank_locked_merge_range_obeys_protection_contract(
+            self, tmp_path):
+        from openpyxl.errors import ProtectedWriteWarning
+
+        source = tmp_path / "protected-blank.xlsx"
+        workbook = Workbook()
+        workbook.active.protection.sheet = True
+        workbook.save(source)
+
+        strict = load_workbook(source, preserve=True)
+        strict.strict_protection = True
+        strict_sheet = strict.active
+        before_cells = set(strict_sheet._cells)
+        with pytest.raises(UnsupportedStructureError,
+                           match="strict_protection"):
+            strict_sheet.merge_cells("C3:D4")
+        assert set(strict_sheet._cells) == before_cells
+        assert "C3:D4" not in {
+            str(item) for item in strict_sheet.merged_cells.ranges}
+
+        advisory = load_workbook(source, preserve=True)
+        with pytest.warns(ProtectedWriteWarning, match="locked cell"):
+            advisory.active.merge_cells("C3:D4")
+        assert "C3:D4" in {
+            str(item) for item in advisory.active.merged_cells.ranges}
+
+
 class TestOracleRegressions:
     """Findings 29/30/31: volatile seeding by substring, xlsm stripping,
     bool/number equality."""
@@ -268,14 +328,23 @@ class TestOracleRegressions:
         # A1 must NOT be volatile-excluded (it has no cache -> unverifiable)
         assert not result.volatile_excluded
 
-    def test_xlsm_recalc_output_refuses(self, fixture_copy, tmp_path):
+    def test_xlsm_recalc_output_preserves_vba(
+            self, fixture_copy, tmp_path, monkeypatch):
         from openpyxl import oracle
 
         src = fixture_copy("features/macro_stub.xlsm")
-        with pytest.raises(UnsupportedStructureError, match="VBA"):
-            oracle.recalc(src, in_place=True)
-        with pytest.raises(UnsupportedStructureError, match="VBA"):
-            oracle.recalc(src, output_path=str(tmp_path / "o.xlsx"))
+        with open(src, "rb") as handle:
+            source_bytes = handle.read()
+        monkeypatch.setattr(
+            oracle, "_recalculate_bytes",
+            lambda data, timeout, suffix=".xlsx", profile_root=None:
+                source_bytes)
+        out = tmp_path / "candidate.xlsm"
+        result = oracle.recalc(src, output_path=out)
+        assert result.output_kind == "paper-preserved-candidate"
+        with zipfile.ZipFile(src) as before, zipfile.ZipFile(out) as after:
+            assert after.read("xl/vbaProject.bin") == \
+                before.read("xl/vbaProject.bin")
 
     def test_bool_never_equals_number(self):
         from openpyxl.oracle import _values_match

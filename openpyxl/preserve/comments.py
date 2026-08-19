@@ -25,18 +25,40 @@ def _refuse(msg):
 
 
 def sheet_has_comment_machinery(zin, sheet_part, names):
-    """True when the ORIGINAL sheet already references comment/VML parts."""
+    """True only for comment relationships or VML note shapes."""
+    return comment_machinery_kind(zin, sheet_part, names) == "comments"
+
+
+def comment_machinery_kind(zin, sheet_part, names):
+    """Classify a sheet's comment and VML relationships.
+
+    :param zin: Open workbook package.
+    :type zin: zipfile.ZipFile
+    :param sheet_part: Worksheet part name in the package.
+    :type sheet_part: str
+    :param names: Part names present in the package.
+    :type names: builtins.set[str]
+    :return: ``"comments"``, ``"other-vml"``, or ``None``.
+    :rtype: str or None
+    """
     rels_part = _rels_path(sheet_part)
     if rels_part not in names:
-        return False
+        return None
     root = crosspart.scan_small(zin.read(rels_part), "Relationships",
                                 max_depth=1)
+    saw_other_vml = False
     for child in root.children:
         rel_type = child.attrs.get("Type", "")
-        if rel_type.endswith("/comments") \
-                or rel_type.endswith("/vmlDrawing"):
-            return True
-    return False
+        if rel_type.endswith("/comments"):
+            return "comments"
+        if not rel_type.endswith("/vmlDrawing"):
+            continue
+        target = _resolve_target(sheet_part, child.attrs.get("Target", ""))
+        payload = zin.read(target) if target in names else b""
+        if b'ObjectType="Note"' in payload or b"ObjectType='Note'" in payload:
+            return "comments"
+        saw_other_vml = True
+    return "other-vml" if saw_other_vml else None
 
 
 def plan_comment_creation(wb, ws, sheet_part, zin, part_plan, names):
@@ -123,3 +145,15 @@ def _rels_path(part_name):
     folder, _, base = part_name.rpartition("/")
     return "{0}/_rels/{1}.rels".format(folder, base) if folder \
         else "_rels/{0}.rels".format(base)
+
+
+def _resolve_target(from_part, target):
+    if target.startswith("/"):
+        return target[1:]
+    base = from_part.rpartition("/")[0].split("/")
+    for piece in target.split("/"):
+        if piece == "..":
+            base = base[:-1]
+        elif piece != ".":
+            base.append(piece)
+    return "/".join(base)

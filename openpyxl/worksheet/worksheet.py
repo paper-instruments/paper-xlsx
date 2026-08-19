@@ -30,6 +30,7 @@ from openpyxl.workbook.defined_name import (
 )
 
 from openpyxl.formula.translate import Translator
+from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW
 
 from .datavalidation import DataValidationList
 from .page import (
@@ -63,8 +64,7 @@ from openpyxl.preserve.ledger import (
 def _structural_guard(ws, operation, index, amount=1):
     """Preserve mode: fully-modeled sheets get Excel-semantics reference
     rewriting (returns True so the caller runs the fixups);
-    unmodeled range-bearing content refuses with the victim analysis. Stock mode on a LOADED workbook: loud warning — the shift
-    updates nothing that points at the moved cells."""
+    unmodeled range-bearing content refuses with the victim analysis."""
     wb = getattr(ws, "parent", None)
     led = getattr(wb, "_paper_ledger", None) if wb is not None else None
     if led is not None and led.armed:
@@ -74,14 +74,6 @@ def _structural_guard(ws, operation, index, amount=1):
             return False
         from openpyxl.preserve.ledger import begin_structural_edit
         return begin_structural_edit(ws, operation, index, amount)
-    if wb is not None and getattr(wb, "_paper_loss_inventory", None) is not None:
-        import warnings as _warnings
-
-        from openpyxl.errors import StructuralShiftWarning
-        from openpyxl.preserve.structural import STOCK_WARNING
-
-        _warnings.warn(StructuralShiftWarning(STOCK_WARNING.format(operation)),
-                       stacklevel=3)
     return False
 from .properties import WorksheetProperties
 from .pagebreak import RowBreak, ColBreak
@@ -94,6 +86,166 @@ from .print_settings import (
     RowRange,
     PrintArea,
 )
+
+
+class _WorksheetAppendTransaction:
+    """Undo only mutations owned by one ``Worksheet.append`` call."""
+
+    def __init__(self, ws):
+        if getattr(ws, "_paper_append_active", False):
+            raise RuntimeError(
+                "re-entrant append() on the same worksheet is not "
+                "supported")
+        ws._paper_append_active = True
+        self.ws = ws
+        self.before_row = ws._current_row
+        self.coordinates = {}
+        self.bindings = {}
+        self.ledger = getattr(ws.parent, "_paper_ledger", None)
+        if self.ledger is not None and not self.ledger.armed:
+            self.ledger = None
+        self.ledger_states = {}
+        if self.ledger is not None:
+            self.formulas_changed = self.ledger.formulas_changed
+            self.was_protection_warned = \
+                ws in self.ledger.protection_warned
+        self.number_formats = None
+        self.active = True
+
+    @staticmethod
+    def _coordinate_state(mapping, ws, coordinate, bucket_type):
+        bucket = mapping.get(ws)
+        if bucket is None:
+            return (False, None, False, None, bucket_type)
+        present = coordinate in bucket
+        value = bucket.get(coordinate) if bucket_type is dict else None
+        return (True, bucket, present, value, bucket_type)
+
+    @staticmethod
+    def _restore_coordinate(mapping, ws, coordinate, state):
+        existed, original, present, value, bucket_type = state
+        current = mapping.get(ws)
+        if existed:
+            if current is not original:
+                mapping[ws] = original
+            bucket = original
+        else:
+            bucket = current
+            if bucket is None:
+                return
+        if bucket_type is set:
+            if present:
+                bucket.add(coordinate)
+            else:
+                bucket.discard(coordinate)
+        elif present:
+            bucket[coordinate] = value
+        else:
+            bucket.pop(coordinate, None)
+        if not existed and not bucket:
+            mapping.pop(ws, None)
+
+    def capture_coordinate(self, coordinate):
+        if coordinate in self.coordinates:
+            return
+        cells = self.ws._cells
+        self.coordinates[coordinate] = (
+            coordinate in cells, cells.get(coordinate))
+        if self.ledger is not None:
+            self.ledger_states[coordinate] = (
+                self._coordinate_state(
+                    self.ledger.cells, self.ws, coordinate, set),
+                self._coordinate_state(
+                    self.ledger.value_overwrites, self.ws, coordinate, set),
+                self._coordinate_state(
+                    self.ledger.cache_writes, self.ws, coordinate, dict),
+            )
+
+    def capture_binding(self, cell):
+        marker = id(cell)
+        if marker in self.bindings:
+            raise ValueError(
+                "The same Cell cannot appear more than once in append()")
+        parent = cell.parent
+        if parent is not None and parent is not self.ws:
+            raise ValueError("Cells cannot be copied from other worksheets")
+        if parent is self.ws and any(
+                existing is cell for existing in self.ws._cells.values()):
+            raise ValueError(
+                "A Cell already materialized in a worksheet cannot be "
+                "rebound by append()")
+        self.bindings[marker] = (
+            cell, cell.parent, cell.row, cell.column)
+
+    def capture_number_formats(self, value):
+        if self.number_formats is not None:
+            return
+        from openpyxl.cell.cell import TIME_TYPES
+
+        if not isinstance(value, TIME_TYPES):
+            return
+        registry = self.ws.parent._number_formats
+        self.number_formats = (
+            registry, len(registry), registry.clean, registry._dict)
+
+    def commit(self):
+        if not self.active:
+            return
+        self.ws._paper_append_active = False
+        self.active = False
+
+    def rollback(self):
+        if not self.active:
+            return
+        cells = self.ws._cells
+        for coordinate, (existed, original) in reversed(
+                list(self.coordinates.items())):
+            if existed:
+                cells[coordinate] = original
+            else:
+                cells.pop(coordinate, None)
+        self.ws._current_row = self.before_row
+        for cell, parent, row, column in self.bindings.values():
+            cell.parent = parent
+            cell.row = row
+            cell.column = column
+        if self.ledger is not None:
+            for coordinate, states in reversed(list(self.ledger_states.items())):
+                self._restore_coordinate(
+                    self.ledger.cells, self.ws, coordinate, states[0])
+                self._restore_coordinate(
+                    self.ledger.value_overwrites, self.ws,
+                    coordinate, states[1])
+                self._restore_coordinate(
+                    self.ledger.cache_writes, self.ws, coordinate, states[2])
+            if self.formulas_changed:
+                self.ledger.formulas_changed = True
+            elif self.ledger.formulas_changed:
+                touched = set(self.coordinates)
+                self.ledger.formulas_changed = any(
+                    cell.data_type == "f"
+                    for sheet, coordinates in self.ledger.cells.items()
+                    for coordinate in coordinates
+                    if sheet is not self.ws or coordinate not in touched
+                    for cell in [sheet._cells.get(coordinate)]
+                    if cell is not None)
+            else:
+                self.ledger.formulas_changed = False
+            if self.was_protection_warned:
+                self.ledger.protection_warned.add(self.ws)
+            else:
+                self.ledger.protection_warned.discard(self.ws)
+        if self.number_formats is not None:
+            registry, length, clean, index = self.number_formats
+            del registry[length:]
+            if registry._dict is not index:
+                registry._dict = index
+            for key, position in list(registry._dict.items()):
+                if position >= length:
+                    del registry._dict[key]
+            registry.clean = clean
+        self.ws._paper_append_active = False
+        self.active = False
 
 
 class Worksheet(_WorkbookChild):
@@ -605,25 +757,27 @@ class Worksheet(_WorkbookChild):
         self.data_validations.append(data_validation)
 
 
-    def locate(self, label, *, prefer="right"):
-        """The value cell belonging to a text label (paper-xlsx): exact-then-normalized match over
-        this sheet, value = nearest non-label neighbour to the ``right``
-        (or ``below``). Zero matches raise
-        :class:`~openpyxl.errors.TargetNotFoundError`; multiple labels
-        or no locatable value raise
-        :class:`~openpyxl.errors.AmbiguousTargetError` listing every
-        candidate."""
-        from openpyxl.preserve.locate import locate as _locate
-
-        return _locate(self, label, prefer=prefer)
-
     def allowed_values(self, cell):
         """The data-validation vocabulary for ``cell`` (address string or
         Cell), or None when no list-type validation covers it
         (paper-xlsx)."""
-        from openpyxl.preserve.locate import allowed_values as _allowed
+        from openpyxl.preserve.validation import allowed_values as _allowed
 
         return _allowed(self, cell)
+
+    def append_table_row(self, table_name, values):
+        """Append one row to a supported named table atomically.
+
+        :param table_name: Name of the table to expand.
+        :type table_name: str
+        :param values: Row values as a sequence or column-name mapping.
+        :type values: iterable or mapping
+        :return: `None`.
+        :rtype: None
+        """
+        from openpyxl.preserve.tables import append_table_row
+
+        return append_table_row(self, table_name, values)
 
     def add_chart(self, chart, anchor=None):
         """
@@ -633,6 +787,8 @@ class Worksheet(_WorkbookChild):
         _refuse_chart_or_image_add(self, "chart")
         if anchor is not None:
             chart.anchor = anchor
+        for component in getattr(chart, "_charts", (chart,)):
+            component._parent_sheet = self
         self._charts.append(chart)
 
 
@@ -645,6 +801,23 @@ class Worksheet(_WorkbookChild):
         if anchor is not None:
             img.anchor = anchor
         self._images.append(img)
+
+    def replace_image(self, target, replacement, *, name=None):
+        """Replace one loaded image while preserving its drawing anchor.
+
+        :param target: Loaded image or its anchor coordinate.
+        :type target: openpyxl.drawing.image.Image or str
+        :param replacement: Replacement image or image source.
+        :type replacement: openpyxl.drawing.image.Image or path-like
+        :param name: Optional image name used to resolve an ambiguous anchor.
+        :type name: str or None
+        :return: The loaded image selected for replacement.
+        :rtype: openpyxl.drawing.image.Image
+        """
+        from openpyxl.preserve.images import request_replacement
+
+        return request_replacement(
+            self, target, replacement, name=name)
 
 
     def add_table(self, table):
@@ -677,6 +850,12 @@ class Worksheet(_WorkbookChild):
             range_string = cr.coord
         else:
             cr = CellRange(range_string)
+        ledger = getattr(self.parent, "_paper_ledger", None)
+        snapshot = None
+        if ledger is not None and ledger.armed:
+            from openpyxl.preserve.structural import _capture_structural_state
+
+            snapshot = _capture_structural_state(self.parent)
         if getattr(self.parent, "data_only", False):
             from openpyxl.workbook.workbook import \
                 _guard_data_only_range_mutation
@@ -686,9 +865,25 @@ class Worksheet(_WorkbookChild):
                 (cr.min_col, cr.min_row, cr.max_col, cr.max_row),
                 "merge_cells", anchor="{0}!{1}".format(
                     self.title, cr.coord))
-        mcr = MergedCellRange(self, range_string)
-        self.merged_cells.add(mcr)
-        self._clean_merge_range(mcr)
+        try:
+            if ledger is not None and ledger.armed:
+                from openpyxl.preserve.ledger import check_protection
+
+                for row in range(cr.min_row, cr.max_row + 1):
+                    for col in range(cr.min_col, cr.max_col + 1):
+                        cell = self._cells.get((row, col))
+                        if cell is None:
+                            cell = self.cell(row, col)
+                        check_protection(cell)
+            mcr = MergedCellRange(self, range_string)
+            self.merged_cells.add(mcr)
+            self._clean_merge_range(mcr)
+        except BaseException:
+            if snapshot is not None:
+                from openpyxl.preserve.structural import _restore_structural_state
+
+                _restore_structural_state(self.parent, snapshot)
+            raise
 
 
     def _clean_merge_range(self, mcr):
@@ -716,47 +911,46 @@ class Worksheet(_WorkbookChild):
         cr = CellRange(range_string=range_string, min_col=start_column, min_row=start_row,
                       max_col=end_column, max_row=end_row)
 
-        if cr.coord not in self.merged_cells:
-            raise ValueError("Cell range {0} is not merged".format(cr.coord))
-
-        self.merged_cells.remove(cr)
-
-        cells = cr.cells
-        next(cells) # skip first cell
-        for row, col in cells:
-            del self._cells[(row, col)]
-
-
-    def append(self, iterable):
-        cells = self._cells
-        before_cells = dict(cells)
-        before_row = self._current_row
         ledger = getattr(self.parent, "_paper_ledger", None)
-        transaction = None
-        bindings = []
+        snapshot = None
         if ledger is not None and ledger.armed:
             from openpyxl.preserve.structural import _capture_structural_state
 
-            transaction = _capture_structural_state(self.parent)
+            snapshot = _capture_structural_state(self.parent)
         try:
-            return self._append_impl(iterable, bindings)
-        except BaseException:
-            if transaction is not None:
-                from openpyxl.preserve.structural import \
-                    _restore_structural_state
+            if cr.coord not in self.merged_cells:
+                raise ValueError("Cell range {0} is not merged".format(cr.coord))
+            if ledger is not None and ledger.armed:
+                from openpyxl.preserve.ledger import check_protection
 
-                _restore_structural_state(self.parent, transaction)
-            else:
-                cells.clear()
-                cells.update(before_cells)
-                self._current_row = before_row
-            for cell, parent, row, column in bindings:
-                cell.parent = parent
-                cell.row = row
-                cell.column = column
+                anchor = self._cells.get((cr.min_row, cr.min_col))
+                if anchor is not None:
+                    check_protection(anchor)
+            self.merged_cells.remove(cr)
+
+            cells = cr.cells
+            next(cells) # skip first cell
+            for row, col in cells:
+                del self._cells[(row, col)]
+        except BaseException:
+            if snapshot is not None:
+                from openpyxl.preserve.structural import _restore_structural_state
+
+                _restore_structural_state(self.parent, snapshot)
             raise
 
-    def _append_impl(self, iterable, bindings=None):
+
+    def append(self, iterable):
+        transaction = _WorksheetAppendTransaction(self)
+        try:
+            result = self._append_impl(iterable, transaction)
+        except BaseException:
+            transaction.rollback()
+            raise
+        transaction.commit()
+        return result
+
+    def _append_impl(self, iterable, transaction=None):
         """Appends a group of values at the bottom of the current sheet.
 
         * If it's a list: all values are added in order, starting from the first column
@@ -775,18 +969,35 @@ class Worksheet(_WorkbookChild):
 
         """
         row_idx = self._current_row + 1
+        if row_idx > MAX_ROW:
+            from openpyxl.errors import BoundaryViolationError
+
+            raise BoundaryViolationError(
+                "append() would write row {0}, past Excel's {1}-row "
+                "worksheet limit. Nothing was changed.".format(
+                    row_idx, MAX_ROW))
 
         if (isinstance(iterable, (list, tuple, range))
             or isgenerator(iterable)):
             for col_idx, content in enumerate(iterable, 1):
+                if col_idx > MAX_COLUMN:
+                    from openpyxl.errors import BoundaryViolationError
+
+                    raise BoundaryViolationError(
+                        "append() would write column {0}, past Excel's "
+                        "{1}-column worksheet limit. Nothing was changed."
+                        .format(col_idx, MAX_COLUMN))
+                coordinate = (row_idx, col_idx)
+                if transaction is not None:
+                    transaction.capture_coordinate(coordinate)
                 if isinstance(content, Cell):
                     # compatible with write-only mode
                     cell = content
-                    if cell.parent and cell.parent != self:
-                        raise ValueError("Cells cannot be copied from other worksheets")
-                    if bindings is not None:
-                        bindings.append(
-                            (cell, cell.parent, cell.row, cell.column))
+                    if transaction is not None:
+                        transaction.capture_binding(cell)
+                    elif cell.parent and cell.parent != self:
+                        raise ValueError(
+                            "Cells cannot be copied from other worksheets")
                     cell.parent = self
                     cell.column = col_idx
                     cell.row = row_idx
@@ -794,15 +1005,29 @@ class Worksheet(_WorkbookChild):
                     # mark them here or the ledger misses the whole row
                     _mark_cell_dirty(cell)
                 else:
+                    if transaction is not None:
+                        transaction.capture_number_formats(content)
                     cell = Cell(self, row=row_idx, column=col_idx, value=content)
-                self._cells[(row_idx, col_idx)] = cell
+                self._cells[coordinate] = cell
 
         elif isinstance(iterable, dict):
             for col_idx, content in iterable.items():
                 if isinstance(col_idx, str):
                     col_idx = column_index_from_string(col_idx)
+                if not isinstance(col_idx, int) or not 1 <= col_idx <= \
+                        MAX_COLUMN:
+                    from openpyxl.errors import BoundaryViolationError
+
+                    raise BoundaryViolationError(
+                        "append() column keys must be integers from 1 to "
+                        "{0}; got {1!r}. Nothing was changed.".format(
+                            MAX_COLUMN, col_idx))
+                coordinate = (row_idx, col_idx)
+                if transaction is not None:
+                    transaction.capture_coordinate(coordinate)
+                    transaction.capture_number_formats(content)
                 cell = Cell(self, row=row_idx, column=col_idx, value=content)
-                self._cells[(row_idx, col_idx)] = cell
+                self._cells[coordinate] = cell
 
         else:
             self._invalid_row(iterable)

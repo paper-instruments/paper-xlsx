@@ -4,11 +4,9 @@
 # Python stdlib imports
 import datetime
 import re
-import warnings
 from zipfile import ZipFile, ZIP_DEFLATED
 
 # package imports
-from openpyxl.errors import LossySaveWarning
 from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.xml.constants import (
     ARC_ROOT_RELS,
@@ -304,24 +302,6 @@ def save_workbook(workbook, filename, *, allow_formula_loss=False):
         from openpyxl.preserve.saver import save_preserved
         return save_preserved(workbook, filename,
                               allow_formula_loss=allow_formula_loss)
-
-    if workbook.data_only and not allow_formula_loss:
-        # the data_only self-destruct: the model holds cached
-        # values, not formulas — this save flattens the whole formula graph
-        warnings.warn(LossySaveWarning(
-            "This workbook was loaded with data_only=True: it holds cached "
-            "values instead of formulas, and this save PERMANENTLY replaces "
-            "every formula with its last cached value. Reload without "
-            "data_only=True to keep formulas, or pass "
-            "allow_formula_loss=True to silence this warning.",
-            [{"kind": "formulas", "location": "workbook",
-              "detail": "all formulas replaced by cached values"}]),
-            stacklevel=2)
-
-    inventory = getattr(workbook, "_paper_loss_inventory", None)
-    if inventory:
-        warnings.warn(LossySaveWarning(inventory.render(), inventory.losses),
-                      stacklevel=2)
 
     archive = ZipFile(filename, 'w', ZIP_DEFLATED, allowZip64=True)
     workbook.properties.modified = datetime.datetime.now(tz=datetime.timezone.utc).replace(tzinfo=None)

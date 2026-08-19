@@ -217,43 +217,6 @@ class TestSheetLifecycle:
         assert ws not in led.renames             # no cascade recorded
 
 
-class TestMarkDirty:
-
-    def test_range_form(self, preserved):
-        wb, led = preserved
-        wb.mark_dirty("Model!B2:C3")
-        assert {(2, 2), (2, 3), (3, 2), (3, 3)} == dirty(led, wb["Model"])
-
-    def test_single_cell_and_quoted_title(self, preserved):
-        wb, led = preserved
-        wb.mark_dirty("'Model'!B7")
-        assert (7, 2) in dirty(led, wb["Model"])
-
-    def test_part_form(self, preserved):
-        wb, led = preserved
-        with pytest.raises(UnsupportedStructureError, match="replace_part"):
-            wb.mark_dirty("xl/media/image1.png")
-        assert led.parts == set()
-
-    def test_unknown_sheet_and_part_raise_target_not_found(self, preserved):
-        wb, _ = preserved
-        with pytest.raises(TargetNotFoundError):
-            wb.mark_dirty("Nope!A1")
-        with pytest.raises(TargetNotFoundError):
-            wb.mark_dirty("xl/media/missing.png")
-
-    def test_stock_workbook_raises_value_error(self, fixture_copy):
-        wb = load_workbook(
-            fixture_copy("minimal/minimal_clean.xlsx"), preserve=False)
-        with pytest.raises(ValueError, match="preserve=True"):
-            wb.mark_dirty("Sheet1!A1")
-
-    def test_non_string_raises_type_error(self, preserved):
-        wb, _ = preserved
-        with pytest.raises(TypeError):
-            wb.mark_dirty(42)
-
-
 class TestStyleRegistryGuard:
 
     def test_in_place_mutation_of_shared_style_detected(self, preserved):
@@ -291,8 +254,7 @@ class TestSheetLifecycleCascade:
         victim_title = next(t for t in wb.sheetnames
                             if t not in ("Model", "Data", "Summary")
                             and not wb[t]._charts)
-        report = wb.remove(wb[victim_title])
-        assert report is not None
+        assert wb.remove(wb[victim_title]) is None
         out = str(tmp_path / "o.xlsx")
         wb.save(out)
         wb2 = _load(out)

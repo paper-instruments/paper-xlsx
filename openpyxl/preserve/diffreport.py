@@ -72,11 +72,11 @@ def diff_workbooks(a, b, remaps=()):
     the structural edits performed between the two states — differences
     explained by a remap classify as "shifted", the rest as "changed"."""
     from openpyxl.reader.excel import load_workbook
-    from openpyxl.preserve.limits import read_bounded
+    from openpyxl.preserve.sourceio import read_source_bytes
     from openpyxl.preserve.zipguard import validate_package_bytes
 
     def _load(source):
-        payload = read_bounded(source, context="workbook diff input")
+        payload = read_source_bytes(source, context="workbook diff input")
         validate_package_bytes(payload, context="workbook diff input")
         return load_workbook(io.BytesIO(payload))
 

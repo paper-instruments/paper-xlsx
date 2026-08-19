@@ -2,6 +2,48 @@ Unreleased
 ==========
 
 
+paper-xlsx 0.2.0 (2026-08-14)
+================================
+
+Breaking changes
+----------------
+
+* Remove heuristic or policy APIs that could make unsupported semantic claims
+  or broad workbook mutations: ``Workbook.model_map()``, ``findings()``,
+  ``Workbook.protect_for_delivery()``, ``apply_profile()``, and
+  ``Workbook.scrub()``.
+* Remove guessed-target and raw mutation escape hatches:
+  ``Worksheet.locate()``, ``Workbook.set_input()``, ``Workbook.mark_dirty()``,
+  and ``Workbook.replace_part()``.
+* Remove formula linting, ``Workbook.evaluate()``, in-place oracle
+  recalculation, and public exports of preservation implementation objects.
+  Explicit cell/style operations, objective ``scan_errors()``, and
+  explicit-source oracle operations remain available.
+* Remove certification-gated oracle cache write-back and its uncertified
+  override. ``oracle.recalc(..., output_path=...)`` now creates a separate
+  Paper-preserved candidate instead of mutating a source or delivering a full
+  LibreOffice rewrite.
+
+Changes
+-------
+
+* Replace whole-ledger and whole-sheet mutation snapshots with local rollback
+  journals for cell binding and ``Worksheet.append()``.
+* Add atomic ``Worksheet.append_table_row()``, isolated
+  ``Worksheet.replace_image()``, and explicitly scoped pivot refresh requests.
+* Compose structural and chart edits, remove stale chart caches, and report
+  safety-derived changes in version 2 edit receipts.
+* Preflight ``Chart.repoint()`` before model mutation, make ``copy_format()``
+  range-transactional and protection-aware, narrow ``allowed_values()`` to
+  exact deterministic sources, and tokenize formula operands in
+  ``scan_errors()``.
+* Make ``validate()`` run the save planner without assembling an archive.
+* Restore ``preserve=False`` compatibility and remove Paper-defined archive
+  eligibility caps while retaining ZIP integrity validation.
+* Remove heuristic, delivery-convenience, raw-part, workbook-evaluation, and
+  formula-lint APIs that do not have a closed preservation contract.
+
+
 paper-xlsx 0.1.3 (2026-07-14)
 ===============================
 

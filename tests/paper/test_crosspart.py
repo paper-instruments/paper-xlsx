@@ -384,14 +384,6 @@ class TestV0CrosspartRefusals:
         wb2 = load_workbook(out)
         assert "T2" in wb2["Data"].tables
 
-    def test_mark_dirty_part_refuses(self, fixture_copy, tmp_path):
-        src = fixture_copy(GAUNTLET)
-        wb = load_workbook(src, preserve=True)
-        with pytest.raises(UnsupportedStructureError, match="mark_dirty"):
-            wb.mark_dirty("xl/media/image1.png")
-        wb.save(str(tmp_path / "o.xlsx"))
-
-
 class TestStyleTranslation:
     """Model style numbering drifts from the file's on non-openpyxl
     producers (numFmt normalization, Normal-style bootstrap at load) —

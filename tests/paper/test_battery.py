@@ -470,12 +470,11 @@ class TestBatteryToday:
     # job 10: CORRECT table append discipline (flipped
     # from the refusal by the lifecycle engine + table verbs).
     def test_job10_table_append_is_correct(self, fixture_copy, tmp_path):
-        from openpyxl.preserve.tables import append_row
-
         src = fixture_copy("features/tables.xlsx")
         wb = load_workbook(src, preserve=True)
         ws = wb.worksheets[0]
-        append_row(ws, "RegionTable", {"Region": "Central", "Amount": 60})
+        ws.append_table_row(
+            "RegionTable", {"Region": "Central", "Amount": 60})
         out = str(tmp_path / "o.xlsx")
         wb.save(out)
         parts = part_payloads(out)
@@ -522,18 +521,10 @@ class TestBatteryToday:
         # the copied comment landed via the added-sheet generator
         assert copied["B8"].comment is not None
 
-    # job 12 — today: no scenario API. wb.evaluate.
-    # job 12: one evaluate call,
-    # certified (the full LibreOffice path runs in test_compute.py; this
-    # job pins the API surface and the preserve requirement)
-    def test_job12_evaluate_api_exists(self, fixture_copy):
-        from openpyxl.workbook import Workbook
+    def test_job12_explicit_evaluate_api_exists(self):
+        from openpyxl import oracle
 
-        assert callable(Workbook.evaluate)
-        wb = load_workbook(
-            fixture_copy("features/schedule_calc.xlsx"), preserve=False)
-        with pytest.raises(ValueError, match="preserve"):
-            wb.evaluate(set={"Schedule!B2": 1}, read=["Summary!B1"])
+        assert callable(oracle.evaluate)
 
     # job 13: typed refusal naming the
     # encryption and the decrypt route, on both load arms.
@@ -739,44 +730,27 @@ class TestBatteryToday:
         wb2 = load_workbook(out)
         assert len(wb2["Model"]._charts) == before + 1
 
-    # job 23: ws.locate answers by
-    # label, correct or AmbiguousTargetError (the pinned class earns
-    # its keep — the debt is paid)
-    def test_job23_locate_by_label(self, fixture_copy):
-        from openpyxl.errors import AmbiguousTargetError
-
-        wb = load_workbook(fixture_copy("features/schedule.xlsx"))
-        ws = wb["Summary"]
-        cell = ws.locate("Grand total")
-        assert cell.data_type == "f"          # the value next to a label
-        ws["A7"] = "Grand total"              # now ambiguous
-        with pytest.raises(AmbiguousTargetError) as exc:
-            ws.locate("Grand total")
-        assert exc.value.kind == "ambiguous-label"
-        assert len(exc.value.options) == 2    # every candidate listed
-
-    # job 24: write-back exists and is
-    # CERTIFICATION-GATED; the full LibreOffice path is exercised in
-    # test_compute.py (this job pins the behavior without needing soffice)
-    def test_job24_oracle_writeback_certification_gated(
+    # job 24: recalculation materializes only a separate preserved candidate;
+    # the full LibreOffice path is exercised in test_oracle.py.
+    def test_job24_oracle_recalc_preserves_source(
             self, fixture_copy, tmp_path, monkeypatch):
         from openpyxl import oracle
-        from openpyxl.errors import UnsupportedStructureError
 
-        assert callable(oracle.write_back)
-        src = fixture_copy("features/schedule_calc.xlsx")
+        src = fixture_copy("features/schedule.xlsx")
+        computed = fixture_copy("features/schedule_calc.xlsx")
+        with open(computed, "rb") as f:
+            computed_bytes = f.read()
+        monkeypatch.setattr(
+            oracle, "_recalculate_bytes",
+            lambda data, timeout, suffix=".xlsx", profile_root=None:
+                computed_bytes)
         with open(src, "rb") as f:
             before = f.read()
-        # a DIVERGED certification refuses without allow_uncertified
-        monkeypatch.setattr(
-            oracle, "_certify_impl",
-            lambda data, timeout, recalculated=None, input_seeds=None: (
-                oracle.CertificationResult(
-                    oracle.CertificationResult.DIVERGED, 3,
-                    [{"address": "Schedule!B12", "cached": 1,
-                      "computed": 2}], [], []), b""))
-        with pytest.raises(UnsupportedStructureError,
-                           match="certification-gated"):
-            oracle.write_back(src)
+        out = tmp_path / "candidate.xlsx"
+        result = oracle.recalc(src, output_path=out)
+        assert result.written == [
+            "Schedule!B12", "Schedule!B13", "Summary!B1"]
         with open(src, "rb") as f:
-            assert f.read() == before               # atomic
+            assert f.read() == before
+        assert load_workbook(out, data_only=True)["Summary"]["B1"].value \
+            == 6500

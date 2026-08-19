@@ -5,11 +5,6 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.package import diff_cells
 from openpyxl.preserve.perception import dependency_sketch
 
-
-def test_workbook_has_no_manifest_api():
-    assert not hasattr(Workbook(), "manifest")
-
-
 class TestDiffCells:
 
     def test_value_and_formula_changes(self, fixture_copy, tmp_path):

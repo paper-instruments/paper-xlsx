@@ -1,5 +1,4 @@
-"""Preserve-mode load — byte retention, flag semantics, and the
-lossy-save warning."""
+"""Preserve-mode load — byte retention and flag semantics."""
 from __future__ import annotations
 
 import io
@@ -9,9 +8,26 @@ import warnings
 import pytest
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.errors import LossySaveWarning, PaperRefusal, UnsupportedStructureError
+from openpyxl.errors import PaperRefusal, UnsupportedStructureError
 from openpyxl.reader.excel import _preserve_by_default
 from openpyxl.utils.exceptions import InvalidFileException
+
+
+def test_file_like_default_sniffs_ooxml_and_restores_position(
+        fixture_copy):
+    with open(fixture_copy("minimal/minimal_clean.xlsx"), "rb") as handle:
+        stream = io.BytesIO(handle.read())
+    stream.name = "misleading.xlsb"
+    stream.seek(37)
+    assert _preserve_by_default(stream, False) is True
+    assert stream.tell() == 37
+    assert not stream.closed
+
+    non_ooxml = io.BytesIO(b"not a zip")
+    non_ooxml.name = "misleading.xlsx"
+    non_ooxml.seek(3)
+    assert _preserve_by_default(non_ooxml, False) is False
+    assert non_ooxml.tell() == 3
 
 
 class TestPreserveLoad:
@@ -113,33 +129,35 @@ class TestPreserveLoad:
                 if "extension is not supported" in str(w.message)]
 
 
-class TestLossySaveWarning:
+class TestStockCompatibility:
 
-    def test_rich_file_stock_save_warns_with_structured_losses(
+    def test_rich_file_stock_save_emits_no_paper_warning(
             self, fixture_copy, tmp_path):
         src = fixture_copy("gauntlet/gauntlet.xlsx")
         wb = load_workbook(src, preserve=False)
         out = str(tmp_path / "out.xlsx")
-        with pytest.warns(LossySaveWarning) as record:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             wb.save(out)
-        w = record.list[0].message
-        assert "preserve=True" in str(w)                    # names the remedy
-        kinds = {loss["kind"] for loss in w.losses}
-        assert "worksheet-extension" in kinds
-        assert any("Sparkline" in loss["detail"] for loss in w.losses)
+        assert not [w for w in caught
+                    if w.message.__class__.__module__ == "openpyxl.errors"]
 
-    def test_vba_loss_warned_and_keep_vba_silences_it(self, fixture_copy, tmp_path):
+    def test_vba_stock_save_emits_no_paper_warning(
+            self, fixture_copy, tmp_path):
         src = fixture_copy("features/macro_stub.xlsm")
         wb = load_workbook(src, preserve=False)
-        with pytest.warns(LossySaveWarning) as record:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             wb.save(str(tmp_path / "o1.xlsm"))
-        assert "vba" in {loss["kind"] for loss in record.list[0].message.losses}
+        assert not [w for w in caught
+                    if w.message.__class__.__module__ == "openpyxl.errors"]
 
         wb2 = load_workbook(src, keep_vba=True, preserve=False)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             wb2.save(str(tmp_path / "o2.xlsm"))
-        assert not [w for w in caught if isinstance(w.message, LossySaveWarning)]
+        assert not [w for w in caught
+                    if w.message.__class__.__module__ == "openpyxl.errors"]
 
     def test_clean_file_stock_save_stays_silent(self, fixture_copy, tmp_path):
         wb = load_workbook(
@@ -147,7 +165,8 @@ class TestLossySaveWarning:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             wb.save(str(tmp_path / "out.xlsx"))
-        assert not [w for w in caught if isinstance(w.message, LossySaveWarning)]
+        assert not [w for w in caught
+                    if w.message.__class__.__module__ == "openpyxl.errors"]
 
     def test_fresh_workbook_save_stays_silent(self, tmp_path):
         wb = Workbook()
@@ -155,4 +174,5 @@ class TestLossySaveWarning:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             wb.save(str(tmp_path / "out.xlsx"))
-        assert not [w for w in caught if isinstance(w.message, LossySaveWarning)]
+        assert not [w for w in caught
+                    if w.message.__class__.__module__ == "openpyxl.errors"]

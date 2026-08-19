@@ -9,6 +9,15 @@ Bachtal
 import re
 
 
+# Formula-token and cached-value scanners use one vocabulary. These are
+# literal worksheet error operands, not judgments about formula correctness.
+EXCEL_ERROR_CODES = (
+    "#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A",
+    "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#UNKNOWN!",
+    "#CONNECT!", "#BUSY!", "#PYTHON!", "#GETTING_DATA",
+)
+
+
 class TokenizerError(Exception):
     """Base class for all Tokenizer errors."""
 
@@ -38,8 +47,7 @@ class Tokenizer:
         '"': re.compile('"(?:[^"]*"")*[^"]*"(?!")'),
         "'": re.compile("'(?:[^']*'')*[^']*'(?!')"),
     }
-    ERROR_CODES = ("#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?",
-                   "#NUM!", "#N/A", "#GETTING_DATA")
+    ERROR_CODES = EXCEL_ERROR_CODES
     TOKEN_ENDERS = ',;}) +-*/^&=><%'  # Each of these characters, marks the
                                        # end of an operand token
 

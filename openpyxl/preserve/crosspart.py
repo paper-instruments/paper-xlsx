@@ -39,10 +39,11 @@ class Node:
         return name.split(":", 1)[1] if ":" in name else name
 
 
-def scan_small(data, expected_root, max_depth=3):
+def scan_small(data, expected_root, max_depth=3, *, allow_prefixed_root=False):
     """Compact span scanner for small XML parts (workbook.xml, styles.xml,
     [Content_Types].xml, rels). Records children down to ``max_depth``.
-    Refuses prefixed roots — byte edits would land outside the schema."""
+    Refuses prefixed roots unless a caller has independently validated the
+    expanded root name and explicitly opts in."""
     pos = 0
     if data[:3] == b"\xef\xbb\xbf":
         pos = 3
@@ -106,7 +107,7 @@ def scan_small(data, expected_root, max_depth=3):
                     value.decode("utf-8"))
 
         if root is None:
-            if b":" in raw_name:
+            if b":" in raw_name and not allow_prefixed_root:
                 raise ScanRefusal(
                     "cannot edit this part: its root element is namespace-"
                     "prefixed ({0!r})".format(raw_name.decode("latin-1")))
