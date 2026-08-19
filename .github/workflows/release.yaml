@@ -16,6 +16,8 @@ jobs:
   preflight:
     name: Verify release tag
     runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -32,6 +34,7 @@ jobs:
           python -m pip install packaging setuptools
           python -m pip install -e .
       - name: Verify tag, versions, and main ancestry
+        id: version
         shell: bash
         run: |
           set -euo pipefail
@@ -42,7 +45,10 @@ jobs:
           from packaging.version import Version
 
           tag_version = os.environ["TAG_VERSION"]
-          assert str(Version(tag_version)) == tag_version
+          version = Version(tag_version)
+          assert str(version) == tag_version
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"prerelease={str(version.is_prerelease).lower()}", file=output)
           PY
           test "$(python setup.py --version)" = "${TAG_VERSION}"
           test "$(python -c 'import openpyxl; print(openpyxl.__paper_version__)')" = "${TAG_VERSION}"
@@ -76,7 +82,9 @@ jobs:
 
   github-release:
     name: Create GitHub release
-    needs: pypi
+    needs:
+      - preflight
+      - pypi
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -89,8 +97,14 @@ jobs:
       - name: Create release with generated notes
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
         run: |
+          prerelease_args=()
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            prerelease_args+=(--prerelease)
+          fi
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
-            --generate-notes
+            --generate-notes \
+            "${prerelease_args[@]}"
