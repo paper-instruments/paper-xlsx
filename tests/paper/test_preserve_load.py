@@ -13,6 +13,23 @@ from openpyxl.reader.excel import _preserve_by_default
 from openpyxl.utils.exceptions import InvalidFileException
 
 
+def test_file_like_default_sniffs_ooxml_and_restores_position(
+        fixture_copy):
+    with open(fixture_copy("minimal/minimal_clean.xlsx"), "rb") as handle:
+        stream = io.BytesIO(handle.read())
+    stream.name = "misleading.xlsb"
+    stream.seek(37)
+    assert _preserve_by_default(stream, False) is True
+    assert stream.tell() == 37
+    assert not stream.closed
+
+    non_ooxml = io.BytesIO(b"not a zip")
+    non_ooxml.name = "misleading.xlsx"
+    non_ooxml.seek(3)
+    assert _preserve_by_default(non_ooxml, False) is False
+    assert non_ooxml.tell() == 3
+
+
 class TestPreserveLoad:
 
     def test_blob_retained_equals_source_bytes(self, fixture_copy):

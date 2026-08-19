@@ -352,3 +352,118 @@ class TestChartPropertyEdits:
             payload for name, payload in part_payloads(out).items()
             if name.startswith("xl/charts/chart"))
         assert b"Model!$D$1:$D$4" in chart_xml
+
+
+def test_image_replacement_retargets_one_relationship_and_keeps_old_media(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    with zipfile.ZipFile(source) as archive:
+        old_media = archive.read("xl/media/image1.png")
+        old_rels = archive.read("xl/drawings/_rels/drawing1.xml.rels")
+    replacement = tmp_path / "replacement.png"
+    replacement.write_bytes(old_media)
+
+    workbook = load_workbook(source, preserve=True)
+    selected = workbook["Model"].replace_image("H20", replacement)
+    assert selected is workbook["Model"]._images[0]
+    output = tmp_path / "replaced.xlsx"
+    workbook.save(output)
+
+    with zipfile.ZipFile(output) as archive:
+        assert archive.read("xl/media/image1.png") == old_media
+        assert archive.read("xl/media/image2.png") == old_media
+        new_rels = archive.read("xl/drawings/_rels/drawing1.xml.rels")
+    assert new_rels != old_rels
+    assert b'Target="/xl/media/image2.png"' in new_rels
+
+
+def test_image_replacement_preserves_relative_relationship_form(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    relative = tmp_path / "relative-image.xlsx"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(relative, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == "xl/drawings/_rels/drawing1.xml.rels":
+                payload = payload.replace(
+                    b'Target="/xl/media/image1.png"',
+                    b'Target="../media/image1.png"')
+            zout.writestr(info, payload)
+
+    with zipfile.ZipFile(relative) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement-relative.png"
+    replacement.write_bytes(media)
+
+    workbook = load_workbook(relative, preserve=True)
+    workbook["Model"].replace_image("H20", replacement)
+    output = tmp_path / "relative-replaced.xlsx"
+    workbook.save(output)
+
+    with zipfile.ZipFile(output) as archive:
+        rels = archive.read("xl/drawings/_rels/drawing1.xml.rels")
+    assert b'Target="../media/image2.png"' in rels
+
+
+def test_image_replacement_receipt_reports_specific_cause(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    with zipfile.ZipFile(source) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement.png"
+    replacement.write_bytes(media)
+
+    workbook = load_workbook(source, preserve=True)
+    workbook["Model"].replace_image("H20", replacement)
+    receipt = workbook.save(tmp_path / "replaced.xlsx", receipt=True)
+
+    assert any(
+        effect == {
+            "kind": "relationship_changed",
+            "part": "xl/drawings/_rels/drawing1.xml.rels",
+            "cause": "image_replaced",
+        }
+        for effect in receipt.derived_effects
+    )
+
+
+def test_image_replacement_refuses_shared_drawing_relationship(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    shared = tmp_path / "shared-image-relationship.xlsx"
+    drawing_part = "xl/drawings/drawing1.xml"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(shared, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == drawing_part:
+                start = payload.index(
+                    b"<oneCellAnchor><from><col>7</col><colOff>0</colOff>"
+                    b"<row>19</row>")
+                end = payload.index(b"</oneCellAnchor>", start) \
+                    + len(b"</oneCellAnchor>")
+                duplicate = payload[start:end]
+                duplicate = duplicate.replace(
+                    b"<row>19</row>", b"<row>29</row>", 1)
+                duplicate = duplicate.replace(
+                    b'id="2" name="Image 2"',
+                    b'id="3" name="Image 3"', 1)
+                payload = payload.replace(
+                    b"</wsDr>", duplicate + b"</wsDr>")
+            zout.writestr(info, payload)
+
+    with zipfile.ZipFile(shared) as archive:
+        media = archive.read("xl/media/image1.png")
+    replacement = tmp_path / "replacement-shared.png"
+    replacement.write_bytes(media)
+    workbook = load_workbook(shared, preserve=True)
+    images = workbook["Model"]._images
+    assert len(images) == 2
+    assert {image._paper_rel_id for image in images} == {"rId2"}
+
+    with pytest.raises(
+            UnsupportedStructureError,
+            match="shares drawing relationship") as caught:
+        workbook["Model"].replace_image("H20", replacement)
+
+    assert caught.value.kind == "shared-image-relationship"
+    assert not workbook._paper_ledger.image_replacements

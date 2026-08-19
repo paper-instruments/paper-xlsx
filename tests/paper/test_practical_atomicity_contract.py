@@ -1,3 +1,5 @@
+from copy import copy
+import datetime
 import io
 import warnings
 
@@ -5,6 +7,10 @@ import pytest
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.errors import UnsupportedStructureError
+
+
+class _Interrupt(BaseException):
+    pass
 
 
 def _preserved_workbook():
@@ -250,3 +256,165 @@ def test_table_append_invalid_value_happens_before_commit(tmp_path):
     after = io.BytesIO()
     workbook.save(after)
     assert after.getvalue() == before.getvalue()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, _Interrupt])
+def test_datetime_bind_failure_restores_cell_registry_and_ledger(
+        monkeypatch, failure):
+    import openpyxl.cell.cell as cell_module
+
+    workbook = _preserved_workbook()
+    sheet = workbook["Data"]
+    cell = sheet["A1"]
+    ledger = workbook._paper_ledger
+    ledger.cells[sheet] = {(9, 9)}
+    ledger.value_overwrites[sheet] = {(8, 8)}
+    ledger.cache_writes[sheet] = {(1, 1): 42, (7, 7): 7}
+    cells_bucket = ledger.cells[sheet]
+    overwrite_bucket = ledger.value_overwrites[sheet]
+    cache_bucket = ledger.cache_writes[sheet]
+    before_style = copy(cell._style)
+    registry = workbook._number_formats
+    before_registry = list(registry)
+    before_index = dict(registry._dict)
+    index_identity = registry._dict
+    before_clean = registry.clean
+    real_mark = cell_module._mark_cell_dirty
+
+    def fail_after_mark(*args, **kwargs):
+        real_mark(*args, **kwargs)
+        raise failure("injected")
+
+    monkeypatch.setattr(cell_module, "_mark_cell_dirty", fail_after_mark)
+    with pytest.raises(failure):
+        cell.value = datetime.datetime(2026, 8, 13, 12, 30)
+
+    assert (cell.value, cell.data_type, cell._style) == (1, "n", before_style)
+    assert cell.number_format == "General"
+    assert list(registry) == before_registry
+    assert registry._dict is index_identity
+    assert dict(registry._dict) == before_index
+    assert registry.clean == before_clean
+    assert ledger.cells[sheet] is cells_bucket
+    assert ledger.value_overwrites[sheet] is overwrite_bucket
+    assert ledger.cache_writes[sheet] is cache_bucket
+    assert cells_bucket == {(9, 9)}
+    assert overwrite_bucket == {(8, 8)}
+    assert cache_bucket == {(1, 1): 42, (7, 7): 7}
+
+
+def test_successful_cell_edit_invalidates_only_its_staged_cache():
+    workbook = _preserved_workbook()
+    sheet = workbook["Data"]
+    cache = {(1, 1): 42, (7, 7): 7}
+    workbook._paper_ledger.cache_writes[sheet] = cache
+
+    sheet["A1"] = 2
+
+    assert workbook._paper_ledger.cache_writes[sheet] is cache
+    assert cache == {(7, 7): 7}
+
+
+def test_explicit_number_format_failure_restores_registry(monkeypatch):
+    import openpyxl.styles.styleable as styleable
+
+    workbook = _preserved_workbook()
+    cell = workbook["Data"]["A1"]
+    before_style = copy(cell._style)
+    registry = workbook._number_formats
+    before = (list(registry), dict(registry._dict), registry.clean)
+    real_mark = styleable._mark_styleable_dirty
+
+    def fail_after_mark(*args, **kwargs):
+        real_mark(*args, **kwargs)
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(styleable, "_mark_styleable_dirty", fail_after_mark)
+    with pytest.raises(RuntimeError, match="injected"):
+        cell.number_format = '0.0000 "units"'
+
+    assert cell._style == before_style
+    assert cell.number_format == "General"
+    assert (list(registry), dict(registry._dict), registry.clean) == before
+
+
+def test_merged_interior_number_format_assignment_is_atomic(tmp_path,
+                                                            monkeypatch):
+    import openpyxl.styles.styleable as styleable
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.merge_cells("A1:B1")
+    source = tmp_path / "merged.xlsx"
+    workbook.save(source)
+
+    workbook = load_workbook(source, preserve=True)
+    sheet = workbook.active
+    interior = sheet["B1"]
+    registry = workbook._number_formats
+    before_style = copy(interior._style)
+    before_registry = (list(registry), dict(registry._dict), registry.clean)
+    real_mark = styleable._mark_styleable_dirty
+
+    def fail_after_mark(*args, **kwargs):
+        real_mark(*args, **kwargs)
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(styleable, "_mark_styleable_dirty", fail_after_mark)
+    with pytest.raises(RuntimeError, match="injected"):
+        interior.number_format = '0.0000 "units"'
+
+    assert interior._style == before_style
+    assert interior.number_format == "General"
+    assert (list(registry), dict(registry._dict), registry.clean) \
+        == before_registry
+    assert workbook._paper_ledger.cells.get(sheet, set()) == set()
+
+
+def test_merged_interior_number_format_assignment_saves(tmp_path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.merge_cells("A1:B1")
+    source = tmp_path / "merged.xlsx"
+    workbook.save(source)
+
+    workbook = load_workbook(source, preserve=True)
+    interior = workbook.active["B1"]
+    interior.number_format = "0.00"
+    assert interior.number_format == "0.00"
+    output = tmp_path / "formatted.xlsx"
+    workbook.save(output)
+    assert output.exists()
+
+
+def test_append_refuses_reentrancy_and_rolls_back_partial_row():
+    workbook = _preserved_workbook()
+    sheet = workbook["Data"]
+    before_cells = dict(sheet._cells)
+    before_row = sheet._current_row
+
+    def values():
+        yield 2
+        sheet.append([99])
+
+    with pytest.raises(RuntimeError, match="re-entrant"):
+        sheet.append(values())
+    assert sheet._cells == before_cells
+    assert sheet._current_row == before_row
+
+
+def test_append_rollback_does_not_revert_generator_edit_on_other_sheet():
+    workbook = _preserved_workbook()
+    target = workbook["Data"]
+    other = workbook["Other"]
+    before_cells = dict(target._cells)
+
+    def values():
+        yield 2
+        other["A1"] = "unrelated"
+        raise RuntimeError("generator failed")
+
+    with pytest.raises(RuntimeError, match="generator failed"):
+        target.append(values())
+    assert target._cells == before_cells
+    assert other["A1"].value == "unrelated"

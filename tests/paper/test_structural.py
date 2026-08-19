@@ -1,7 +1,9 @@
 """The structural-edit guard — reference-aware preserve behavior."""
 from __future__ import annotations
 
+import re
 import warnings
+import zipfile
 
 import pytest
 
@@ -256,3 +258,75 @@ class TestStructuredRefs:
         wb.save(out)
         wb2 = load_workbook(out)
         assert wb2["Summary"]["C1"].value == "=SUM(RegionTable[Amount])"
+
+
+def test_sheet_rename_composes_with_internal_hyperlinks(tmp_path):
+    from openpyxl.worksheet.hyperlink import Hyperlink
+
+    workbook = Workbook()
+    target = workbook.active
+    target.title = "Old Name"
+    target["A1"] = "target"
+    summary = workbook.create_sheet("Summary")
+    summary["A1"] = "jump"
+    summary["A1"].hyperlink = Hyperlink(
+        ref="A1", location="'Old Name'!A1", display="jump")
+    summary["A2"] = "external"
+    summary["A2"].hyperlink = "https://example.com/path"
+    source = tmp_path / "hyperlink-rename.xlsx"
+    workbook.save(source)
+
+    workbook = load_workbook(source, preserve=True)
+    workbook["Old Name"].title = "New Name"
+    output = tmp_path / "renamed.xlsx"
+    workbook.save(output)
+    reopened = load_workbook(output)
+
+    assert reopened["Summary"]["A1"].hyperlink.location == \
+        "'New Name'!A1"
+    assert reopened["Summary"]["A2"].hyperlink.target == \
+        "https://example.com/path"
+
+
+def test_data_validation_range_edit_preserves_omitted_defaults(tmp_path):
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    workbook = Workbook()
+    validation = DataValidation(type="whole", formula1="1")
+    workbook.active.add_data_validation(validation)
+    validation.add("A1")
+    generated = tmp_path / "generated.xlsx"
+    workbook.save(generated)
+
+    source = tmp_path / "producer.xlsx"
+    omitted = (b"allowBlank", b"showDropDown", b"showInputMessage",
+               b"showErrorMessage")
+    with zipfile.ZipFile(generated) as zin, zipfile.ZipFile(source, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                for name in omitted:
+                    payload = re.sub(
+                        rb"\s+" + name + rb'=(?:"[^"]*"|\'[^\']*\')',
+                        b"", payload)
+            zout.writestr(info, payload)
+
+    with zipfile.ZipFile(source) as archive:
+        before_sheet = archive.read("xl/worksheets/sheet1.xml")
+    before = before_sheet[
+        before_sheet.index(b"<dataValidations"):
+        before_sheet.index(b"</dataValidations>") + 18]
+
+    workbook = load_workbook(source, preserve=True)
+    workbook.active.data_validations.dataValidation[0].sqref = "B2"
+    output = tmp_path / "edited.xlsx"
+    workbook.save(output)
+    with zipfile.ZipFile(output) as archive:
+        after_sheet = archive.read("xl/worksheets/sheet1.xml")
+    after = after_sheet[
+        after_sheet.index(b"<dataValidations"):
+        after_sheet.index(b"</dataValidations>") + 18]
+
+    assert after == before.replace(b'sqref="A1"', b'sqref="B2"')
+    for name in omitted:
+        assert name + b"=" not in after

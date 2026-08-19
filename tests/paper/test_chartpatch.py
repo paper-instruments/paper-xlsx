@@ -111,3 +111,35 @@ class TestChartShift:
         assert b"<f>'Model'!$C$2</f>" in chart
         assert b"<f>'Model'!C1</f>" in chart
         assert load_workbook(out)["Model"]["C2"].value == 100
+
+
+def test_chart_repoint_removes_only_its_matching_cache(
+        fixture_copy, tmp_path):
+    source = fixture_copy("features/chart_image.xlsx")
+    cached = tmp_path / "chart-caches.xlsx"
+    first = b"<f>'Model'!$B$2</f>"
+    second = b"<f>'Model'!$C$2</f>"
+    cache_10 = (
+        b"<numCache><formatCode>General</formatCode><ptCount val=\"1\"/>"
+        b"<pt idx=\"0\"><v>10</v></pt></numCache>")
+    cache_20 = cache_10.replace(b">10<", b">20<")
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(cached, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename.startswith("xl/charts/chart"):
+                payload = payload.replace(first, first + cache_10, 1)
+                payload = payload.replace(second, second + cache_20, 1)
+            zout.writestr(info, payload)
+
+    workbook = load_workbook(cached, preserve=True)
+    workbook["Model"]._charts[0].repoint(0, "Model!$D$1:$D$4")
+    output = tmp_path / "chart-repoint.xlsx"
+    receipt = workbook.save(output, receipt=True)
+    with zipfile.ZipFile(output) as archive:
+        chart = archive.read("xl/charts/chart1.xml")
+
+    assert chart.count(b"<numCache>") == 1
+    assert b"<v>20</v>" in chart
+    assert b"<v>10</v>" not in chart
+    assert any(effect["kind"] == "chart_cache_removed"
+               for effect in receipt.derived_effects)

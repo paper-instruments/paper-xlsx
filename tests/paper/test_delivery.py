@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import warnings
 import zipfile
 
@@ -401,3 +402,49 @@ def test_spooled_save_is_correct_zip(fixture_copy, tmp_path):
     with zipfile.ZipFile(out) as archive:
         assert archive.testzip() is None
     assert load_workbook(out)["Schedule"]["A2"].value == "spooled"
+
+
+def test_validate_runs_the_save_plan_without_building_an_archive(
+        fixture_copy, monkeypatch):
+    from openpyxl.preserve import zipio
+
+    workbook = load_workbook(
+        fixture_copy("features/schedule.xlsx"), preserve=True)
+    workbook["Schedule"]["A2"] = "edited"
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("validation assembled an archive")
+
+    monkeypatch.setattr(zipio, "build_archive_bytes", unexpected)
+    monkeypatch.setattr(zipio, "build_and_deliver", unexpected)
+    assert workbook.validate() is None
+
+
+def test_receipt_reports_deterministic_derived_effects(
+        fixture_copy, tmp_path):
+    workbook = load_workbook(
+        fixture_copy("features/schedule_calc.xlsx"), preserve=True)
+    workbook["Schedule"]["B2"] = 123
+    receipt = workbook.save(tmp_path / "receipt.xlsx", receipt=True)
+    payload = receipt.to_dict()
+
+    assert payload["derived_effects_version"] == 1
+    kinds = [effect["kind"] for effect in payload["derived_effects"]]
+    assert "formula_cache_removed" in kinds
+    assert "recalculation_metadata_changed" in kinds
+    assert json.loads(json.dumps(payload))["derived_effects"] == \
+        payload["derived_effects"]
+
+
+def test_receipt_does_not_report_unchanged_calc_properties(
+        fixture_copy, tmp_path):
+    workbook = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    workbook.create_sheet("Added")
+
+    receipt = workbook.save(tmp_path / "added-sheet.xlsx", receipt=True)
+
+    assert not any(
+        effect["kind"] == "recalculation_metadata_changed"
+        for effect in receipt.derived_effects
+    )
