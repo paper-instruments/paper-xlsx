@@ -702,6 +702,11 @@ def _plan_chart_property_edits(context, sheet, armed, mutations, parts):
             _refuse("chart {0} on sheet {1!r}: its serializer is impure, "
                     "so the edit cannot be expressed faithfully.".format(
                         key, sheet.title))
+        if current_render == armed_render:
+            _refuse("chart {0} on sheet {1!r} was modified, but its "
+                    "serializer does not represent the changed property; "
+                    "the edit cannot be saved faithfully.".format(
+                        key, sheet.title))
         base = chart_parts.get(part_name)
         composed = base is not None or part_name in parts
         if base is None:

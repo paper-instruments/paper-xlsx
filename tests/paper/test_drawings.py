@@ -8,7 +8,7 @@ import zipfile
 
 import pytest
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.errors import TargetNotFoundError, UnsupportedStructureError
 
@@ -30,6 +30,26 @@ def _chart_for(ws, min_col=1, min_row=1, max_row=3):
     chart.add_data(Reference(ws, min_col=min_col, min_row=min_row,
                              max_row=max_row))
     return chart
+
+
+def _combined_chart_fixture(tmp_path):
+    path = str(tmp_path / "combined.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    for row in range(1, 5):
+        ws.cell(row, 2, row)
+        ws.cell(row, 3, row * 10)
+    primary = BarChart()
+    primary.add_data(Reference(
+        ws, min_col=2, min_row=1, max_row=4))
+    secondary = LineChart()
+    secondary.add_data(Reference(
+        ws, min_col=3, min_row=1, max_row=4))
+    primary += secondary
+    ws.add_chart(primary, "E2")
+    wb.save(path)
+    return path
 
 
 class TestAddedSheetDrawings:
@@ -173,6 +193,44 @@ class TestExistingDrawingAppend:
 
 
 class TestChartPropertyEdits:
+
+    def test_loaded_combined_child_repoint_lands(self, tmp_path):
+        src = _combined_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        chart = wb["Data"]._charts[0]
+        assert len(chart._charts) == 2
+
+        chart._charts[1].repoint(0, "Data!$B$1:$B$4")
+        out = str(tmp_path / "repointed.xlsx")
+        wb.save(out)
+
+        saved = load_workbook(out)
+        child = saved["Data"]._charts[0]._charts[1]
+        assert child.series[0].val.numRef.f == "Data!$B$1:$B$4"
+
+    def test_loaded_combined_child_title_refuses(self, tmp_path):
+        src = _combined_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        wb["Data"]._charts[0]._charts[1].title = "Not serialized"
+
+        with pytest.raises(
+                UnsupportedStructureError,
+                match="serializer does not represent"):
+            wb.save(str(tmp_path / "title.xlsx"))
+
+    def test_loaded_combined_chart_addition_refuses(self, tmp_path):
+        src = _combined_chart_fixture(tmp_path)
+        wb = load_workbook(src, preserve=True)
+        ws = wb["Data"]
+        extra = LineChart()
+        extra.add_data(Reference(
+            ws, min_col=2, min_row=1, max_row=4))
+        ws._charts[0] += extra
+
+        with pytest.raises(
+                UnsupportedStructureError,
+                match="added or removed"):
+            wb.save(str(tmp_path / "extra.xlsx"))
 
     def test_repoint_patches_series_bytes(self, fixture_copy, tmp_path):
         src = fixture_copy("features/chart_image.xlsx")

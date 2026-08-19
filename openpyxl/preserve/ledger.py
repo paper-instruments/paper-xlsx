@@ -236,7 +236,8 @@ def _object_snapshot(ws):
         rendered, _ok = _settled(lambda c=chart: tostring(c._write()))
         charts[i] = (rendered, _anchor_fingerprint(chart))
         snap["fingerprints"][("chart", i)] = (
-            _canonical_object(chart), _canonical_object(chart.anchor))
+            _chart_model_fingerprint(chart),
+            _canonical_object(chart.anchor))
     snap["chart"] = charts
 
     images = {}
@@ -344,6 +345,12 @@ def _canonical_object(value, seen=None):
                 repr(value))
     finally:
         seen.discard(marker)
+
+
+def _chart_model_fingerprint(chart):
+    """Fingerprint every component serialized by a combined chart."""
+    components = getattr(chart, "_charts", None) or (chart,)
+    return tuple(_canonical_object(component) for component in components)
 
 
 def _image_data_digest(image, *, ws=None, index=None):
