@@ -331,6 +331,11 @@ class RecalcResult:
 
     @property
     def cells_written(self):
+        """Return the number of formula caches written to the candidate.
+
+        :return: Number of entries in `written`.
+        :rtype: int
+        """
         return len(self.written)
 
     def to_dict(self):

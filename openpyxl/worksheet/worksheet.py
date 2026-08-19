@@ -766,7 +766,15 @@ class Worksheet(_WorkbookChild):
         return _allowed(self, cell)
 
     def append_table_row(self, table_name, values):
-        """Append to a supported named table, or refuse without mutation."""
+        """Append one row to a supported named table atomically.
+
+        :param table_name: Name of the table to expand.
+        :type table_name: str
+        :param values: Row values as a sequence or column-name mapping.
+        :type values: iterable or mapping
+        :return: `None`.
+        :rtype: None
+        """
         from openpyxl.preserve.tables import append_table_row
 
         return append_table_row(self, table_name, values)
@@ -795,7 +803,17 @@ class Worksheet(_WorkbookChild):
         self._images.append(img)
 
     def replace_image(self, target, replacement, *, name=None):
-        """Replace one loaded image while preserving its drawing anchor."""
+        """Replace one loaded image while preserving its drawing anchor.
+
+        :param target: Loaded image or its anchor coordinate.
+        :type target: openpyxl.drawing.image.Image or str
+        :param replacement: Replacement image or image source.
+        :type replacement: openpyxl.drawing.image.Image or path-like
+        :param name: Optional image name used to resolve an ambiguous anchor.
+        :type name: str or None
+        :return: The loaded image selected for replacement.
+        :rtype: openpyxl.drawing.image.Image
+        """
         from openpyxl.preserve.images import request_replacement
 
         return request_replacement(
