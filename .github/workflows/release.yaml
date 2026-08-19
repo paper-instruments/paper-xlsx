@@ -16,6 +16,8 @@ jobs:
   preflight:
     name: Verify release tag
     runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -32,6 +34,7 @@ jobs:
           python -m pip install packaging setuptools
           python -m pip install -e .
       - name: Verify tag, versions, and main ancestry
+        id: version
         shell: bash
         run: |
           set -euo pipefail
@@ -42,7 +45,10 @@ jobs:
           from packaging.version import Version
 
           tag_version = os.environ["TAG_VERSION"]
-          assert str(Version(tag_version)) == tag_version
+          version = Version(tag_version)
+          assert str(version) == tag_version
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"prerelease={str(version.is_prerelease).lower()}", file=output)
           PY
           test "$(python setup.py --version)" = "${TAG_VERSION}"
           test "$(python -c 'import openpyxl; print(openpyxl.__paper_version__)')" = "${TAG_VERSION}"
@@ -73,3 +79,32 @@ jobs:
           path: dist
       - name: Publish
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+
+  github-release:
+    name: Create GitHub release
+    needs:
+      - preflight
+      - pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-distributions-${{ github.sha }}
+          path: dist
+      - name: Create release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+        run: |
+          prerelease_args=()
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --generate-notes \
+            "${prerelease_args[@]}"

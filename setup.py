@@ -10,7 +10,7 @@ from setuptools import setup, find_packages
 
 here = os.path.abspath(os.path.dirname(__file__))
 try:
-    with open(os.path.join(here, 'README.rst')) as f:
+    with open(os.path.join(here, 'README.md')) as f:
         README = f.read()
 except IOError:
     README = ''
@@ -67,10 +67,10 @@ setup(
     description=("A drop-in openpyxl fork for safe inspection and editing "
                  "of existing Excel files"),
     long_description=README,
-    long_description_content_type="text/x-rst",
+    long_description_content_type="text/markdown",
     author=f"{__author__}; Paper Instruments, Inc.",
     author_email=__author_email__,
-    url="https://github.com/The-LLM-Data-Company/paper-xlsx",
+    url="https://github.com/paper-instruments/paper-xlsx",
     license=__license__,
     maintainer="Paper Instruments, Inc.",
     python_requires=f">={__python__}",
@@ -83,8 +83,9 @@ setup(
         ],
     },
     project_urls={
-        'Source': 'https://github.com/The-LLM-Data-Company/paper-xlsx',
-        'Tracker': 'https://github.com/The-LLM-Data-Company/paper-xlsx/issues',
+        'Source': 'https://github.com/paper-instruments/paper-xlsx',
+        'Tracker': 'https://github.com/paper-instruments/paper-xlsx/issues',
+        'Changelog': 'https://github.com/paper-instruments/paper-xlsx/releases',
         'Upstream': 'https://foss.heptapod.net/openpyxl/openpyxl',
     },
     classifiers=[
@@ -94,7 +95,6 @@ setup(
                  'Operating System :: POSIX',
                  'License :: OSI Approved :: MIT License',
                  'Programming Language :: Python',
-                 'Programming Language :: Python :: 3.8',
                  'Programming Language :: Python :: 3.9',
                  'Programming Language :: Python :: 3.10',
                  'Programming Language :: Python :: 3.11',
