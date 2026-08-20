@@ -356,6 +356,9 @@ def _validate_preserve_model(workbook, led, allow_formula_loss):
             "the edited cells.")
 
     led.check_style_registry(workbook)
+    from .pivots import validate_source_freshness
+
+    validate_source_freshness(workbook, led)
     force_calcpr = led.formulas_changed \
         or _dirty_feeds_formulas(workbook, led)
     if force_calcpr:

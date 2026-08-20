@@ -11,11 +11,11 @@ from openpyxl.errors import (
     TargetNotFoundError,
     UnsupportedStructureError,
 )
+from openpyxl.utils.cell import range_boundaries
 from openpyxl.xml.constants import SHEET_MAIN_NS
 
 from . import crosspart
 from .tables import _rels_path, _resolve_target
-
 
 _PIVOT_TABLE_REL = "/pivotTable"
 _PIVOT_CACHE_REL = "/pivotCacheDefinition"
@@ -103,6 +103,174 @@ def _index(wb):
                         (current_title, cache_part))
         cache_parts = sorted(set(cache_by_id.values()))
         return qualified, cache_parts
+
+
+def _worksheet(wb, title):
+    matches = [ws for ws in wb.worksheets
+               if ws.title.casefold() == title.casefold()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _bounds(ref):
+    try:
+        bounds = range_boundaries(ref)
+    except (TypeError, ValueError):
+        return None
+    if any(value is None for value in bounds):
+        return None
+    return bounds
+
+
+def _defined_name_source(wb, name):
+    """Resolve one static workbook- or worksheet-scoped defined name."""
+    matches = []
+    for key, defn in wb.defined_names.items():
+        if key.casefold() == name.casefold():
+            matches.append((None, defn))
+    for ws in wb.worksheets:
+        for key, defn in ws.defined_names.items():
+            if key.casefold() == name.casefold():
+                matches.append((ws, defn))
+    resolved = []
+    for owner, defn in matches:
+        value = getattr(defn, "attr_text", None)
+        if not isinstance(value, str):
+            continue
+        if owner is not None and "!" not in value:
+            bounds = _bounds(value)
+            if bounds is not None:
+                resolved.append((owner, bounds))
+            continue
+        try:
+            destinations = list(defn.destinations)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if len(destinations) != 1:
+            continue
+        title, ref = destinations[0]
+        ws = _worksheet(wb, title)
+        bounds = _bounds(ref)
+        if ws is not None and bounds is not None:
+            resolved.append((ws, bounds))
+    return resolved[0] if len(resolved) == 1 else None
+
+
+def _named_source(wb, name):
+    """Resolve one named worksheet table or one static defined name."""
+    tables = []
+    for ws in wb.worksheets:
+        for key in ws.tables:
+            table = ws.tables[key]
+            names = (key, getattr(table, "name", None),
+                     getattr(table, "displayName", None))
+            if any(isinstance(item, str)
+                   and item.casefold() == name.casefold()
+                   for item in names):
+                bounds = _bounds(table.ref)
+                if bounds is not None:
+                    tables.append((ws, bounds))
+    defined = _defined_name_source(wb, name)
+    matches = tables + ([defined] if defined is not None else [])
+    return matches[0] if len(matches) == 1 else None
+
+
+def _cache_source(wb, payload):
+    """Return ``(worksheet, bounds, label)`` for one exact local source.
+
+    ``None`` means the cache is external and cannot be affected by local cell
+    edits. A tuple of ``(None, None, label)`` is an unresolved local source and
+    therefore intersects conservatively.
+    """
+    try:
+        root = fromstring(payload)
+    except (ParseError, TypeError, ValueError):
+        return None, None, "unresolved pivot source"
+    namespace = "{{{0}}}".format(SHEET_MAIN_NS)
+    sources = root.findall(namespace + "cacheSource")
+    if len(sources) != 1:
+        return None, None, "unresolved pivot source"
+    source = sources[0]
+    source_type = source.attrib.get("type")
+    if source_type == "external":
+        return None
+    if source_type != "worksheet":
+        return None, None, "unsupported {0!r} pivot source".format(
+            source_type)
+    worksheet_sources = source.findall(namespace + "worksheetSource")
+    if len(worksheet_sources) != 1:
+        return None, None, "unresolved worksheet pivot source"
+    worksheet_source = worksheet_sources[0]
+    ref = worksheet_source.attrib.get("ref")
+    title = worksheet_source.attrib.get("sheet")
+    name = worksheet_source.attrib.get("name")
+    if ref is not None and title is not None and name is None:
+        ws = _worksheet(wb, title)
+        bounds = _bounds(ref)
+        if ws is not None and bounds is not None:
+            return ws, bounds, "{0}!{1}".format(ws.title, ref)
+    elif name is not None and ref is None:
+        resolved = _named_source(wb, name)
+        if resolved is not None:
+            ws, bounds = resolved
+            return ws, bounds, name
+    return None, None, "unresolved worksheet pivot source"
+
+
+def source_impacts(wb, ledger):
+    """Return pivot caches made stale by recorded local value writes."""
+    dirty = {ws: set(coords) for ws, coords in ledger.value_overwrites.items()
+             if coords}
+    if not dirty:
+        return []
+    index, _cache_parts = _index(wb)
+    pivots_by_cache = {}
+    for pivot_name, entries in index.items():
+        for title, cache_part in entries:
+            pivots_by_cache.setdefault(cache_part, set()).add(
+                "{0}!{1}".format(title, pivot_name))
+    impacts = []
+    with zipfile.ZipFile(io.BytesIO(wb._paper_source)) as zin:
+        for cache_part, pivots in sorted(pivots_by_cache.items()):
+            source = _cache_source(wb, zin.read(cache_part))
+            if source is None:
+                continue
+            ws, bounds, label = source
+            intersects = ws is None
+            if ws is not None:
+                min_col, min_row, max_col, max_row = bounds
+                intersects = any(
+                    min_row <= row <= max_row
+                    and min_col <= column <= max_col
+                    for row, column in dirty.get(ws, ()))
+            if intersects:
+                impacts.append({
+                    "part": cache_part,
+                    "pivots": sorted(pivots),
+                    "source": label,
+                })
+    return impacts
+
+
+def validate_source_freshness(wb, ledger):
+    """Refuse silent stale pivot caches without explicit refresh consent."""
+    impacts = source_impacts(wb, ledger)
+    unsafe = [impact for impact in impacts
+              if impact["part"] not in ledger.pivot_refresh_requests]
+    if not unsafe:
+        return impacts
+    details = "; ".join(
+        "{0} from {1}".format(", ".join(impact["pivots"]),
+                              impact["source"])
+        for impact in unsafe)
+    raise UnsupportedStructureError(
+        "edited cells affect or may affect preserved pivot cache(s): {0}. "
+        "Saving would leave plausible but stale pivot results. Explicitly call "
+        "wb.set_pivot_refresh_on_load(pivots=[...]) for these pivots to "
+        "accept that Excel must refresh them on open; headless readers may "
+        "observe the old cached results until then. Nothing was written."
+        .format(details),
+        kind="stale-pivot-cache",
+        anchor=unsafe[0]["pivots"][0])
 
 
 def resolve_requests(wb, pivots=None, *, all=False):

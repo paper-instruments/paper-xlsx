@@ -100,6 +100,23 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
         for request in getattr(ledger, "image_replacements", {}).values()
     }
     pivot_parts = set(getattr(ledger, "pivot_refresh_requests", ()))
+    if ledger is not None and pivot_parts:
+        from .pivots import source_impacts
+
+        workbook = next(iter(ledger.value_overwrites), None)
+        workbook = getattr(workbook, "parent", None)
+        if workbook is not None:
+            for impact in source_impacts(workbook, ledger):
+                if impact["part"] not in pivot_parts:
+                    continue
+                effects.append({
+                    "kind": "pivot_source_changed_requires_refresh",
+                    "part": impact["part"],
+                    "cause": "input_changed",
+                    "pivots": impact["pivots"],
+                    "source": impact["source"],
+                    "requirement": "excel_refresh_on_open",
+                })
     cause = "formula_changed" if getattr(ledger, "formulas_changed", False) \
         else "input_changed"
     if "xl/calcChain.xml" in names_a and "xl/calcChain.xml" not in names_b:

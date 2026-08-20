@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 import warnings
 import zipfile
 
@@ -19,7 +20,8 @@ from openpyxl.errors import (
 
 def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
                       cache_parts=None, prefixed_cache=False,
-                      orphan_parts=()):
+                      orphan_parts=(), worksheet_sources=None,
+                      cache_source_types=None):
     """Attach a small relationship-complete pivot graph to source bytes.
 
     The preservation API indexes package relationships, not openpyxl's pivot
@@ -70,6 +72,8 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
         b'pivotCacheDefinition+xml"/>' % part.encode("utf-8")
         for part in tuple(cache_parts.values()) + tuple(orphan_parts)
     )
+    sheet_rels_part = "xl/worksheets/_rels/sheet1.xml.rels"
+    sheet_rels_seen = False
     source = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(workbook._paper_source)) as zin, \
             zipfile.ZipFile(source, "w") as zout:
@@ -85,12 +89,17 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
             elif info.filename == "[Content_Types].xml":
                 payload = payload.replace(
                     b"</Types>", content_type_overrides + b"</Types>")
+            elif info.filename == sheet_rels_part:
+                sheet_rels_seen = True
+                payload = payload.replace(
+                    b"</Relationships>", sheet_rels + b"</Relationships>")
             zout.writestr(info, payload)
-        zout.writestr(
-            "xl/worksheets/_rels/sheet1.xml.rels",
-            b'<Relationships xmlns="http://schemas.openxmlformats.org/'
-            b'package/2006/relationships">' + sheet_rels
-            + b"</Relationships>")
+        if not sheet_rels_seen:
+            zout.writestr(
+                sheet_rels_part,
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/'
+                b'package/2006/relationships">' + sheet_rels
+                + b"</Relationships>")
         for index, (name, cache_id) in enumerate(pivots, 1):
             zout.writestr(
                 "xl/pivotTables/pivotTable%s.xml" % index,
@@ -99,6 +108,8 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
                 + name.encode("utf-8") + b'" cacheId="'
                 + cache_id.encode("ascii") + b'"/>')
         refresh = b' refreshOnLoad="1"' if refresh_on_load else b""
+        worksheet_sources = worksheet_sources or {}
+        cache_source_types = cache_source_types or {}
         for cache_id in cache_ids:
             root = b"x:pivotCacheDefinition" if prefixed_cache \
                 else b"pivotCacheDefinition"
@@ -108,11 +119,21 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
                       b'spreadsheetml/2006/main"')
             source_tag = b"x:cacheSource" if prefixed_cache \
                 else b"cacheSource"
+            source_type = cache_source_types.get(
+                cache_id, "worksheet").encode("ascii")
+            worksheet_source = worksheet_sources.get(cache_id)
+            if worksheet_source is None:
+                source_payload = (b'<' + source_tag
+                                  + b' type="' + source_type + b'"/>')
+            else:
+                source_payload = (
+                    b'<' + source_tag + b' type="' + source_type + b'">'
+                    + worksheet_source + b'</' + source_tag + b'>')
             zout.writestr(
                 cache_parts[cache_id],
                 b'<' + root + namespace + b' recordCount="0"'
-                + refresh + b'><' + source_tag + b' type="worksheet"/>'
-                b'</' + root + b'>')
+                + refresh + b'>' + source_payload
+                + b'</' + root + b'>')
         for part in orphan_parts:
             zout.writestr(
                 part,
@@ -360,6 +381,170 @@ def test_pivot_refresh_requires_preserve(fixture_copy):
         fixture_copy("minimal/minimal_clean.xlsx"), preserve=False)
     with pytest.raises(ValueError, match="preserve"):
         wb.set_pivot_refresh_on_load(all=True)
+
+
+def _excel_pivot_fixture():
+    return (Path(__file__).parents[2]
+            / "openpyxl/reader/tests/data/pivot.xlsx")
+
+
+def test_defined_name_pivot_source_edit_refuses_before_delivery(tmp_path):
+    source = _excel_pivot_fixture()
+    wb = load_workbook(source, preserve=True)
+    wb["raw"]["A2"] = 999
+
+    with pytest.raises(UnsupportedStructureError) as caught:
+        wb.validate()
+    assert caught.value.kind == "stale-pivot-cache"
+    assert caught.value.anchor == "ptsheet!PivotTable1"
+    assert "mydata" in str(caught.value)
+    assert "headless readers" in str(caught.value)
+
+    output = tmp_path / "refused.xlsx"
+    with pytest.raises(UnsupportedStructureError,
+                       match="stale pivot results"):
+        wb.save(output)
+    assert not output.exists()
+
+
+def test_unrelated_edit_preserves_pivot_cache_byte_identically(tmp_path):
+    source = _excel_pivot_fixture()
+    wb = load_workbook(source, preserve=True)
+    wb["ptsheet"]["G20"] = "unrelated"
+    output = tmp_path / "unrelated.xlsx"
+
+    wb.save(output)
+
+    cache_part = "xl/pivotCache/pivotCacheDefinition1.xml"
+    with zipfile.ZipFile(source) as before, zipfile.ZipFile(output) as after:
+        assert after.read(cache_part) == before.read(cache_part)
+        changed = sorted(
+            name for name in set(before.namelist()) & set(after.namelist())
+            if before.read(name) != after.read(name))
+    assert changed == ["xl/worksheets/sheet1.xml"]
+
+
+def test_explicit_refresh_allows_source_edit_and_reports_requirement(
+        tmp_path):
+    source = _excel_pivot_fixture()
+    wb = load_workbook(source, preserve=True)
+    wb["raw"]["A2"] = 999
+    wb.set_pivot_refresh_on_load(pivots=["ptsheet!PivotTable1"])
+    output = tmp_path / "refresh.xlsx"
+
+    wb.validate()
+    receipt = wb.save(output, receipt=True)
+
+    assert receipt.parts_changed == [
+        "xl/pivotCache/pivotCacheDefinition1.xml",
+        "xl/worksheets/sheet2.xml",
+    ]
+    assert [effect for effect in receipt.derived_effects
+            if effect["kind"] ==
+            "pivot_source_changed_requires_refresh"] == [{
+                "kind": "pivot_source_changed_requires_refresh",
+                "part": "xl/pivotCache/pivotCacheDefinition1.xml",
+                "cause": "input_changed",
+                "pivots": ["ptsheet!PivotTable1"],
+                "source": "mydata",
+                "requirement": "excel_refresh_on_open",
+            }]
+    with zipfile.ZipFile(output) as archive:
+        assert b'refreshOnLoad="1"' in archive.read(
+            "xl/pivotCache/pivotCacheDefinition1.xml")
+
+
+def test_direct_range_pivot_source_edit_refuses(fixture_copy):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(
+        wb, [("SalesPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A1:B10" sheet="Sheet1"/>'})
+    wb["Sheet1"]["B2"] = "changed"
+
+    with pytest.raises(UnsupportedStructureError,
+                       match=r"Sheet1!A1:B10") as caught:
+        wb.validate()
+    assert caught.value.kind == "stale-pivot-cache"
+
+
+def test_unresolved_local_pivot_source_refuses_conservatively(fixture_copy):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(wb, [("SalesPivot", "1")])
+    wb["Sheet1"]["A1"] = "changed"
+
+    with pytest.raises(UnsupportedStructureError,
+                       match="unresolved worksheet pivot source") as caught:
+        wb.validate()
+    assert caught.value.kind == "stale-pivot-cache"
+
+
+def test_external_pivot_source_does_not_block_local_edits(
+        fixture_copy, tmp_path):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(
+        wb, [("ExternalPivot", "1")],
+        cache_source_types={"1": "external"})
+    wb["Sheet1"]["A1"] = "local change"
+
+    wb.validate()
+    wb.save(tmp_path / "external-pivot.xlsx")
+
+
+def test_named_table_expansion_requires_explicit_pivot_refresh(tmp_path):
+    from openpyxl import Workbook
+    from openpyxl.worksheet.table import Table
+
+    source = tmp_path / "table-source.xlsx"
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws.append(["Region", "Amount"])
+    ws.append(["West", 10])
+    ws.add_table(Table(displayName="SalesData", ref="A1:B2"))
+    created.save(source)
+
+    wb = load_workbook(source, preserve=True)
+    _with_pivot_graph(
+        wb, [("SalesPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource name="SalesData"/>'})
+    wb["Data"].append_table_row("SalesData", ["East", 20])
+
+    with pytest.raises(UnsupportedStructureError,
+                       match="SalesData"):
+        wb.validate()
+
+    wb.set_pivot_refresh_on_load(pivots=["Data!SalesPivot"])
+    wb.validate()
+
+
+def test_already_enabled_refresh_still_requires_explicit_consent(
+        fixture_copy, tmp_path):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(
+        wb, [("SalesPivot", "1")], refresh_on_load=True,
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A1:B10" sheet="Sheet1"/>'})
+    wb["Sheet1"]["A1"] = "changed"
+
+    with pytest.raises(UnsupportedStructureError,
+                       match="stale pivot results"):
+        wb.validate()
+
+    wb.set_pivot_refresh_on_load(pivots=["Sheet1!SalesPivot"])
+    receipt = wb.save(tmp_path / "already-enabled-source-edit.xlsx",
+                      receipt=True)
+    effects = [effect for effect in receipt.derived_effects
+               if effect["kind"] ==
+               "pivot_source_changed_requires_refresh"]
+    assert len(effects) == 1
+    assert not any(effect["kind"] == "pivot_refresh_on_load_enabled"
+                   for effect in receipt.derived_effects)
 
 
 def test_highly_compressed_valid_extra_part_is_not_an_eligibility_error(
