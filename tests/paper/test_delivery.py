@@ -20,6 +20,7 @@ from openpyxl.errors import (
 
 def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
                       cache_parts=None, prefixed_cache=False,
+                      prefixed_pivot=False,
                       orphan_parts=(), worksheet_sources=None,
                       cache_source_types=None):
     """Attach a small relationship-complete pivot graph to source bytes.
@@ -101,12 +102,19 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
                 b'package/2006/relationships">' + sheet_rels
                 + b"</Relationships>")
         for index, (name, cache_id) in enumerate(pivots, 1):
+            root = b"x:pivotTableDefinition" if prefixed_pivot \
+                else b"pivotTableDefinition"
+            namespace = (b' xmlns:x="http://schemas.openxmlformats.org/'
+                         b'spreadsheetml/2006/main"') if prefixed_pivot \
+                else (b' xmlns="http://schemas.openxmlformats.org/'
+                      b'spreadsheetml/2006/main"')
             zout.writestr(
                 "xl/pivotTables/pivotTable%s.xml" % index,
-                b'<pivotTableDefinition xmlns="http://schemas.openxml'
-                b'formats.org/spreadsheetml/2006/main" name="'
+                b'<' + root + namespace + b' name="'
                 + name.encode("utf-8") + b'" cacheId="'
-                + cache_id.encode("ascii") + b'"/>')
+                + cache_id.encode("ascii") + b'" dataCaption="Values">'
+                + b'<location ref="F1:G2" firstHeaderRow="1" '
+                + b'firstDataRow="1" firstDataCol="1"/></' + root + b'>')
         refresh = b' refreshOnLoad="1"' if refresh_on_load else b""
         worksheet_sources = worksheet_sources or {}
         cache_source_types = cache_source_types or {}
@@ -309,12 +317,13 @@ def test_targeted_pivot_uses_current_sheet_name_after_rename(
             "xl/pivotCache/pivotCacheDefinition1.xml")
 
 
-def test_prefixed_pivot_cache_is_patched_and_reported(
+def test_prefixed_pivot_parts_are_indexed_patched_and_reported(
         fixture_copy, tmp_path):
     wb = load_workbook(
         fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
     _with_pivot_graph(
-        wb, [("SalesPivot", "1")], prefixed_cache=True)
+        wb, [("SalesPivot", "1")], prefixed_cache=True,
+        prefixed_pivot=True)
 
     wb.set_pivot_refresh_on_load(all=True)
     receipt = wb.save(tmp_path / "prefixed-pivot.xlsx", receipt=True)
@@ -470,6 +479,53 @@ def test_formula_fed_pivot_source_requires_refresh(tmp_path, formulas):
     assert caught.value.anchor == "Data!FormulaPivot"
 
 
+def test_data_only_pivot_dependency_uses_retained_formula(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "data-only-formula-source.xlsx"
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws["A2"] = "=D2"
+    ws["D2"] = 1
+    created.save(source)
+
+    wb = load_workbook(source, preserve=True, data_only=True)
+    _with_pivot_graph(
+        wb, [("FormulaPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A2" sheet="Data"/>'})
+    wb["Data"]["D2"] = 5
+
+    with pytest.raises(UnsupportedStructureError) as caught:
+        wb.save(tmp_path / "refused.xlsx", allow_formula_loss=True)
+    assert caught.value.kind == "stale-pivot-cache"
+
+
+def test_array_formula_followers_in_pivot_source_require_refresh(tmp_path):
+    from openpyxl import Workbook
+    from openpyxl.worksheet.formula import ArrayFormula
+
+    source = tmp_path / "array-formula-source.xlsx"
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws["A1"] = ArrayFormula(ref="A1:A3", text="=D1*{1;2;3}")
+    ws["D1"] = 1
+    created.save(source)
+
+    wb = load_workbook(source, preserve=True)
+    _with_pivot_graph(
+        wb, [("FormulaPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A2:A3" sheet="Data"/>'})
+    wb["Data"]["D1"] = 5
+
+    with pytest.raises(UnsupportedStructureError) as caught:
+        wb.validate()
+    assert caught.value.kind == "stale-pivot-cache"
+
+
 def test_formula_change_outside_pivot_source_remains_allowed(tmp_path):
     from openpyxl import Workbook
 
@@ -554,6 +610,24 @@ def test_direct_range_pivot_source_edit_refuses(fixture_copy):
                        match=r"Sheet1!A1:B10") as caught:
         wb.validate()
     assert caught.value.kind == "stale-pivot-cache"
+
+
+@pytest.mark.parametrize(("source_ref", "outside_cell"), [
+    ("A:D", "E1"),
+    ("1:4", "A5"),
+])
+def test_open_pivot_source_allows_unrelated_edit(
+        fixture_copy, source_ref, outside_cell):
+    wb = load_workbook(
+        fixture_copy("minimal/minimal_clean.xlsx"), preserve=True)
+    _with_pivot_graph(
+        wb, [("SalesPivot", "1")],
+        worksheet_sources={
+            "1": ('<worksheetSource ref="{0}" sheet="Sheet1"/>'
+                  .format(source_ref).encode("ascii"))})
+    wb["Sheet1"][outside_cell] = "unrelated"
+
+    wb.validate()
 
 
 def test_unresolved_local_pivot_source_refuses_conservatively(fixture_copy):

@@ -3,6 +3,7 @@
 """Resolve pivot names and patch only cache refresh metadata."""
 
 import io
+import warnings
 import zipfile
 from xml.etree.ElementTree import ParseError, fromstring
 
@@ -36,6 +37,24 @@ def _cache_root(payload):
             kind="unsupported-pivot-cache")
     return crosspart.scan_small(
         payload, "pivotCacheDefinition", max_depth=1,
+        allow_prefixed_root=True)
+
+
+def _pivot_root(payload):
+    """Validate a pivot-table root, including legal prefixed spelling."""
+    try:
+        element = fromstring(payload)
+    except (ParseError, ValueError, TypeError) as exc:
+        raise UnsupportedStructureError(
+            "pivot table definition XML is malformed",
+            kind="unsupported-pivot-table") from exc
+    expected = "{{{0}}}pivotTableDefinition".format(SHEET_MAIN_NS)
+    if element.tag != expected:
+        raise UnsupportedStructureError(
+            "pivot table definition has an unexpected root element",
+            kind="unsupported-pivot-table")
+    return crosspart.scan_small(
+        payload, "pivotTableDefinition", max_depth=1,
         allow_prefixed_root=True)
 
 
@@ -94,8 +113,7 @@ def _index(wb):
             for pivot_part in pivot_targets.values():
                 if pivot_part not in names:
                     continue
-                root = crosspart.scan_small(
-                    zin.read(pivot_part), "pivotTableDefinition", max_depth=1)
+                root = _pivot_root(zin.read(pivot_part))
                 pivot_name = root.attrs.get("name")
                 cache_part = cache_by_id.get(root.attrs.get("cacheId"))
                 if pivot_name and cache_part:
@@ -113,12 +131,9 @@ def _worksheet(wb, title):
 
 def _bounds(ref):
     try:
-        bounds = range_boundaries(ref)
+        return range_boundaries(ref)
     except (TypeError, ValueError):
         return None
-    if any(value is None for value in bounds):
-        return None
-    return bounds
 
 
 def _named_source(wb, name):
@@ -276,6 +291,52 @@ def _bounds_hit(sheet, bounds, cells):
         for title, row, column in cells)
 
 
+def _ranges_hit(sheet, bounds, ranges):
+    """Whether one sheet range intersects any other range on that sheet."""
+    min_col, min_row, max_col, max_row = bounds
+    min_col = 1 if min_col is None else min_col
+    min_row = 1 if min_row is None else min_row
+    max_col = 1 << 20 if max_col is None else max_col
+    max_row = 1 << 22 if max_row is None else max_row
+    folded = sheet.casefold()
+    for title, other in ranges:
+        if title.casefold() != folded:
+            continue
+        o_min_col, o_min_row, o_max_col, o_max_row = other
+        o_min_col = 1 if o_min_col is None else o_min_col
+        o_min_row = 1 if o_min_row is None else o_min_row
+        o_max_col = 1 << 20 if o_max_col is None else o_max_col
+        o_max_row = 1 << 22 if o_max_row is None else o_max_row
+        if not (o_max_col < min_col or o_min_col > max_col
+                or o_max_row < min_row or o_min_row > max_row):
+            return True
+    return False
+
+
+def _dependency_model(wb):
+    """Return the formula view retained in a data-only source package."""
+    if not wb.data_only:
+        return wb
+    from openpyxl.reader.excel import load_workbook
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return load_workbook(
+            io.BytesIO(wb._paper_source), data_only=False, preserve=False)
+
+
+def _formula_outputs(wb):
+    """Map array/spill anchors to their declared multi-cell result ranges."""
+    outputs = {}
+    for ws in wb.worksheets:
+        for address, ref in ws.array_formulae.items():
+            bounds = _bounds(ref)
+            if bounds is not None:
+                outputs[(ws.title, *coordinate_to_tuple(address))] = (
+                    ws.title, bounds)
+    return outputs
+
+
 def _dirty_closure(wb, dirty):
     """Dirty cells plus every formula result they may affect transitively."""
     tainted = {
@@ -285,10 +346,22 @@ def _dirty_closure(wb, dirty):
         if row is not None and column is not None
     }
     if not tainted:
-        return tainted
+        return tainted, set()
     from .perception import dependency_sketch
 
-    sketch = dependency_sketch(wb)
+    formulas = _dependency_model(wb)
+    sketch = dependency_sketch(formulas)
+    outputs = _formula_outputs(formulas)
+    tainted_ranges = set()
+
+    def expand_outputs():
+        before = len(tainted_ranges)
+        for key in tainted:
+            output = outputs.get(key)
+            if output is not None:
+                tainted_ranges.add(output)
+        return len(tainted_ranges) != before
+
     # An unresolved formula may read any edited cell. Taint it rather than
     # guessing that its dynamic/structured/external reference is unrelated.
     for address in sketch.unresolved:
@@ -297,16 +370,17 @@ def _dirty_closure(wb, dirty):
             tainted.add(key)
     changed = True
     while changed:
-        changed = False
+        changed = expand_outputs()
         for address, references in sketch.references.items():
             key = _address_key(address)
             if key is None or key in tainted:
                 continue
             if any(_bounds_hit(sheet, bounds, tainted)
+                   or _ranges_hit(sheet, bounds, tainted_ranges)
                    for sheet, bounds, _raw in references):
                 tainted.add(key)
                 changed = True
-    return tainted
+    return tainted, tainted_ranges
 
 
 def source_impacts(wb, ledger):
@@ -316,7 +390,7 @@ def source_impacts(wb, ledger):
         return []
     dirty = {ws: set(coords) for ws, coords in ledger.value_overwrites.items()
              if coords}
-    tainted = _dirty_closure(wb, dirty)
+    tainted, tainted_ranges = _dirty_closure(wb, dirty)
     pivots_by_cache = {}
     for pivot_name, entries in index.items():
         for title, cache_part in entries:
@@ -332,8 +406,9 @@ def source_impacts(wb, ledger):
             ws, bounds, label, binding = source
             source_changed = cache_part in snapshots \
                 and snapshots[cache_part] != binding
-            intersects = bool(dirty) if ws is None else _bounds_hit(
-                ws.title, bounds, tainted)
+            intersects = bool(dirty) if ws is None else (
+                _bounds_hit(ws.title, bounds, tainted)
+                or _ranges_hit(ws.title, bounds, tainted_ranges))
             intersects = intersects or source_changed
             if intersects:
                 impacts.append({
