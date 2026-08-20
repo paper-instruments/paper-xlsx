@@ -186,4 +186,17 @@ Useful non-code contributions include real-world fixtures authored by desktop Ex
 
 paper-xlsx exists because openpyxl's object model and format coverage are excellent. Thanks to Eric Gazoni, Charlie Clark, and the openpyxl contributors (see [AUTHORS.rst](https://github.com/paper-instruments/paper-xlsx/blob/main/AUTHORS.rst)) for the work this project builds on. Upstream openpyxl lives at [foss.heptapod.net/openpyxl/openpyxl](https://foss.heptapod.net/openpyxl/openpyxl).
 
-If you reference this project in writing, cite it as *paper-xlsx* (Paper Instruments, Inc.), a fork of *openpyxl* by Eric Gazoni, Charlie Clark, and contributors, and link to this repository.
+## Citation
+
+If you reference paper-xlsx in research or writing:
+
+```bibtex
+@software{paper_xlsx,
+  title   = {paper-xlsx: an agent-safe fork of openpyxl for editing existing Excel files},
+  author  = {{Paper Instruments, Inc.}},
+  year    = {2026},
+  url     = {https://github.com/paper-instruments/paper-xlsx}
+}
+```
+
+paper-xlsx is a fork of *openpyxl* by Eric Gazoni, Charlie Clark, and contributors.
