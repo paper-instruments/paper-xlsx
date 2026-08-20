@@ -192,7 +192,7 @@ If you reference paper-xlsx in research or writing:
 
 ```bibtex
 @software{paper_xlsx,
-  title   = {paper-xlsx: an agent-safe fork of openpyxl for editing existing Excel files},
+  title   = {paper-xlsx: an agent-first structure editor for Excel documents},
   author  = {{Paper Instruments, Inc.}},
   year    = {2026},
   url     = {https://github.com/paper-instruments/paper-xlsx}
