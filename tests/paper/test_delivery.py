@@ -407,6 +407,93 @@ def test_defined_name_pivot_source_edit_refuses_before_delivery(tmp_path):
     assert not output.exists()
 
 
+def test_pivot_source_retarget_requires_refresh_and_reports_cause(tmp_path):
+    source = _excel_pivot_fixture()
+    wb = load_workbook(source, preserve=True)
+    wb.defined_names["mydata"].attr_text = "raw!$A$1:$F$17"
+
+    with pytest.raises(UnsupportedStructureError) as caught:
+        wb.validate()
+    assert caught.value.kind == "stale-pivot-cache"
+    assert caught.value.anchor == "ptsheet!PivotTable1"
+    wb.set_pivot_refresh_on_load(pivots=["ptsheet!PivotTable1"])
+    output = tmp_path / "retargeted-source.xlsx"
+
+    receipt = wb.save(output, receipt=True)
+
+    effects = [
+        effect for effect in receipt.derived_effects
+        if effect["kind"] == "pivot_source_changed_requires_refresh"]
+    assert effects == [{
+        "kind": "pivot_source_changed_requires_refresh",
+        "part": "xl/pivotCache/pivotCacheDefinition1.xml",
+        "cause": "source_changed",
+        "pivots": ["ptsheet!PivotTable1"],
+        "source": "mydata",
+        "requirement": "excel_refresh_on_open",
+    }]
+    reopened = load_workbook(output, preserve=True)
+    assert reopened.defined_names["mydata"].attr_text == \
+        "raw!$A$1:$F$17"
+    with zipfile.ZipFile(output) as archive:
+        assert b'refreshOnLoad="1"' in archive.read(
+            "xl/pivotCache/pivotCacheDefinition1.xml")
+
+
+@pytest.mark.parametrize("formulas", [
+    {"A2": "=C2*2", "C2": "=D2+1"},
+    {"A2": '=INDIRECT("D2")'},
+])
+def test_formula_fed_pivot_source_requires_refresh(tmp_path, formulas):
+    from openpyxl import Workbook
+
+    source = tmp_path / "formula-source.xlsx"
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws["A1"] = "Pivot input"
+    ws["D2"] = 1
+    for coordinate, formula in formulas.items():
+        ws[coordinate] = formula
+    created.save(source)
+
+    wb = load_workbook(source, preserve=True)
+    _with_pivot_graph(
+        wb, [("FormulaPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A1:A10" sheet="Data"/>'})
+    wb["Data"]["D2"] = 5
+
+    with pytest.raises(UnsupportedStructureError) as caught:
+        wb.validate()
+    assert caught.value.kind == "stale-pivot-cache"
+    assert caught.value.anchor == "Data!FormulaPivot"
+
+
+def test_formula_change_outside_pivot_source_remains_allowed(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "unrelated-formula.xlsx"
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws["A1"] = "Pivot input"
+    ws["A2"] = 10
+    ws["B2"] = "=D2*2"
+    ws["D2"] = 1
+    created.save(source)
+
+    wb = load_workbook(source, preserve=True)
+    _with_pivot_graph(
+        wb, [("FormulaPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A1:A10" sheet="Data"/>'})
+    wb["Data"]["D2"] = 5
+
+    wb.validate()
+    wb.save(tmp_path / "unrelated-formula-output.xlsx")
+
+
 def test_unrelated_edit_preserves_pivot_cache_byte_identically(tmp_path):
     source = _excel_pivot_fixture()
     wb = load_workbook(source, preserve=True)

@@ -121,14 +121,16 @@ surface:
 ``wb.set_pivot_refresh_on_load(pivots=[...])``
     Set refresh metadata for named pivots. Use a sheet-qualified name when the
     name is ambiguous. ``all=True`` is an explicit package-wide alternative;
-    omitting both scopes is an error. Validation and save refuse a value edit
-    that intersects an existing pivot's direct-range, static-defined-name, or
-    named-table source unless its cache is selected through this method. The
-    explicit request accepts that the saved cache remains stale until Excel
-    refreshes it; the edit receipt reports this requirement. Headless readers
-    can observe the old cached result before that refresh. Local sources that
-    cannot be resolved exactly refuse conservatively; external pivot sources
-    do not make unrelated local cell edits unsafe.
+    omitting both scopes is an error. Validation and save refuse an edit that
+    changes an existing pivot's local source, directly intersects it, or
+    transitively affects a formula inside it unless its cache is selected
+    through this method. Exact direct ranges, static defined names, and named
+    tables are recognized; dynamic or otherwise unresolved local sources
+    refuse conservatively. The explicit request accepts that the saved cache
+    remains stale until Excel refreshes it; the edit receipt reports this
+    requirement. Headless readers can observe the old cached result before
+    that refresh. External pivot sources do not make unrelated local cell
+    edits unsafe.
 
 Structural edits
 ----------------

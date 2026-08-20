@@ -668,7 +668,8 @@ class Workbook:
                 self, staged, allow_formula_loss=allow_formula_loss)
             data = staged.getvalue()
             result = _receipt(
-                self._paper_source, data, _ledger=self._paper_ledger)
+                self._paper_source, data, _ledger=self._paper_ledger,
+                _workbook=self)
 
             def validate_source():
                 if self._paper_source_identity is not None:
