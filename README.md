@@ -18,7 +18,7 @@
 `paper-xlsx` is an import-compatible hard fork of [openpyxl](https://foss.heptapod.net/openpyxl/openpyxl) 3.1.5 for safely inspecting, editing, and verifying existing Excel workbooks. It keeps openpyxl's reader, object model, formula tokenizer, and broad file-format support. It adds a preserve-mode save path that retains package content openpyxl does not model.
 
 ```python
-import openpyxl   # the import name is unchanged — see "Drop-in by design"
+import openpyxl   # the import name is unchanged; see "Drop-in by design"
 ```
 
 Under the default **preserve mode**, the original file's bytes are the source of truth. paper-xlsx writes supported edits into the retained package and copies untouched parts byte-for-byte. If it cannot express an edit safely, it raises a typed error before saving. Writes to protected cells can also emit an advisory warning.
@@ -31,7 +31,7 @@ openpyxl is a widely used Python Excel library, and pandas can use it for `.xlsx
 
 > openpyxl does currently not read all possible items in an Excel file so shapes will be lost from existing files if they are opened and saved with the same name.
 >
-> — openpyxl tutorial (`doc/tutorial.rst`)
+> openpyxl tutorial (`doc/tutorial.rst`)
 
 An `.xlsx` file can open normally even when an edit has damaged its contents. The results can still look reasonable, so automated checks may not detect the problem. These problems occur with openpyxl 3.1.5:
 
@@ -52,7 +52,7 @@ paper-xlsx-doctor                       # verify the install is coherent
 ```
 
 > [!IMPORTANT]
-> The PyPI distribution is `paper-xlsx`, but you still write `import openpyxl` — never `import paper_xlsx`. **Do not install `openpyxl` and `paper-xlsx` in the same environment**: both distributions own the same import tree, and package managers cannot safely arbitrate that. Always uninstall both first, then install `paper-xlsx`.
+> The PyPI distribution is `paper-xlsx`, but you still write `import openpyxl`, never `import paper_xlsx`. **Do not install `openpyxl` and `paper-xlsx` in the same environment**: both distributions own the same import tree, and package managers cannot safely arbitrate that. Always uninstall both first, then install `paper-xlsx`.
 
 Build a small model, reload it, and make a safe edit with a machine-readable receipt:
 
@@ -75,7 +75,7 @@ receipt.to_dict()["cells_changed"]
 # {'xl/worksheets/sheet1.xml': {'B1': 'changed', 'B3': 'changed'}}
 ```
 
-When an edit cannot be made safely, you get a typed refusal instead of a corrupted file — and a refused operation leaves the model, the ledger, and the disk exactly as they were:
+When an edit cannot be made safely, paper-xlsx raises a typed refusal instead of writing a corrupted file. A refused operation leaves the model, the ledger, and the disk exactly as they were:
 
 ```python
 from openpyxl import load_workbook
@@ -97,10 +97,10 @@ paper-xlsx is based on openpyxl 3.1.5. CI runs the upstream test suite alongside
 ### Preservation and guarded editing
 
 - **Preserve mode**: `load_workbook(path)` retains the original archive bytes, a **dirty ledger** wired into openpyxl's setters records supported semantic mutations, and save **splices** only the dirty byte ranges into the original parts instead of regenerating files. Untouched parts are raw-copied byte-identical; a no-op save produces a byte-identical file. The machinery lives in [`openpyxl/preserve/`](https://github.com/paper-instruments/paper-xlsx/tree/main/openpyxl/preserve): ledger, splice writer, cross-part discipline, deterministic atomic ZIP I/O, and related preservation code.
-- **A typed refusal taxonomy** ([`openpyxl/errors.py`](https://github.com/paper-instruments/paper-xlsx/blob/main/openpyxl/errors.py)): `PaperRefusal` and its subclasses — `AmbiguousTargetError`, `TargetNotFoundError`, `UnsupportedStructureError`, `BoundaryViolationError`, `RelationshipPolicyError`, `OracleUnavailableError`, `OracleTimeoutError`. Guarded operations validate before committing mutations; a refused operation changes nothing in memory or on disk. Refusals expose optional `kind`, `anchor`, and `options` fields. The exception message is always the complete explanation.
+- **A typed refusal taxonomy** ([`openpyxl/errors.py`](https://github.com/paper-instruments/paper-xlsx/blob/main/openpyxl/errors.py)): `PaperRefusal` and its subclasses (`AmbiguousTargetError`, `TargetNotFoundError`, `UnsupportedStructureError`, `BoundaryViolationError`, `RelationshipPolicyError`, `OracleUnavailableError`, `OracleTimeoutError`). Guarded operations validate before committing mutations; a refused operation changes nothing in memory or on disk. Refusals expose optional `kind`, `anchor`, and `options` fields. The exception message is always the complete explanation.
 - **The oracle** ([`openpyxl/oracle.py`](https://github.com/paper-instruments/paper-xlsx/blob/main/openpyxl/oracle.py)): openpyxl never calculates, and this fork deliberately ships **no formula engine**. `oracle.recalc()`, `oracle.certify()`, `oracle.evaluate()`, and `oracle.evaluate_many()` use a headless, profile-isolated LibreOffice process working on temporary copies. `recalc(source)` returns narrow calculation/error evidence without writing. `recalc(source, output_path=...)` writes only a separate Paper-preserved candidate: eligible LibreOffice-calculated caches are spliced into the original package structure, the source stays untouched, and full recalculation remains requested. Recalculation and evaluation status say only whether recognized formula errors were detected; they do not claim Excel equivalence or financial correctness.
 - **Targeted inspection helpers**: `wb.search(...)`, `ws.allowed_values(cell)`, `openpyxl.preserve.scan_errors()`, and `diff_workbooks()`. `allowed_values()` reports literal lists and deterministic static one-dimensional ranges, or raises a typed refusal when the source cannot be represented exactly. `scan_errors()` reports cached error values and actual formula error operands, not matching text inside string literals. These helpers supplement ordinary workbook objects without guessing workbook roles or mutation targets.
-- **Guarded structural edits**: row and column insertion and deletion on loaded preserve-mode sheets rewrite supported dependent formulas, defined names, print areas, table ranges, and chart references — or refuse before mutation — and return an `AddressRemap`. Sheet renames rewrite supported dependencies through normal title assignment and return no remap. `move_range()` tracks the moved cells and refuses intersections or outside references it cannot keep coherent; like upstream, it returns `None`.
+- **Guarded structural edits**: row and column insertion and deletion on loaded preserve-mode sheets rewrite supported dependent formulas, defined names, print areas, table ranges, and chart references, or refuse before mutation, and return an `AddressRemap`. Sheet renames rewrite supported dependencies through normal title assignment and return no remap. `move_range()` tracks the moved cells and refuses intersections or outside references it cannot keep coherent; like upstream, it returns `None`.
 - **Narrow mutation helpers**: `ws.append_table_row(...)` expands a supported named worksheet table atomically. It preflights the retained table XML, relationships, geometry, formulas, totals, filters, styles, formats, merged/spill regions, and protection state. A loaded table without retained preserve-mode source, or a connected, extended, sorted, or otherwise unsupported table, refuses before mutation. A refusal is final: do not bypass it with generic row insertion, `preserve=False`, or raw package editing. `openpyxl.preserve.copy_format(...)` applies one complete cell style through a range-local transaction, and `Chart.repoint(...)` validates the complete chart patch before changing the model. `ws.replace_image(...)` retargets one loaded image relationship without changing its anchor, and `wb.set_pivot_refresh_on_load(pivots=[...])` changes only selected pivot-cache refresh metadata. Path saves are written to a temporary file, fsynced, and atomically moved into place.
 - **`paper-xlsx-doctor`**: a console script that verifies the installed distribution actually owns the `openpyxl` import tree.
 
@@ -118,10 +118,10 @@ paper-xlsx is based on openpyxl 3.1.5. CI runs the upstream test suite alongside
 
 Preserve mode separates the in-memory workbook model from the saved package. Stock openpyxl uses its object model both to represent the workbook and to regenerate the file during save. paper-xlsx keeps the original archive as the source of truth and uses the object model to describe edits:
 
-1. **Byte retention** — the load keeps every part of the original archive. Content that openpyxl does not parse or fully represent remains available in the retained bytes. This includes content in drawings, VBA projects, pivot caches, media, and custom XML.
-2. **The dirty ledger** — instrumented chokepoints in openpyxl's own setters record every semantic mutation. A compare-based diff-save is impossible here, because openpyxl cannot serialize a faithful candidate to compare against — serialization *is* the lossy act. The ledger is the only honest record of what changed.
-3. **The splice writer** — touched sheets are stream-patched: untouched byte ranges are copied verbatim, dirty cells are replaced at their exact scanned spans. Unmodeled XML passes through untouched *because it is never interpreted*. Untouched parts are raw-copied without recompression.
-4. **Cross-part discipline** — every operation class has a sanctioned set of parts it may touch, enforced in tests by an exact changed-part budget: the package diff must show exactly the expected parts changed and every other part byte-identical.
+1. **Byte retention**: the load keeps every part of the original archive. Content that openpyxl does not parse or fully represent remains available in the retained bytes. This includes content in drawings, VBA projects, pivot caches, media, and custom XML.
+2. **The dirty ledger**: instrumented chokepoints in openpyxl's own setters record every semantic mutation. A compare-based diff-save is impossible here, because openpyxl cannot serialize a faithful candidate to compare against; serialization is the lossy act. The ledger records what changed.
+3. **The splice writer**: touched sheets are stream-patched. Untouched byte ranges are copied verbatim; dirty cells are replaced at their exact scanned spans. Unmodeled XML passes through untouched because it is never interpreted. Untouched parts are raw-copied without recompression.
+4. **Cross-part discipline**: every operation class has a sanctioned set of parts it may touch, enforced in tests by an exact changed-part budget. The package diff must show exactly the expected parts changed and every other part byte-identical.
 
 | A real workbook, edited and saved | stock openpyxl 3.1.5 | paper-xlsx preserve mode |
 |---|---|---|
@@ -130,11 +130,11 @@ Preserve mode separates the in-memory workbook model from the saved package. Sto
 | Sparklines, x14 validations/formatting | dropped (load-time warning) | survive byte-identical |
 | VBA project in `.xlsm` | stripped unless `keep_vba=True` | survives |
 | `data_only=True`, then save | every formula replaced by its cached value, silently | refused unless explicitly allowed |
-| `insert_rows` / `delete_rows` | cells move, references don't — silent corruption | references rewritten (or edit refused); `AddressRemap` returned |
+| `insert_rows` / `delete_rows` | cells move, references don't; silent corruption | references rewritten (or edit refused); `AddressRemap` returned |
 | Formula caches after an edit | cached results can be cleared; formulas are not calculated | affected caches invalidated; full recalc requested on open |
 | Unsafe or ambiguous operation | best guess, silently | typed `PaperRefusal`, atomic |
 
-The full preserve-mode guide — including the refusal taxonomy, receipts, the oracle, and delivery — is in [`doc/paper.rst`](https://github.com/paper-instruments/paper-xlsx/blob/main/doc/paper.rst).
+The full preserve-mode guide, including the refusal taxonomy, receipts, the oracle, and delivery, is in [`doc/paper.rst`](https://github.com/paper-instruments/paper-xlsx/blob/main/doc/paper.rst).
 
 ## Testing
 
@@ -154,7 +154,7 @@ The library's test discipline is documented in [CONTRIBUTING.md](https://github.
 The fork keeps the `openpyxl` import name so existing code does not need new imports. Only the distribution name changes, similar to Pillow (`pip install pillow`, `import PIL`).
 
 - PyPI distribution / GitHub repository: **`paper-xlsx`**
-- Python import: **`openpyxl`** — never `import paper_xlsx`, anywhere
+- Python import: **`openpyxl`**, never `import paper_xlsx`, anywhere
 - Fork sentinel: `openpyxl.__paper_version__`
 - Upstream base: openpyxl **3.1.5**
 
@@ -164,7 +164,7 @@ The upstream openpyxl APIs remain available. Preserve-by-default changes save be
 
 ## Documentation
 
-- [`doc/paper.rst`](https://github.com/paper-instruments/paper-xlsx/blob/main/doc/paper.rst) — the preserve-mode guide: loading and saving, formula-cache freshness, perception, editing, the oracle, delivery, the refusal taxonomy, and the compatibility opt-out. Ships inside the sdist.
+- [`doc/paper.rst`](https://github.com/paper-instruments/paper-xlsx/blob/main/doc/paper.rst): the preserve-mode guide, covering loading and saving, formula-cache freshness, perception, editing, the oracle, delivery, the refusal taxonomy, and the compatibility opt-out. Ships inside the sdist.
 - The remaining Sphinx docs cover the upstream openpyxl APIs. Use `preserve=False` when you need upstream save behavior.
 
 ## Current limitations
@@ -173,7 +173,7 @@ Preserve mode refuses operations that it cannot save safely. Current examples in
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](https://github.com/paper-instruments/paper-xlsx/blob/main/CONTRIBUTING.md) for the engineering discipline this fork runs on. The short version: the upstream suite must remain green; persistence changes need saved-and-reopened assertions and exact package-delta checks; package-format regressions should use representative frozen fixtures; guarded refusals must be atomic; and new XML handling goes through openpyxl's `Serialisable` descriptor framework rather than string-formatted XML.
+See [CONTRIBUTING.md](https://github.com/paper-instruments/paper-xlsx/blob/main/CONTRIBUTING.md) for the engineering discipline this fork runs on. The short version: the upstream suite must remain green; persistence changes need saved-and-reopened assertions and exact package-delta checks; package-format regressions should use representative frozen fixtures; guarded refusals must be atomic; and new XML handling goes through openpyxl's `Serialisable` descriptor framework rather than string-formatted XML.
 
 Useful non-code contributions include real-world fixtures authored by desktop Excel or Google Sheets under the provenance rules in [CONTRIBUTING.md](https://github.com/paper-instruments/paper-xlsx/blob/main/CONTRIBUTING.md).
 
@@ -186,4 +186,21 @@ Useful non-code contributions include real-world fixtures authored by desktop Ex
 
 paper-xlsx exists because openpyxl's object model and format coverage are excellent. Thanks to Eric Gazoni, Charlie Clark, and the openpyxl contributors (see [AUTHORS.rst](https://github.com/paper-instruments/paper-xlsx/blob/main/AUTHORS.rst)) for the work this project builds on. Upstream openpyxl lives at [foss.heptapod.net/openpyxl/openpyxl](https://foss.heptapod.net/openpyxl/openpyxl).
 
-If you reference this project in writing, cite it as *paper-xlsx* (Paper Instruments, Inc.), a fork of *openpyxl* by Eric Gazoni, Charlie Clark, and contributors, and link to this repository.
+## Citation
+
+If you reference paper-xlsx in research or writing:
+
+```bibtex
+@software{paper_xlsx,
+  title   = {paper-xlsx: an agent-first structure editor for Excel documents},
+  author  = {{Paper Instruments, Inc.}},
+  year    = {2026},
+  url     = {https://github.com/paper-instruments/paper-xlsx}
+}
+```
+
+paper-xlsx is a fork of *openpyxl* by Eric Gazoni, Charlie Clark, and contributors.
+
+## License
+
+MIT, inherited from openpyxl. Original work © 2010 openpyxl; fork additions © 2026 Paper Instruments, Inc. This fork preserves the upstream license and attribution. See [LICENCE.rst](https://github.com/paper-instruments/paper-xlsx/blob/main/LICENCE.rst).
