@@ -145,7 +145,10 @@ jobs:
       - name: Install documentation dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . -r doc/requirements.txt "lxml>=6.1,<7"
+          python -m pip install -e . -r doc/requirements.txt \
+            -r tools/autodoc/requirements.txt "lxml>=6.1,<7"
+      - name: Check generated API reference
+        run: python tools/autodoc/generate_api_reference.py --check
       - name: Build documentation without warnings
         run: sphinx-build -W --keep-going -b html doc doc/.build/html
 
