@@ -200,3 +200,7 @@ If you reference paper-xlsx in research or writing:
 ```
 
 paper-xlsx is a fork of *openpyxl* by Eric Gazoni, Charlie Clark, and contributors.
+
+## License
+
+MIT, inherited from openpyxl. Original work © 2010 openpyxl; fork additions © 2026 Paper Instruments, Inc. This fork preserves the upstream license and attribution. See [LICENCE.rst](https://github.com/paper-instruments/paper-xlsx/blob/main/LICENCE.rst).
