@@ -18,6 +18,7 @@ from griffe_typingdoc import TypingDocExtension
 
 GENERATOR_VERSION = "1.5.0"
 LOCAL_CROSSREF = re.compile(r"\[([^\]]+)\]\(#[^)]+\)")
+REST_WARNING = re.compile(r"(?:<br>|\s)\.\. warning::\s*")
 TYPE_CODE = re.compile(r"<code>([^<]*)</code>")
 OUTPUT_NAMES = (
     "INDEX.md",
@@ -116,8 +117,9 @@ def replace_root_heading(markdown: str, public_path: str, level: int) -> str:
 
 
 def normalize_markdown(markdown: str) -> str:
-    """Remove dead local links and restore hyphenated prose used as a type."""
+    """Remove dead links and normalize renderer-dependent Markdown details."""
     markdown = LOCAL_CROSSREF.sub(r"\1", markdown)
+    markdown = REST_WARNING.sub(" **Warning:** ", markdown)
     return TYPE_CODE.sub(
         lambda match: f"<code>{match.group(1).replace(' - ', '-')}</code>",
         markdown,

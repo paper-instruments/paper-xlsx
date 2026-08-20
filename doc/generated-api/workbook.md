@@ -24,7 +24,7 @@ Use this function instead of using an `ExcelWriter`.
 Name | Type | Description | Default
 ---- | ---- | ----------- | -------
 `allow_formula_loss` | | a workbook loaded with `data_only=True` holds cached values instead of formulas, so saving destroys formulas. Under preserve mode such a save refuses unless this flag is set (and even then only cells you actually edited lose their formulas — untouched cells keep them in the original bytes). On the stock path the flag silences the loud warning. | <code>False</code>
-`receipt` | | preserve mode only — return an `openpyxl.preserve.receipts.EditReceipt` comparing the saved file against the AS-LOADED source bytes. NOTE: after several saves from one session the receipt is cumulative — it describes the session, not the last call.<br>.. warning:: When creating your workbook using `write_only` set to True, you will only be able to call this function once. Subsequent attempts to modify or save the file will raise an `openpyxl.shared.exc.WorkbookAlreadySaved` exception. | <code>False</code>
+`receipt` | | preserve mode only — return an `openpyxl.preserve.receipts.EditReceipt` comparing the saved file against the AS-LOADED source bytes. NOTE: after several saves from one session the receipt is cumulative — it describes the session, not the last call. **Warning:** When creating your workbook using `write_only` set to True, you will only be able to call this function once. Subsequent attempts to modify or save the file will raise an `openpyxl.shared.exc.WorkbookAlreadySaved` exception. | <code>False</code>
 
 ## `validate`
 
