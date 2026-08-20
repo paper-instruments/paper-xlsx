@@ -311,10 +311,12 @@ def _dirty_closure(wb, dirty):
 
 def source_impacts(wb, ledger):
     """Return local pivot caches that workbook edits can make stale."""
+    index, _cache_parts = _index(wb)
+    if not index:
+        return []
     dirty = {ws: set(coords) for ws, coords in ledger.value_overwrites.items()
              if coords}
     tainted = _dirty_closure(wb, dirty)
-    index, _cache_parts = _index(wb)
     pivots_by_cache = {}
     for pivot_name, entries in index.items():
         for title, cache_part in entries:
