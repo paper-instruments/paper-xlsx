@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import difflib
 import re
 import sys
 from importlib.metadata import version as distribution_version
@@ -240,13 +241,24 @@ def check_outputs(output: Path, files: Dict[str, str]) -> int:
     actual = {path.name for path in output.glob("*.md")}
     expected = set(files)
     problems = []
+    diffs = []
     for name in sorted(expected - actual):
         problems.append(f"missing: {output / name}")
     for name in sorted(actual - expected):
         problems.append(f"stale: {output / name}")
     for name in sorted(actual & expected):
-        if (output / name).read_text(encoding="utf-8") != files[name]:
+        current = (output / name).read_text(encoding="utf-8")
+        if current != files[name]:
             problems.append(f"changed: {output / name}")
+            diffs.extend(
+                difflib.unified_diff(
+                    current.splitlines(),
+                    files[name].splitlines(),
+                    fromfile=f"checked-in/{name}",
+                    tofile=f"generated/{name}",
+                    lineterm="",
+                )
+            )
     if problems:
         print("Generated API reference is out of date:", file=sys.stderr)
         print("\n".join(f"  {problem}" for problem in problems), file=sys.stderr)
@@ -254,6 +266,8 @@ def check_outputs(output: Path, files: Dict[str, str]) -> int:
             "Run: python tools/autodoc/generate_api_reference.py",
             file=sys.stderr,
         )
+        if diffs:
+            print("\n".join(diffs), file=sys.stderr)
         return 1
     print(f"Generated API reference is current: {len(files)} files in {output}")
     return 0
