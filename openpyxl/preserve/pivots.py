@@ -17,10 +17,6 @@ from openpyxl.utils.cell import coordinate_to_tuple, range_boundaries
 from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW, SHEET_MAIN_NS
 
 from . import crosspart
-from .tables import _rels_path, _resolve_target
-
-_PIVOT_TABLE_REL = "/pivotTable"
-_PIVOT_CACHE_REL = "/pivotCacheDefinition"
 
 
 def _cache_root(payload):
@@ -41,87 +37,19 @@ def _cache_root(payload):
         allow_prefixed_root=True)
 
 
-def _pivot_root(payload):
-    """Validate a pivot-table root, including legal prefixed spelling."""
-    try:
-        element = fromstring(payload)
-    except (ParseError, ValueError, TypeError) as exc:
-        raise UnsupportedStructureError(
-            "pivot table definition XML is malformed",
-            kind="unsupported-pivot-table") from exc
-    expected = "{{{0}}}pivotTableDefinition".format(SHEET_MAIN_NS)
-    if element.tag != expected:
-        raise UnsupportedStructureError(
-            "pivot table definition has an unexpected root element",
-            kind="unsupported-pivot-table")
-    return crosspart.scan_small(
-        payload, "pivotTableDefinition", max_depth=1,
-        allow_prefixed_root=True)
-
-
-def _relationship_targets(zin, owner_part, suffix):
-    rels_part = _rels_path(owner_part)
-    if rels_part not in zin.namelist():
-        return {}
-    root = crosspart.scan_small(zin.read(rels_part), "Relationships",
-                                max_depth=1)
-    out = {}
-    for child in root.children:
-        if child.local() != "Relationship" \
-                or not child.attrs.get("Type", "").endswith(suffix):
-            continue
-        out[child.attrs.get("Id")] = _resolve_target(
-            owner_part, child.attrs.get("Target", ""))
-    return out
-
-
 def _index(wb):
     """Return ``(qualified-name map, cache parts)`` from source bytes."""
-    from .saver import _package_info
+    from openpyxl.pivot.graph import load_workbook_pivot_graph
 
-    with zipfile.ZipFile(io.BytesIO(wb._paper_source)) as zin:
-        names = set(zin.namelist())
-        wb_part, sheets = _package_info(zin)
-        cache_targets = _relationship_targets(
-            zin, wb_part, _PIVOT_CACHE_REL)
-        cache_by_id = {}
-        workbook_root = crosspart.scan_small(
-            zin.read(wb_part), "workbook", max_depth=3)
-        pivot_cache_groups = [
-            child for child in workbook_root.children
-            if child.local() == "pivotCaches"
-        ]
-        for group in pivot_cache_groups:
-            for child in group.children:
-                if child.local() != "pivotCache":
-                    continue
-                cache_id = child.attrs.get("cacheId")
-                rid = child.attrs.get("id") or child.attrs.get("r:id")
-                target = cache_targets.get(rid)
-                if cache_id is not None and target in names:
-                    cache_by_id[cache_id] = target
-
-        qualified = {}
-        ledger = getattr(wb, "_paper_ledger", None)
-        current_by_original = {
-            original: ws.title
-            for ws, original in getattr(ledger, "renames", {}).items()
-        }
-        for title, sheet_part in sheets.items():
-            current_title = current_by_original.get(title, title)
-            pivot_targets = _relationship_targets(
-                zin, sheet_part, _PIVOT_TABLE_REL)
-            for pivot_part in pivot_targets.values():
-                if pivot_part not in names:
-                    continue
-                root = _pivot_root(zin.read(pivot_part))
-                pivot_name = root.attrs.get("name")
-                cache_part = cache_by_id.get(root.attrs.get("cacheId"))
-                if pivot_name and cache_part:
-                    qualified.setdefault(pivot_name, []).append(
-                        (current_title, cache_part))
-        cache_parts = sorted(set(cache_by_id.values()))
-        return qualified, cache_parts
+    graph = load_workbook_pivot_graph(wb)
+    graph.raise_for_refresh_index()
+    ledger = getattr(wb, "_paper_ledger", None)
+    current_by_original = {
+        original: ws.title
+        for ws, original in getattr(ledger, "renames", {}).items()
+    }
+    qualified = graph.qualified_name_map(current_by_original)
+    return qualified, list(graph.registered_cache_parts)
 
 
 def _worksheet(wb, title):
