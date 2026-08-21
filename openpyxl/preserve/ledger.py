@@ -49,7 +49,8 @@ class DirtyLedger:
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag", "cache_writes", "pivot_refresh_requests",
-                 "pivot_source_snapshots", "image_replacements")
+                 "pivot_source_snapshots", "image_replacements",
+                 "pivot_operations")
 
     def __init__(self):
         self.armed = False
@@ -89,6 +90,7 @@ class DirtyLedger:
         self.pivot_refresh_requests = set()
         self.pivot_source_snapshots = {}
         self.image_replacements = {}
+        self.pivot_operations = {}
 
     # -- arming --------------------------------------------------------
 

@@ -103,6 +103,18 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
         for request in getattr(ledger, "image_replacements", {}).values()
     }
     pivot_parts = set(getattr(ledger, "pivot_refresh_requests", ()))
+    if ledger is not None:
+        for operation in getattr(ledger, "pivot_operations", {}).values():
+            if operation.kind != "create":
+                continue
+            effects.append({
+                "kind": "pivot_created",
+                "name": operation.name,
+                "sheet": operation.sheet,
+                "output_range": operation.output_range,
+                "cache_id": operation.allocation.cache_id,
+                "parts": list(operation.allocation.owned_parts()),
+            })
     if ledger is not None and pivot_parts:
         from .pivots import source_impacts
 
