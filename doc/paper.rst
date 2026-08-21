@@ -126,8 +126,10 @@ surface:
     changes an existing pivot's local source, directly intersects it, or
     transitively affects a formula inside it unless its cache is selected
     through this method. A value-writing save also treats known volatile
-    built-ins such as ``NOW``, ``TODAY``, and ``RAND`` in a pivot source as
-    changed. Exact direct ranges, static defined names, and named tables are
+    built-ins such as ``NOW``, ``TODAY``, ``RAND``, ``CELL``, and ``INFO`` in a
+    pivot source as changed. Formula dependencies also include
+    calculation-relevant cell formatting, row and column display state, and
+    filtering. Exact direct ranges, static defined names, and named tables are
     recognized; dynamic or otherwise unresolved local sources refuse
     conservatively. OOXML does not declare runtime volatility for user-defined
     functions, so callers using a UDF in a pivot source must select that pivot

@@ -7,12 +7,13 @@ import re
 from openpyxl.utils.cell import range_boundaries
 
 VOLATILE_NONDETERMINISTIC = ("NOW", "TODAY", "RAND", "RANDBETWEEN",
-                             "RANDARRAY")
+                             "RANDARRAY", "CELL", "INFO")
 _VOLATILE_FUNCTIONS = frozenset(
     name + "(" for name in VOLATILE_NONDETERMINISTIC)
+_CONTEXTUAL_FUNCTIONS = frozenset(("SUBTOTAL(", "AGGREGATE("))
 
 _VOLATILE_RE = re.compile(
-    r"\b(NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY|INDIRECT|OFFSET)\s*\(",
+    r"\b(NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY|CELL|INFO|INDIRECT|OFFSET)\s*\(",
     re.IGNORECASE)
 
 
@@ -37,6 +38,7 @@ class DependencySketch:
         self.references = {}      # "Model!B6" -> [(sheet, bounds, raw)]
         self.unresolved = {}      # "Model!B6" -> [raw operand]
         self.volatile = set()     # formula addresses with known volatility
+        self.contextual = set()   # formulas affected by display/filter state
 
     def cells_referencing(self, sheet_title, bounds):
         """Formula cells whose references intersect ``bounds`` on the given
@@ -128,13 +130,17 @@ def dependency_sketch(wb):
                     for name in functions)
                 volatile = any(
                     name in _VOLATILE_FUNCTIONS for name in functions)
-                cached = (operands, indirect, volatile)
+                contextual = any(
+                    name in _CONTEXTUAL_FUNCTIONS for name in functions)
+                cached = (operands, indirect, volatile, contextual)
                 token_cache[formula] = cached
-            operands, indirect, volatile = cached
+            operands, indirect, volatile, contextual = cached
             if indirect:
                 sketch.unresolved.setdefault(address, []).append(formula)
             if volatile:
                 sketch.volatile.add(address)
+            if contextual:
+                sketch.contextual.add(address)
             for raw in operands:
                 _classify(sketch, wb, ws, address, raw)
     return sketch

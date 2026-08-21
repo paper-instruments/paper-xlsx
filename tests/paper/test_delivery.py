@@ -693,6 +693,59 @@ def test_volatile_formula_in_pivot_source_requires_refresh(
     assert caught.value.kind == "stale-pivot-cache"
 
 
+@pytest.mark.parametrize("mutation", ["cell-format", "hidden-row"])
+def test_non_value_formula_precedent_requires_pivot_refresh(
+        tmp_path, mutation):
+    from openpyxl import Workbook
+
+    source = tmp_path / (mutation + "-pivot-source.xlsx")
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws["A1"] = ('=CELL("color",D1)' if mutation == "cell-format"
+                else "=SUBTOTAL(109,D1:D2)")
+    ws["D1"] = -1
+    ws["D2"] = 20
+    created.save(source)
+
+    wb = load_workbook(source, preserve=True)
+    _with_pivot_graph(
+        wb, [("ContextPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A1" sheet="Data"/>'})
+    if mutation == "cell-format":
+        wb["Data"]["D1"].number_format = "[Red]0"
+    else:
+        wb["Data"].row_dimensions[2].hidden = True
+
+    assert not any(wb._paper_ledger.value_overwrites.values())
+    with pytest.raises(UnsupportedStructureError) as caught:
+        wb.validate()
+    assert caught.value.kind == "stale-pivot-cache"
+
+
+def test_non_contextual_formula_allows_row_display_change(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "sum-hidden-row-pivot-source.xlsx"
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws["A1"] = "=SUM(D1:D2)"
+    ws["D1"] = 10
+    ws["D2"] = 20
+    created.save(source)
+
+    wb = load_workbook(source, preserve=True)
+    _with_pivot_graph(
+        wb, [("SumPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A1" sheet="Data"/>'})
+    wb["Data"].row_dimensions[2].hidden = True
+
+    wb.validate()
+
+
 def test_oracle_recalc_requests_formula_backed_pivot_refresh(
         tmp_path, monkeypatch):
     from openpyxl import Workbook, oracle

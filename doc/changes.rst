@@ -21,7 +21,10 @@ Bugfixes
   ranges, static defined names, and named worksheet tables; refuse structural
   source edits through parsed OOXML references; integrate oracle candidates by
   selecting affected caches; and report the remaining Excel-refresh
-  requirement in edit receipts and oracle results.
+  requirement in edit receipts and oracle results. Formula-source checks also
+  propagate calculation-relevant formatting, row/column display, and filter
+  changes, including conditional-volatility functions such as ``CELL`` and
+  ``INFO``.
 
 
 paper-xlsx 0.2.0 (2026-08-14)

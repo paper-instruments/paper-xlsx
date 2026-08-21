@@ -378,11 +378,11 @@ def _use_current_defined_names(model, wb):
             ws.defined_names = live.defined_names.copy()
 
 
-def _dependency_model(wb):
+def _dependency_model(wb, retained=None):
     """Return formulas with the workbook's current defined-name bindings."""
     if not wb.data_only:
         return wb
-    formulas = _source_formula_model(wb)
+    formulas = retained if retained is not None else _source_formula_model(wb)
     _use_current_defined_names(formulas, wb)
     return formulas
 
@@ -538,7 +538,119 @@ def _formula_binding_changes(wb, ledger):
     return cells, ranges
 
 
-def _dirty_closure(wb, dirty, *, force_recalculation=False):
+def _style_dependency_changes(wb, ledger, direct_changes):
+    """Return style-edited cells and an optional retained source model."""
+    candidates = {
+        ws: set(coordinates) - set(direct_changes.get(ws, ()))
+        for ws, coordinates in ledger.cells.items()
+        if set(coordinates) - set(direct_changes.get(ws, ()))
+    }
+    if not candidates:
+        return set(), None
+    retained = _source_formula_model(wb)
+    changed = set()
+    for ws, coordinates in candidates.items():
+        original_title = ledger.renames.get(ws, ws.title)
+        original = _worksheet(retained, original_title)
+        if original is None:
+            continue
+        for row, column in coordinates:
+            current_cell = ws._cells.get((row, column))
+            original_cell = original._cells.get((row, column))
+            current_style = getattr(current_cell, "_style", None)
+            original_style = getattr(original_cell, "_style", None)
+            if current_style != original_style:
+                changed.add((ws.title, row, column))
+    return changed, retained
+
+
+def _column_nodes(payload):
+    """Return rendered column spans with their complete semantic attributes."""
+    if payload is None:
+        return set()
+    try:
+        root = fromstring(payload)
+        nodes = set()
+        for child in root:
+            if child.tag.rsplit("}", 1)[-1] != "col":
+                continue
+            min_col = int(child.attrib["min"])
+            max_col = int(child.attrib["max"])
+            if not 1 <= min_col <= max_col <= MAX_COLUMN:
+                raise ValueError("column span is outside worksheet bounds")
+            nodes.add((min_col, max_col,
+                       tuple(sorted(child.attrib.items()))))
+        return nodes
+    except (KeyError, ParseError, TypeError, ValueError):
+        return None
+
+
+def _changed_column_ranges(before, after):
+    """Return exact column bands whose rendered dimension state changed."""
+    old = _column_nodes(before)
+    new = _column_nodes(after)
+    if old is None or new is None:
+        return {(1, 1, MAX_COLUMN, MAX_ROW)}
+    return {
+        (min_col, 1, max_col, MAX_ROW)
+        for min_col, max_col, _attributes in old.symmetric_difference(new)
+    }
+
+
+def _changed_filter_ranges(before, after):
+    """Return old/new AutoFilter ranges, conservatively whole-sheet."""
+    ranges = set()
+    for payload in (before, after):
+        if payload is None:
+            continue
+        try:
+            ref = fromstring(payload).attrib.get("ref")
+        except (ParseError, TypeError, ValueError):
+            return {(1, 1, MAX_COLUMN, MAX_ROW)}
+        bounds = _bounds(ref)
+        if bounds is None:
+            return {(1, 1, MAX_COLUMN, MAX_ROW)}
+        ranges.add(bounds)
+    return ranges or {(1, 1, MAX_COLUMN, MAX_ROW)}
+
+
+def _calculation_context_changes(wb, ledger, direct_changes):
+    """Formula-precedent cells/ranges changed without a value overwrite."""
+    from .regions import diff_regions, diff_row_attrs
+
+    cells, retained = _style_dependency_changes(
+        wb, ledger, direct_changes)
+    visibility_ranges = set()
+    format_ranges = set()
+    for ws in wb.worksheets:
+        if ws in ledger.added_sheets:
+            continue
+        armed_rows = ledger.row_attr_snapshots.get(ws, {})
+        rows = diff_row_attrs(
+            ws, armed_rows)
+        for row, current in rows.items():
+            before = dict(armed_rows.get(row, ()))
+            target = visibility_ranges if before.get("hidden") != \
+                current.get("hidden") else format_ranges
+            target.add((ws.title, (1, row, MAX_COLUMN, row)))
+        armed = ledger.region_snapshots.get(ws, {})
+        regions = diff_regions(ws, armed)
+        if "cols" in regions:
+            format_ranges.update(
+                (ws.title, bounds) for bounds in _changed_column_ranges(
+                    armed.get("cols"), regions["cols"]))
+        if "autoFilter" in regions:
+            visibility_ranges.update(
+                (ws.title, bounds) for bounds in _changed_filter_ranges(
+                    armed.get("autoFilter"), regions["autoFilter"]))
+        if "sheetFormatPr" in regions:
+            format_ranges.add((ws.title, (1, 1, MAX_COLUMN, MAX_ROW)))
+    return cells, visibility_ranges, format_ranges, retained
+
+
+def _dirty_closure(wb, dirty, *, dependency_cells=(),
+                   dependency_ranges=(), activation_ranges=(), retained=None,
+                   force_recalculation=False):
     """Dirty cells plus every formula result they may affect transitively."""
     tainted = {
         (ws.title, row, column)
@@ -546,11 +658,16 @@ def _dirty_closure(wb, dirty, *, force_recalculation=False):
         for row, column in coordinates
         if row is not None and column is not None
     }
-    if not tainted and not force_recalculation:
+    context_cells = set(dependency_cells)
+    context_ranges = set(dependency_ranges)
+    other_context_ranges = set(activation_ranges)
+    if not tainted and not context_cells and not context_ranges \
+            and not other_context_ranges \
+            and not force_recalculation:
         return tainted, set()
     from .perception import dependency_sketch
 
-    formulas = _dependency_model(wb)
+    formulas = _dependency_model(wb, retained=retained)
     sketch = dependency_sketch(formulas)
     outputs = _formula_outputs(formulas)
     for address in sketch.volatile:
@@ -580,9 +697,14 @@ def _dirty_closure(wb, dirty, *, force_recalculation=False):
             key = _address_key(address)
             if key is None or key in tainted:
                 continue
-            if any(_bounds_hit(sheet, bounds, tainted)
-                   or _ranges_hit(sheet, bounds, tainted_ranges)
-                   for sheet, bounds, _raw in references):
+            direct_hit = any(
+                _bounds_hit(sheet, bounds, tainted)
+                or _ranges_hit(sheet, bounds, tainted_ranges)
+                for sheet, bounds, _raw in references)
+            context_hit = address in sketch.contextual and any(
+                _ranges_hit(sheet, bounds, context_ranges)
+                for sheet, bounds, _raw in references)
+            if direct_hit or context_hit:
                 tainted.add(key)
                 changed = True
     return tainted, tainted_ranges
@@ -598,8 +720,13 @@ def source_impacts(wb, ledger, *, force_recalculation=False):
     for ws, writes in ledger.cache_writes.items():
         if writes:
             changes.setdefault(ws, set()).update(writes)
+    (dependency_cells, dependency_ranges, activation_ranges, retained) = \
+        _calculation_context_changes(wb, ledger, changes)
     tainted, tainted_ranges = _dirty_closure(
-        wb, changes, force_recalculation=force_recalculation)
+        wb, changes, dependency_cells=dependency_cells,
+        dependency_ranges=dependency_ranges,
+        activation_ranges=activation_ranges, retained=retained,
+        force_recalculation=force_recalculation)
     binding_cells, binding_ranges = _formula_binding_changes(wb, ledger)
     tainted.update(binding_cells)
     tainted_ranges.update(binding_ranges)
@@ -623,7 +750,10 @@ def source_impacts(wb, ledger, *, force_recalculation=False):
                     binding_cells or binding_ranges)
                 recalculation_intersects = force_recalculation and bool(
                     tainted or tainted_ranges)
-                intersects = bool(changes) or binding_intersects \
+                intersects = bool(changes or dependency_cells
+                                  or dependency_ranges
+                                  or activation_ranges) \
+                    or binding_intersects \
                     or recalculation_intersects
             else:
                 binding_intersects = (
