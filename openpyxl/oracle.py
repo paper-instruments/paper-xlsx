@@ -6,11 +6,11 @@ This library never calculates — a partial engine is a silent-wrongness
 machine. Instead it routes to a real implementation of
 Excel's semantics and reports MEASUREMENTS, never judgments:
 
-- :func:`recalc` recomputes all cells on a TEMP COPY and scans for Excel
+- `recalc` recomputes all cells on a TEMP COPY and scans for Excel
   error tokens. When given an output path, it splices eligible calculated
   caches into a separate copy of the original package; LibreOffice's
   rewritten archive is never delivered.
-- :func:`certify` checks whether LibreOffice reproduces the file's own
+- `certify` checks whether LibreOffice reproduces the file's own
   cached values (Excel's answer key for its current inputs) within the
   pinned tolerance, excluding cells downstream of nondeterministic volatile
   functions.
@@ -38,6 +38,23 @@ import zipfile
 
 from openpyxl.errors import OracleTimeoutError, OracleUnavailableError
 from openpyxl.formula.tokenizer import EXCEL_ERROR_CODES
+
+__all__ = [
+    "CertificationResult",
+    "DATE_SERIAL_ABS_FLOOR",
+    "ERROR_TOKENS",
+    "Evaluation",
+    "NUMERIC_ULPS",
+    "NumericalToleranceResult",
+    "ORACLE_UNSUPPORTED_FUNCS",
+    "RecalcResult",
+    "available",
+    "certify",
+    "evaluate",
+    "evaluate_many",
+    "find_soffice",
+    "recalc",
+]
 
 _DARWIN_APP = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
 
@@ -671,8 +688,12 @@ class CertificationResult:
 
         Strict matches are not re-evaluated, so this cannot impose a policy
         narrower than Paper's strict comparator. The classification does not
-        alter :attr:`status` or establish complete coverage. Formula errors,
+        alter `status` or establish complete coverage. Formula errors,
         nonnumeric mismatches, and non-finite values always remain outside.
+
+        :return: A measurement-only classification of the recorded strict
+            divergences.
+        :rtype: openpyxl.oracle.NumericalToleranceResult
         """
         if abs_tol is None and rel_tol is None:
             raise ValueError("abs_tol or rel_tol must be provided")
@@ -711,6 +732,12 @@ class CertificationResult:
 
 
 class NumericalToleranceResult:
+    """Measurement-only classification of strict numeric divergences.
+
+    `strict_status` remains the original certification result. Coverage and
+    tolerance buckets are reported separately; this object never replaces or
+    weakens strict certification.
+    """
 
     SCHEMA = "oracle_numerical_tolerance"
     VERSION = 1
@@ -1118,7 +1145,7 @@ def _is_external_reference(value):
 
 
 def _exclusion_seeds(wb_formulas):
-    """{(sheet, row, col): reason} for every formula cell certification
+    """`{(sheet, row, col): reason}` for every formula cell certification
     must exclude: volatile, unsupported function, external reference, or
     unparseable. Tokenizer-precise — string literals that merely contain
     a trigger name do not taint."""

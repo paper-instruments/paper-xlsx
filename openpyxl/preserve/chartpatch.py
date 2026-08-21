@@ -250,7 +250,7 @@ def plan_chart_updates(wb, sheet_title, operation, index, amount,
                        overrides=None):
     """Plan every chart/drawing part patch for a shift on ``sheet_title``.
 
-    Returns ({part_name: new_payload}, blockers). Used twice: as a dry run
+    Returns (`{part_name: new_payload}`, blockers). Used twice: as a dry run
     when the edit is attempted (blockers refuse before any mutation) and for
     real at save time. ``overrides`` supplies already-planned payloads so a
     part touched by an earlier shift is patched incrementally.
@@ -336,7 +336,7 @@ def patch_chart_renames(payload, mapping):
 
 
 def patch_chart_rename(payload, old_title, new_title):
-    """Rewrite every chart formula text (<c:f>) referencing ``old_title``
+    """Rewrite every chart formula text (`<c:f>`) referencing ``old_title``
     to ``new_title``. Returns the patched payload, or None
     when nothing referenced the old title. Refuses when the chart carries
     machinery whose references the patch cannot see (the same blocker set
@@ -378,7 +378,7 @@ DRAWING_MAIN_NS = b"http://schemas.openxmlformats.org/drawingml/2006/main"
 
 
 def _text_sequences(data):
-    """([(start, end, text, path)] for <c:f> leaves, same for <a:t>
+    """([(start, end, text, path)] for `<c:f>` leaves, same for `<a:t>`
     leaves), in document order, each with its ancestor local-name path —
     the two property families chartpatch can express. The path anchors
     the positional mapping structurally: two documents that serialize
@@ -475,7 +475,7 @@ def plan_property_edits(wb, ws, key, armed, current, original,
     """A loaded chart's model drifted since arm: express the drift as byte
     patches on the ORIGINAL part bytes, or refuse naming the first
     property chartpatch cannot express. Expressible:
-    series/axis formula texts (<c:f>) and text runs (<a:t> — titles,
+    series/axis formula texts (`<c:f>`) and text runs (`<a:t>` — titles,
     axis titles). Cached series values are left as-is: Excel re-reads
     series from cells when it renders the chart."""
     from openpyxl.errors import UnsupportedStructureError

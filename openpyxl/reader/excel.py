@@ -551,7 +551,7 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
     """Open the given filename and return the workbook
 
     :param filename: the path to open or a file-like object
-    :type filename: string or a file-like object open in binary mode c.f., :class:`zipfile.ZipFile`
+    :type filename: string or a file-like object open in binary mode c.f., `zipfile.ZipFile`
 
     :param read_only: optimised for reading, content cannot be edited
     :type read_only: bool
@@ -572,18 +572,18 @@ def load_workbook(filename, read_only=False, keep_vba=KEEP_VBA,
         retained as the source of truth and save becomes a lossless splice of
         recorded edits into them. Content openpyxl does not model (charts,
         drawings, VBA, pivot caches, extensions) survives byte-identical.
-        Unsafe operations raise a typed :class:`openpyxl.errors.PaperRefusal`
+        Unsafe operations raise a typed `openpyxl.errors.PaperRefusal`
         instead of proceeding lossily. The default ``None`` enables preserve
         mode for editable OOXML workbooks. Read-only and unsupported-format
         loads retain stock behavior. Pass ``False`` explicitly to opt into the
         stock, potentially lossy round trip.
     :type preserve: bool or None
 
-    :rtype: :class:`openpyxl.workbook.Workbook`
+    :rtype: `openpyxl.workbook.Workbook`
 
     .. note::
 
-        When using lazy load, all worksheets will be :class:`openpyxl.worksheet.iter_worksheet.IterableWorksheet`
+        When using lazy load, all worksheets will be `openpyxl.worksheet.iter_worksheet.IterableWorksheet`
         and the returned workbook will be read-only.
 
     """

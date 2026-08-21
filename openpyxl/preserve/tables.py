@@ -47,7 +47,7 @@ def _totals_row_count(tbl):
 
 
 def sheet_table_parts(zin, sheet_part):
-    """{displayName: (part_name, original_bytes)} for one sheet, resolved
+    """`{displayName: (part_name, original_bytes)}` for one sheet, resolved
     through the ORIGINAL rels (producers number table parts arbitrarily —
     Table.path's id-derived guess is not trustworthy)."""
     rels_part = _rels_path(sheet_part)

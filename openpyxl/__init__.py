@@ -8,12 +8,12 @@ fork adds a **preserve mode**: ``load_workbook(path)`` keeps the original
 package bytes as the source of truth by default, so saving
 splices your edits back in without destroying the charts, pivots, VBA,
 or formatting a normal openpyxl round-trip drops — and any edit it
-cannot make safely refuses loudly (a typed :mod:`openpyxl.errors`
+cannot make safely refuses loudly (a typed `openpyxl.errors`
 exception) instead of corrupting the file.
 
-Start here: :attr:`openpyxl.__paper_version__` (fork sentinel), and the
-:mod:`openpyxl.preserve`, :mod:`openpyxl.oracle` and
-:mod:`openpyxl.errors` modules. The project README and ``doc/paper.rst``
+Start here: `openpyxl.__paper_version__` (fork sentinel), and the
+`openpyxl.preserve`, `openpyxl.oracle` and
+`openpyxl.errors` modules. The project README and ``doc/paper.rst``
 give the full tour.
 """
 

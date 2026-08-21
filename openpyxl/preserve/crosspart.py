@@ -602,7 +602,7 @@ def plan_styles_xml(wb, led, original, translator):
 
     Fonts/fills/borders/dxfs come from the MODEL tails (their numbering is
     file-stable at load: seeded in file order, never renumbered). Cell xfs
-    and custom number formats come from the :class:`StyleTranslator`, which
+    and custom number formats come from the `StyleTranslator`, which
     owns the model-to-file numbering translation."""
     (n_fonts, n_fills, n_borders, _n_align, _n_prot,
      _n_numfmts) = led._style_lengths

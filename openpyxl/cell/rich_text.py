@@ -60,7 +60,7 @@ class TextBlock(Strict):
 class CellRichText(list):
     """Represents a rich text string.
 
-    Initialize with a list made of pure strings or :class:`TextBlock` elements
+    Initialize with a list made of pure strings or `TextBlock` elements
     Can index object to access or modify individual rich text elements
     it also supports the + and += operators between rich text strings
     There are no user methods for this class

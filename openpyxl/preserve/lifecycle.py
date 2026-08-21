@@ -1,7 +1,7 @@
 # paper-xlsx: the part-lifecycle engine
 
 """One primitive, both directions: every part a save creates or deletes
-routes through a :class:`PartPlan` — part payload + content-type override
+routes through a `PartPlan` — part payload + content-type override
 + relationship, planned together, applied by the saver's build loop. No
 bespoke cascades.
 

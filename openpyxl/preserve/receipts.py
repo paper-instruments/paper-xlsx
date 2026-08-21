@@ -196,7 +196,7 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
 
 
 def receipt(before, after, *, recalc=None, _ledger=None, _workbook=None):
-    """Build an :class:`EditReceipt` from two package states (paths,
+    """Build an `EditReceipt` from two package states (paths,
     bytes, or binary file-likes). ``recalc``: an oracle result
     (RecalcResult/CertificationResult/Evaluation) whose
     ``to_dict()`` rides along. The result must carry ``artifact_sha256``

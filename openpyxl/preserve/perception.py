@@ -84,7 +84,7 @@ _SHEET_REF_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([^'!]+))!(.+)$")
 
 
 def dependency_sketch(wb):
-    """Build a :class:`DependencySketch` from every formula in the model
+    """Build a `DependencySketch` from every formula in the model
     (tokenizer-based; — coarse is fine)."""
     from openpyxl.formula import Tokenizer
 

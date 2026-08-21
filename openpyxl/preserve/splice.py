@@ -237,9 +237,9 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     """Return the new part payload for one worksheet.
 
     ``dirty_cells``: resolved coordinate set (see resolve_dirty_cells).
-    ``region_changes``: {tag: serialized bytes or None} — user-changed
+    ``region_changes``: `{tag: serialized bytes or None}` — user-changed
     satellite regions (None = region now absent).
-    ``row_attr_changes``: {row_index: {attr: value}} — changed row display
+    ``row_attr_changes``: `{row_index: {attr: value}`} — changed row display
     attributes.
     ``scan``: a SheetScan of ``original`` if the caller already has one.
     ``cf_replacement``: bytes replacing ALL conditionalFormatting elements
@@ -247,11 +247,11 @@ def splice_sheet(ws, original, dirty_cells, region_changes, row_attr_changes,
     ``hyperlinks_replacement``: bytes replacing the hyperlinks element.
     ``style_resolver``: cell -> FILE xf index (StyleTranslator) —
     model style indices must never reach the spliced bytes.
-    ``cache_writes``: {(row, col): computed_value} — cached-value updates
+    ``cache_writes``: `{(row, col): computed_value}` — cached-value updates
     for untouched formula cells in a preserved recalc candidate: the
     <f> bytes stay verbatim, only the cached <v> (and its t attribute)
     change.
-    ``cache_invalidations``: {(row, col)} — formula cells and array followers
+    ``cache_invalidations``: `{(row, col)}` — formula cells and array followers
     whose cached <v> must be removed because results are uncertified.
     """
     if scan is None:
