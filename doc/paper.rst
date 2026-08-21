@@ -153,6 +153,10 @@ staged cache entry, formula flag, protection-warning state, and any exact
 number-format registry delta. ``append()`` journals only its target row and
 caller-supplied cell bindings; it does not snapshot the sheet or workbook.
 
+``ws.pivots.create(...)`` / ``PivotTable.refresh()`` / ``update()`` / ``delete()``
+    Create and edit Paper-managed classic worksheet PivotTables in preserve
+    mode. See :ref:`paper-pivottables`.
+
 Computation oracle
 ------------------
 
@@ -211,3 +215,45 @@ Refusal taxonomy
 ``BoundaryViolationError``, ``RelationshipPolicyError``,
 ``OracleUnavailableError``, and ``OracleTimeoutError``. Invalid Python
 arguments continue to use ``TypeError`` and ``ValueError``.
+
+
+.. _paper-pivottables:
+
+PivotTables
+-----------
+
+Preserve-mode ``Worksheet.pivots`` inspects relationship-resolved PivotTables
+and creates Paper-managed classic worksheet pivots. Created pivots have
+current materialized output, ``refreshOnLoad=False``, ``enableRefresh=True``,
+and ``saveData=True``. Full lifecycle (create, inspect, refresh, repoint,
+move, update, rename, delete) applies to Paper-managed dedicated-cache
+pivots. Foreign Excel-authored pivots stay inspectable and byte-preserved;
+v1 grants them at most ``can_refresh_on_open`` through
+``Workbook.set_pivot_refresh_on_load``.
+
+Supported v1 sources are worksheet tables and sheet-qualified ranges. Formula
+columns may require stock LibreOffice via :mod:`openpyxl.oracle`; LibreOffice
+never authors the published package. Literal sources do not require
+LibreOffice. Data Model/OLAP, grouping, calculated fields, slicers,
+PivotCharts, ``showDataAs``, Strict mutation, and templates refuse.
+
+.. code-block:: python
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook("sales.xlsx", preserve=True)
+    pivot = wb["Summary"].pivots.create(
+        name="ByRegion",
+        source="RegionTable",
+        destination="A1",
+        rows=["Region"],
+        values=["Amount"],
+    )
+    wb["Data"]["B2"] = 99
+    pivot.refresh()
+    wb.save("sales-out.xlsx")
+
+Direct mutation of inherited ``Worksheet._pivots`` or low-level cache objects
+is not the safe Paper API. Classic worksheet pivots are not Data Model
+support.
+
