@@ -138,7 +138,7 @@ ORACLE_UNSUPPORTED_FUNCS = frozenset(['LAMBDA', 'LET', 'MAP', 'REDUCE', 'SCAN', 
 ## `openpyxl.oracle.RecalcResult`
 
 ```python
-RecalcResult(cells_scanned, formula_cells, errors, *, output_kind = None, written = None, verified_unchanged = None, excluded = None, package_diff = None, artifact_sha256 = None, calculation_artifact_sha256 = None)
+RecalcResult(cells_scanned, formula_cells, errors, *, output_kind = None, written = None, verified_unchanged = None, excluded = None, package_diff = None, pivot_refreshes = None, artifact_sha256 = None, calculation_artifact_sha256 = None)
 ```
 
 ### `status`
@@ -234,5 +234,8 @@ Recalculate a temporary copy with LibreOffice.
 With no `output_path`, return error-scan evidence and write nothing.
 With a separate `output_path`, build a Paper-preserved candidate by
 splicing eligible calculated caches into the original package structure.
+If those writes or the requested full recalculation can affect a local
+pivot source, the candidate requests refresh-on-open and
+`RecalcResult.pivot_refreshes` reports the Excel refresh requirement.
 LibreOffice's rewritten package is never delivered, and the result makes
 no claim of Excel equivalence or financial correctness.

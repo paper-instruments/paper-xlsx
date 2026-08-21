@@ -63,7 +63,7 @@ explained by a remap classify as "shifted", the rest as "changed".
 ## `openpyxl.preserve.receipt`
 
 ```python
-receipt(before, after, *, recalc = None, _ledger = None)
+receipt(before, after, *, recalc = None, _ledger = None, _workbook = None)
 ```
 
 Build an `EditReceipt` from two package states (paths,
