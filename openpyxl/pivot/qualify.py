@@ -185,7 +185,17 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
         and not (cache is not None and (cache.has_grouping or cache.has_calculated))
         and not disallowed
     )
-    if semantic_ok:
+    semantics_closed = True
+    if semantic_ok and workbook is not None:
+        semantics_closed = _paper_graph_matches_projection(
+            workbook, node, projection)
+        if not semantics_closed:
+            _disable(flags, reasons, (
+                "can_headless_refresh", "can_rebuild_cache",
+                "can_edit_layout", "can_repoint_source", "can_move",
+            ), "paper-semantics-unproved", part=node.identity.pivot_part)
+
+    if semantic_ok and semantics_closed:
         flags["can_edit_layout"] = True
         _drop_reasons(reasons, "can_edit_layout")
 
@@ -219,13 +229,17 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
                  output_range=node.output_range)
 
     if semantic_ok and not cache_shared and ownership_proved:
-        flags["can_headless_refresh"] = True
-        flags["can_rebuild_cache"] = True
-        flags["can_repoint_source"] = True
-        flags["can_move"] = True
         flags["can_delete"] = True
-        for name in OWNERSHIP_CAPABILITIES:
-            _drop_reasons(reasons, name)
+        _drop_reasons(reasons, "can_delete")
+        if semantics_closed:
+            flags["can_headless_refresh"] = True
+            flags["can_rebuild_cache"] = True
+            flags["can_repoint_source"] = True
+            flags["can_move"] = True
+            for name in (
+                    "can_headless_refresh", "can_rebuild_cache",
+                    "can_repoint_source", "can_move"):
+                _drop_reasons(reasons, name)
 
     return _result(
         valid, origin, flags, scope, reasons, source_supported,
@@ -432,6 +446,79 @@ def _output_owned(workbook, node, projection):
     return _reconstruct_owned_output(workbook, node, projection) is not None
 
 
+def _paper_graph_matches_projection(workbook, node, projection):
+    """Require a closed Paper-owned graph before any full reserialization."""
+    import io
+    import zipfile
+
+    package = getattr(workbook, "_paper_source", None)
+    if not package or projection.spec is None:
+        return False
+    try:
+        from openpyxl.pivot.build import build_pivot_payloads
+        from openpyxl.pivot.plan import plan_pivot
+
+        snapshot = _snapshot_from_cache_package(package, node, projection)
+        plan = plan_pivot(projection.spec, snapshot)
+        expected = build_pivot_payloads(
+            plan, int(node.cache_id), workbook)
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            actual = (
+                archive.read(node.identity.pivot_part),
+                archive.read(node.cache_definition_part),
+                archive.read(node.cache_records_part),
+            )
+        wanted = (
+            expected.pivot_table,
+            expected.cache_definition,
+            expected.cache_records,
+        )
+    except Exception:
+        return False
+    if actual == wanted:
+        return True
+    return all(
+        _normalized_graph_xml(left) == _normalized_graph_xml(right)
+        for left, right in zip(actual, wanted)
+    )
+
+
+_IGNORED_REFRESH_ATTRIBUTES = frozenset((
+    "refreshOnLoad",
+    "refreshedBy",
+    "refreshedDate",
+    "refreshedDateIso",
+    "refreshedVersion",
+))
+
+
+def _normalized_graph_xml(payload):
+    from openpyxl.pivot.graph import _local, _parse_xml
+
+    root = _parse_xml(payload)
+    if root is None:
+        return None
+
+    def visit(element, is_root=False):
+        attributes = []
+        for raw, value in element.attrib.items():
+            name = _local(raw)
+            if name == "id":
+                continue
+            if is_root and _local(element.tag) == "pivotCacheDefinition" \
+                    and name in _IGNORED_REFRESH_ATTRIBUTES:
+                continue
+            attributes.append((name, value))
+        return (
+            _local(element.tag),
+            tuple(sorted(attributes)),
+            (element.text or "").strip(),
+            tuple(visit(child) for child in list(element)),
+        )
+
+    return visit(root, is_root=True)
+
+
 def _reconstruct_owned_output(workbook, node, projection):
     """Return materialized owned output cells, or None if unproved.
 
@@ -447,8 +534,7 @@ def _reconstruct_owned_output(workbook, node, projection):
         from openpyxl.pivot.plan import plan_pivot
 
         snapshot = _snapshot_from_cache_package(package, node, projection)
-        spec = _spec_without_explicit_items(projection.spec)
-        plan = plan_pivot(spec, snapshot)
+        plan = plan_pivot(projection.spec, snapshot)
     except Exception:
         return None
     if plan.output.ref != node.output_range:
@@ -461,13 +547,26 @@ def _reconstruct_owned_output(workbook, node, projection):
     if worksheet is None:
         return None
     cells = getattr(worksheet, "_cells", {})
+    dirty = set()
+    ledger = getattr(workbook, "_paper_ledger", None)
+    if ledger is not None:
+        dirty = set(ledger.dirty_coordinates(worksheet))
     owned = []
     for cell in plan.output.cells:
         if cell.value is None:
             continue
+        if (cell.row, cell.column) in dirty:
+            return None
         existing = cells.get((cell.row, cell.column))
         actual = None if existing is None else existing.value
-        if actual != cell.value:
+        if type(actual) is not type(cell.value) or actual != cell.value:
+            return None
+        if existing is None or existing.data_type == "f":
+            return None
+        if cell.number_format is not None \
+                and existing.number_format != cell.number_format:
+            return None
+        if existing._comment is not None or existing._hyperlink is not None:
             return None
         owned.append((cell.row, cell.column, cell.value, cell.role))
     return tuple(owned)
@@ -515,13 +614,3 @@ def _snapshot_from_cache_package(package, node, projection):
 def _first_local(root, tag):
     from openpyxl.pivot.graph import _first
     return _first(root, tag)
-
-
-def _spec_without_explicit_items(spec):
-    from dataclasses import replace
-    from openpyxl.pivot.api_types import PivotAxisField
-
-    def _clear(fields):
-        return tuple(PivotAxisField(field.field) for field in fields)
-
-    return replace(spec, rows=_clear(spec.rows), columns=_clear(spec.columns))

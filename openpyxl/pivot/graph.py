@@ -1034,6 +1034,10 @@ def _pivot_fields(root):
                 "field": field_index,
                 "aggregate": _DATA_FIELD_FUNCS.get(func, func),
                 "name": _attr(child, "name"),
+                "number_format_id": _attr(child, "numFmtId"),
+                "show_data_as": _attr(child, "showDataAs") or "normal",
+                "base_field": _attr(child, "baseField"),
+                "base_item": _attr(child, "baseItem"),
             }))
     return len(fields), row_fields, column_fields, page_fields, data_fields, reasons
 

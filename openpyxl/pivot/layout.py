@@ -26,6 +26,7 @@ ROLE_VALUE = "value"
 ROLE_SUBTOTAL = "subtotal"
 ROLE_GRAND_TOTAL = "grand_total"
 ROLE_BLANK = "blank"
+ROLE_FILTER = "filter"
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,8 @@ def layout_result(spec, result, destination, limits=None):
     if spec.column_grand_totals and spec.columns:
         total_cols += measure_count if values_on_columns else 1
 
-    output_cells = total_rows * total_cols
+    filter_cells = len(spec.filters) * 2
+    output_cells = total_rows * total_cols + filter_cells
     if output_cells > limits.output_cells:
         raise BoundaryViolationError(
             "pivot would materialize %s output cells; the limit is %s"
@@ -100,6 +102,15 @@ def layout_result(spec, result, destination, limits=None):
         )
     last_row = origin_row + total_rows - 1
     last_col = origin_col + total_cols - 1
+    filter_start_row = origin_row - len(spec.filters) - 1
+    if spec.filters and filter_start_row < 1:
+        raise BoundaryViolationError(
+            "pivot destination %s does not leave room for %s report "
+            "filter row(s) and the required spacer"
+            % (destination, len(spec.filters)),
+            kind="pivot-output-too-large",
+            options=[destination, str(len(spec.filters))],
+        )
     if last_row > MAX_ROW or last_col > MAX_COLUMN:
         raise BoundaryViolationError(
             "pivot output would exceed the worksheet grid at %s%s"
@@ -110,6 +121,7 @@ def layout_result(spec, result, destination, limits=None):
         )
 
     cells = {}
+    _write_filters(cells, spec, filter_start_row, origin_col)
     _write_headers(
         cells, spec, origin_row, origin_col, header_rows, label_cols,
         body_col_keys, captions, values_on_columns)
@@ -143,6 +155,17 @@ def layout_result(spec, result, destination, limits=None):
         destination=_coord(origin_col, origin_row),
         roles={(cell.row, cell.column): cell for cell in ordered},
     )
+
+
+def _write_filters(cells, spec, start_row, origin_col):
+    for offset, item in enumerate(spec.filters):
+        row = start_row + offset
+        selected = item.include or ()
+        display = display_item(selected[0]) if len(selected) == 1 \
+            else "(Multiple Items)"
+        _put(cells, row, origin_col, item.field, ROLE_FILTER, field=item.field)
+        _put(cells, row, origin_col + 1, display, ROLE_FILTER,
+             field=item.field)
 
 
 def _origin(destination):

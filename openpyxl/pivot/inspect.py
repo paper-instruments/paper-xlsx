@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime
 
 from openpyxl.pivot.api_types import (
     SUPPORTED_AGGREGATES,
@@ -122,7 +123,8 @@ def project_pivot(node, cache, source=None, workbook=None):
         details.get("page_includes") or {},
         node.identity.pivot_part, reasons)
     values = _project_values(
-        node.data_fields, field_names, node.identity.pivot_part, reasons)
+        node.data_fields, field_names, node.identity.pivot_part, reasons,
+        workbook)
 
     complete = not reasons
     spec = None
@@ -344,7 +346,7 @@ def _project_filters(page_fields, field_names, shared_counts, shared_values,
     return tuple(filters)
 
 
-def _project_values(data_fields, field_names, part, reasons):
+def _project_values(data_fields, field_names, part, reasons, workbook=None):
     if not data_fields:
         return None
     values = []
@@ -362,13 +364,59 @@ def _project_values(data_fields, field_names, part, reasons):
                 aggregate=str(aggregate),
             ))
             return None
+        show_data_as = item.get("show_data_as") or "normal"
+        base_field = item.get("base_field")
+        base_item = item.get("base_item")
+        if show_data_as != "normal" \
+                or base_field not in (None, "-1") \
+                or base_item not in (None, "1048832"):
+            reasons.append(_reason(
+                "unsupported-data-field-semantics",
+                part=part,
+                field=name,
+                show_data_as=show_data_as,
+            ))
+            return None
+        number_format = _number_format(
+            item.get("number_format_id"), workbook, part, name, reasons)
+        if number_format is _INVALID_NUMBER_FORMAT:
+            return None
         caption = item.get("name")
         values.append(PivotMeasure(
             name,
             aggregate=aggregate,
             caption=caption if caption else None,
+            number_format=number_format,
         ))
     return tuple(values)
+
+
+_INVALID_NUMBER_FORMAT = object()
+
+
+def _number_format(raw, workbook, part, field, reasons):
+    if raw is None:
+        return None
+    try:
+        number_format_id = int(raw)
+    except (TypeError, ValueError):
+        reasons.append(_reason(
+            "invalid-number-format", part=part, field=field, value=str(raw)))
+        return _INVALID_NUMBER_FORMAT
+    from openpyxl.styles.numbers import (
+        BUILTIN_FORMATS, BUILTIN_FORMATS_MAX_SIZE,
+    )
+
+    if number_format_id in BUILTIN_FORMATS:
+        return BUILTIN_FORMATS[number_format_id]
+    index = number_format_id - BUILTIN_FORMATS_MAX_SIZE
+    formats = () if workbook is None else workbook._number_formats
+    if index < 0 or index >= len(formats):
+        reasons.append(_reason(
+            "invalid-number-format", part=part, field=field,
+            value=str(number_format_id)))
+        return _INVALID_NUMBER_FORMAT
+    return formats[index]
 
 
 def _field_name(index, field_names, part, axis, reasons):
@@ -562,6 +610,11 @@ def _shared_item_value(element):
         return number
     if tag == "b":
         return raw in _TRUE
+    if tag == "d":
+        try:
+            return datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            return raw
     return raw
 
 

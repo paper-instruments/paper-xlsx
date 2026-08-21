@@ -235,12 +235,12 @@ Foreign Excel-authored pivots stay inspectable and byte-preserved;
 v1 grants them at most ``can_refresh_on_open`` through
 ``Workbook.set_pivot_refresh_on_load``.
 
-Supported v1 sources are worksheet tables, sheet-qualified ranges, and
-defined names that resolve to one rectangular range. Formula columns may
-require stock LibreOffice via :mod:`openpyxl.oracle`; no LibreOffice fork
-or commercial backend is required, and LibreOffice never authors the
-published package. Literal sources do not require LibreOffice. Data
-Model/OLAP, grouping, calculated fields, slicers, PivotCharts,
+Pivot creation accepts worksheet tables and sheet-qualified ranges. Inspection
+also resolves supported existing pivots whose source is a static defined name.
+Formula columns may require stock LibreOffice via :mod:`openpyxl.oracle`; no
+LibreOffice fork or commercial backend is required, and LibreOffice never
+authors the published package. Literal sources do not require LibreOffice.
+Data Model/OLAP, grouping, calculated fields, slicers, PivotCharts,
 ``showDataAs``, Strict mutation, templates, and in-session creation on a
 newly added sheet refuse.
 
@@ -279,4 +279,3 @@ those transcripts are not yet committed.
 Direct mutation of inherited ``Worksheet._pivots`` or low-level cache objects
 is not the safe Paper API. Classic worksheet pivots are not Data Model
 support.
-

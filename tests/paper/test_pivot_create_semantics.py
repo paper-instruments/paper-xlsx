@@ -175,8 +175,31 @@ def test_values_on_rows_and_filter_include(tmp_path):
     cache, table, _parts = _parse_created(dest)
     assert table.dataOnRows is True
     assert table.pageFields[0].fld == 3
+    assert table.location.rowPageCount == 1
+    assert table.location.colPageCount == 1
+    assert reopened["Summary"]["B2"].value == "Status"
+    assert reopened["Summary"]["C2"].value == "(Multiple Items)"
     assert "Sum" in _grid(reopened["Summary"], pivot.output_range).values()
     assert handle.output_range == pivot.output_range
+
+
+def test_duplicate_filter_items_are_collapsed_before_serialization(tmp_path):
+    src, wb = _preserved(tmp_path, table="SalesData")
+    wb["Summary"].pivots.create(
+        name="ClosedOnly",
+        source="SalesData",
+        destination="B4",
+        rows=["Region"],
+        filters=[PivotItemFilter("Status", include=["Closed", "Closed"])],
+        values=["Amount"],
+    )
+    dest = src + ".deduped-filter.xlsx"
+    reopened = save_and_reopen(wb, dest, preserve=True)
+    pivot = reopened["Summary"].pivots["ClosedOnly"]
+    assert pivot.spec.filters[0].include == ("Closed",)
+    assert reopened["Summary"]["C2"].value == "Closed"
+    _cache, table, _parts = _parse_created(dest)
+    assert table.pageFields[0].item >= 0
 
 
 @pytest.mark.parametrize("aggregate,caption", [

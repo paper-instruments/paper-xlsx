@@ -210,8 +210,8 @@ class PivotTableCollection:
                **kwargs):
         """Create one Paper-owned pivot on this worksheet.
 
-        Accepts table, sheet-qualified range, or defined-name sources, plus
-        the v1 axis, filter, aggregate, layout, totals, caption,
+        Accepts worksheet-table or sheet-qualified-range sources, plus the
+        v1 axis, filter, aggregate, layout, totals, caption,
         number-format, and built-in style vocabulary. Formula-backed
         sources may require stock LibreOffice; later mutators live on the
         returned handle. Unexpected keywords raise ``TypeError``.

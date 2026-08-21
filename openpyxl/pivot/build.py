@@ -346,6 +346,8 @@ def _table_definition(plan, cache_id, workbook=None):
             firstHeaderRow=plan.output.first_header_row,
             firstDataRow=plan.output.first_data_row,
             firstDataCol=plan.output.first_data_col,
+            rowPageCount=len(spec.filters) if spec.filters else None,
+            colPageCount=1 if spec.filters else None,
         ),
         pivotFields=pivot_fields,
         rowFields=tuple(row_fields),

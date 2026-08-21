@@ -174,7 +174,7 @@ def _plan_replace(context, operation):
     allocation = operation.allocation
     payloads = operation.payloads
     context.part_plan.replace_part(allocation.pivot_part, payloads.pivot_table)
-    if operation.kind in ("refresh", "repoint", "update"):
+    if getattr(operation, "cache_rebuild", False):
         context.part_plan.replace_part(
             allocation.cache_part, payloads.cache_definition)
         context.part_plan.replace_part(

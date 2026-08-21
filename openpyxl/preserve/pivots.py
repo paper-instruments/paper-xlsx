@@ -831,8 +831,8 @@ def validate_source_freshness(wb, ledger):
     for operation in getattr(ledger, "pivot_operations", {}).values():
         if getattr(operation, "noop", False):
             continue
-        if operation.kind in (
-                "create", "refresh", "repoint", "update", "delete"):
+        if operation.kind == "delete" \
+                or getattr(operation, "cache_rebuild", False):
             rebuilt.add(operation.allocation.cache_part)
     unsafe = [impact for impact in impacts
               if impact["part"] not in ledger.pivot_refresh_requests

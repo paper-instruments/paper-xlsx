@@ -150,6 +150,8 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
                     "kind": "pivot_renamed",
                     "name": operation.name,
                     "sheet": operation.sheet,
+                    "cache_rebuilt": bool(getattr(
+                        operation, "cache_rebuild", False)),
                 })
             elif operation.kind == "delete":
                 effects.append({
