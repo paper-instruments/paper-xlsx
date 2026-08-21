@@ -106,6 +106,11 @@ def test_calculation_artifact_hash_mismatch_refuses(tmp_path):
     )
     with pytest.raises(UnsupportedStructureError):
         apply_calculated_values(snapshot, artifact)
+    matching = _fake_artifact(snapshot, {"Data!B2": 11})
+    wb._paper_pivot_candidate_sha256 = "not-the-candidate"
+    with pytest.raises(UnsupportedStructureError) as hashed:
+        apply_calculated_values(snapshot, matching, workbook=wb)
+    assert hashed.value.kind == "unsupported-pivot-source"
 
 
 def test_libreoffice_bytes_are_not_published(tmp_path, monkeypatch):

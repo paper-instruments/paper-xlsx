@@ -51,7 +51,7 @@ def snapshot_for_pivot(workbook, source):
     if not snapshot.formula_coordinates:
         return snapshot
     artifact = calculate_pivot_source(workbook, snapshot)
-    return apply_calculated_values(snapshot, artifact)
+    return apply_calculated_values(snapshot, artifact, workbook=workbook)
 
 
 def calculate_pivot_source(workbook, snapshot):
@@ -67,6 +67,7 @@ def calculate_pivot_source(workbook, snapshot):
         )
     candidate = render_ordinary_candidate(workbook)
     candidate_sha = hashlib.sha256(candidate).hexdigest()
+    workbook._paper_pivot_candidate_sha256 = candidate_sha
     try:
         recalculated = _recalculate_bytes(candidate, timeout=120.0)
     except OracleUnavailableError as exc:
@@ -83,6 +84,7 @@ def calculate_pivot_source(workbook, snapshot):
             kind="unsupported-pivot-source",
             options=list(snapshot.formula_coordinates),
         ) from exc
+    assert_candidate_unused_as_publication(recalculated, workbook._paper_source)
     _wb_formulas, wb_values, _scanned, _formulas, errors = _recalc_scan(
         recalculated)
     if errors:
@@ -126,10 +128,17 @@ def calculate_pivot_source(workbook, snapshot):
     )
 
 
-def apply_calculated_values(snapshot, artifact):
+def apply_calculated_values(snapshot, artifact, workbook=None):
     if artifact.source_identity != snapshot.identity:
         raise UnsupportedStructureError(
             "pivot calculation artifact does not match the current source.",
+            kind="unsupported-pivot-source",
+        )
+    expected = getattr(workbook, "_paper_pivot_candidate_sha256", None) \
+        if workbook is not None else None
+    if expected is not None and expected != artifact.candidate_sha256:
+        raise UnsupportedStructureError(
+            "pivot calculation artifact does not match the current candidate.",
             kind="unsupported-pivot-source",
         )
     records = []
@@ -176,14 +185,14 @@ def render_ordinary_candidate(workbook):
     ledger.pivot_operations = {}
     buf = io.BytesIO()
     try:
-        save_preserved(workbook, buf)
+        save_preserved(workbook, buf, _skip_pivot_freshness=True)
         return buf.getvalue()
     finally:
         ledger.pivot_operations = ops
 
 
 def assert_candidate_unused_as_publication(candidate, published):
-    if candidate == published:
+    if published is not None and candidate == published:
         raise UnsupportedStructureError(
             "LibreOffice-produced workbook bytes cannot be the published "
             "artifact.",

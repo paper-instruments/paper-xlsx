@@ -45,8 +45,7 @@ def refresh_pivot(handle):
 def repoint_pivot(handle, source, spec=None):
     """Point a dedicated-cache pivot at a new table or range source."""
     state = handle._state()
-    _require_capability(state, "can_repoint_source")
-    _refuse_shared_cache(state, handle, "repoint")
+    _prepare_mutation(state, handle, "repoint", "can_repoint_source")
     new_source = PivotSource.parse(source)
     current = state.projection.spec
     if spec is None:
@@ -67,8 +66,7 @@ def move_pivot(handle, destination, destination_sheet=None):
             options=["destination_sheet"],
         )
     state = handle._state()
-    _require_capability(state, "can_move")
-    _refuse_shared_cache(state, handle, "move")
+    _prepare_mutation(state, handle, "move", "can_move")
     spec = replace(state.projection.spec, destination=destination)
     return _rebuild(handle, kind="move", spec=spec, allow_self_overlap=True)
 
@@ -76,8 +74,7 @@ def move_pivot(handle, destination, destination_sheet=None):
 def update_pivot(handle, **changes):
     """Replace the complete spec with only the supplied fields changed."""
     state = handle._state()
-    _require_capability(state, "can_edit_layout")
-    _refuse_shared_cache(state, handle, "update")
+    _prepare_mutation(state, handle, "update", "can_edit_layout")
     if not changes:
         return handle
     spec = _spec_with_changes(state.projection.spec, changes)
@@ -86,7 +83,7 @@ def update_pivot(handle, **changes):
 
 def rename_pivot(handle, name):
     state = handle._state()
-    _require_capability(state, "can_rename")
+    _prepare_mutation(state, handle, "rename", "can_rename", refuse_shared=False)
     if name == state.name:
         return handle
     spec = replace(state.projection.spec, name=name)
@@ -95,8 +92,7 @@ def rename_pivot(handle, name):
 
 def delete_pivot(handle):
     state = handle._state()
-    _require_capability(state, "can_delete")
-    _refuse_shared_cache(state, handle, "delete")
+    _prepare_mutation(state, handle, "delete", "can_delete")
     worksheet = handle._worksheet
     workbook = worksheet.parent
     ledger = workbook._paper_ledger
@@ -162,9 +158,11 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
     worksheet = handle._worksheet
     require_pivot_inspection(worksheet, api="PivotTable.%s" % kind)
     state = handle._state()
-    if kind == "refresh":
-        _require_capability(state, "can_headless_refresh")
-        _refuse_shared_cache(state, handle, "refresh")
+    capability = _REBUILD_CAPABILITIES.get(kind)
+    if capability is not None:
+        _prepare_mutation(
+            state, handle, kind, capability,
+            refuse_shared=kind != "rename")
     spec = spec or state.projection.spec
     workbook = worksheet.parent
     ledger = workbook._paper_ledger
@@ -179,13 +177,10 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
         if allow_self_overlap else (),
         ignore_name=state.name if allow_self_overlap or kind != "create" else None,
     )
-    payloads = build_pivot_payloads(
-        plan,
-        staged.allocation.cache_id if staged is not None else int(
-            _node_for(handle, graph).cache_id),
-        workbook,
-    )
-    noop = _is_noop(kind, state, plan, payloads, worksheet, spec, snapshot)
+    noop = _is_noop(
+        kind, state, plan, worksheet, spec, snapshot, staged, workbook, handle)
+    if noop and kind == "refresh":
+        return handle
     allocation = staged.allocation if staged is not None else _allocation_from_handle(
         workbook, worksheet, handle)
     replace_existing = staged is None or staged.replace_existing
@@ -207,9 +202,14 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
     styles_before = tuple(workbook._cell_styles)
     try:
         _checkpoint("planned", workbook)
-        if not noop:
-            _write_output_cells(worksheet, plan.output.cells)
-            _clear_obsolete(worksheet, old_cells, plan)
+        payloads = build_pivot_payloads(
+            plan,
+            staged.allocation.cache_id if staged is not None else int(
+                _node_for(handle, graph).cache_id),
+            workbook,
+        )
+        _write_output_cells(worksheet, plan.output.cells)
+        _clear_obsolete(worksheet, old_cells, plan)
         operation = PivotCreateOperation(
             kind="create" if (staged is not None and staged.kind == "create"
                               and not staged.replace_existing) else kind,
@@ -230,22 +230,16 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
             owned_coordinates=tuple(
                 (cell.row, cell.column) for cell in plan.output.cells
             ),
-            clear_coordinates=tuple(
-                (row, column) for row, column, _v, _r in old_cells
-                if (row, column) not in {
-                    (cell.row, cell.column) for cell in plan.output.cells}
-            ),
-            noop=noop,
+            clear_coordinates=_clear_coordinates(old_cells, plan),
+            noop=False,
             replace_existing=replace_existing,
             relationship_id=relationship_id,
         )
-        if not noop or kind != "refresh":
-            ops = dict(ledger.pivot_operations)
-            if staged is not None:
-                ops.pop(staged.session_id, None)
-            if not (noop and kind == "refresh"):
-                ops[operation.session_id] = operation
-            ledger.pivot_operations = ops
+        ops = dict(ledger.pivot_operations)
+        if staged is not None:
+            ops.pop(staged.session_id, None)
+        ops[operation.session_id] = operation
+        ledger.pivot_operations = ops
         _checkpoint("ledger", workbook)
     except Exception:
         _restore_cells(worksheet, cell_snapshots + old_snapshots)
@@ -254,8 +248,6 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
         _restore_styles(workbook, formats_before, styles_before)
         raise
 
-    if noop and kind == "refresh":
-        return handle
     invalidate_pivot_overlay(workbook)
     session = _session_for(workbook)
     from openpyxl.pivot.create import _staged_identity
@@ -277,6 +269,21 @@ class _Cell:
         self.column = column
         self.value = value
         self.role = role
+
+
+_REBUILD_CAPABILITIES = {
+    "refresh": "can_headless_refresh",
+    "repoint": "can_repoint_source",
+    "move": "can_move",
+    "update": "can_edit_layout",
+    "rename": "can_rename",
+}
+
+
+def _prepare_mutation(state, handle, verb, capability, refuse_shared=True):
+    if refuse_shared and state.qualification.origin == "paper":
+        _refuse_shared_cache(state, handle, verb)
+    _require_capability(state, capability)
 
 
 def _require_capability(state, name):
@@ -309,8 +316,6 @@ def _find_staged(ledger, handle):
             return operation
         if identity.relationship_id == "staged:%s" % operation.session_id:
             return operation
-        if operation.name == identity.name and operation.sheet == handle._worksheet.title:
-            return operation
     return None
 
 
@@ -335,12 +340,24 @@ def _owned_cells(state, staged, worksheet):
     return tuple(cells)
 
 
+def _new_output_values(plan):
+    return {(cell.row, cell.column): cell.value for cell in plan.output.cells}
+
+
+def _clear_coordinates(old_cells, plan):
+    new_values = _new_output_values(plan)
+    return tuple(
+        (row, column) for row, column, _value, _role in old_cells
+        if new_values.get((row, column), None) is None
+    )
+
+
 def _clear_obsolete(worksheet, old_cells, plan):
-    keep = {(cell.row, cell.column) for cell in plan.output.cells}
+    new_values = _new_output_values(plan)
     remaining = [
         (row, column, value, role)
         for row, column, value, role in old_cells
-        if (row, column) not in keep
+        if new_values.get((row, column), None) is None
     ]
     _clear_cells(worksheet, remaining)
 
@@ -368,20 +385,32 @@ def _clear_cells(worksheet, cells):
         existing.value = None
 
 
-def _is_noop(kind, state, plan, payloads, worksheet, spec, snapshot):
+def _is_noop(kind, state, plan, worksheet, spec, snapshot, staged, workbook, handle):
     if kind != "refresh":
         return False
     if state.projection.output_range != plan.output.ref:
         return False
-    if state.projection.spec.to_dict() != spec.to_dict():
+    current_spec = state.projection.spec
+    if current_spec is None or current_spec.to_dict() != spec.to_dict():
         return False
-    current = {
-        (cell.row, cell.column): cell.value
-        for cell in plan.output.cells
-        if cell.value is not None
-    }
-    for (row, column), value in current.items():
-        if worksheet.cell(row, column).value != value:
+    live_identity = _content_identity(snapshot)
+    if staged is not None:
+        if staged.source_identity != live_identity:
+            return False
+    else:
+        from openpyxl.preserve.pivots import source_impacts
+
+        allocation = _allocation_from_handle(workbook, worksheet, handle)
+        if any(impact["part"] == allocation.cache_part
+               for impact in source_impacts(workbook, workbook._paper_ledger)):
+            return False
+    store = getattr(worksheet, "_cells", {})
+    for cell in plan.output.cells:
+        if cell.value is None:
+            continue
+        existing = store.get((cell.row, cell.column))
+        actual = None if existing is None else existing.value
+        if actual != cell.value:
             return False
     return True
 
@@ -411,8 +440,6 @@ def _node_for(handle, graph):
     if node is None:
         for item in graph.pivots:
             if item.identity.pivot_part == handle._identity.pivot_part:
-                return item
-            if item.identity.name == handle._identity.name:
                 return item
     if node is None:
         raise TargetNotFoundError(

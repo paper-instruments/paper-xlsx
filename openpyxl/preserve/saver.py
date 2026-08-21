@@ -273,7 +273,8 @@ def _commit_preserve_plan(save_plan, target):
                     else validate_source))
 
 
-def save_preserved(workbook, target, *, allow_formula_loss=False):
+def save_preserved(workbook, target, *, allow_formula_loss=False,
+                   _skip_pivot_freshness=False):
     """Plan and deliver without retaining serializer side effects."""
     zipio.validate_target(target)
     source_identity = workbook._paper_source_identity
@@ -289,7 +290,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
         save_plan = _plan_preserved(
             workbook, allow_formula_loss=allow_formula_loss,
             expected_identity=expected_identity,
-            target_is_source=target_is_source)
+            target_is_source=target_is_source,
+            skip_pivot_freshness=_skip_pivot_freshness)
         committed_identity = _commit_preserve_plan(save_plan, target)
         if source_identity is not None and expected_identity is not None \
                 and (expected_identity.requested == source_identity.requested
@@ -343,7 +345,8 @@ def _expected_delivery_identity(workbook, target):
     return current
 
 
-def _validate_preserve_model(workbook, led, allow_formula_loss):
+def _validate_preserve_model(workbook, led, allow_formula_loss,
+                             skip_pivot_freshness=False):
     """Validate workbook-wide invariants and arm recalculation metadata."""
     if workbook.data_only and not allow_formula_loss:
         _refuse(
@@ -357,10 +360,16 @@ def _validate_preserve_model(workbook, led, allow_formula_loss):
 
     led.check_style_registry(workbook)
     from openpyxl.pivot.create import validate_create_freshness
-    from .pivots import validate_source_freshness
+    from .pivots import source_impacts, validate_source_freshness
 
-    validate_create_freshness(workbook, led)
-    pivot_impacts = validate_source_freshness(workbook, led)
+    if skip_pivot_freshness:
+        # Disposable formula-source candidates are not publication artifacts.
+        # Stale-cache refusal would otherwise block the oracle from seeing
+        # current source edits that a headless refresh is trying to consume.
+        pivot_impacts = source_impacts(workbook, led)
+    else:
+        validate_create_freshness(workbook, led)
+        pivot_impacts = validate_source_freshness(workbook, led)
     force_calcpr = led.formulas_changed \
         or _dirty_feeds_formulas(workbook, led) \
         or any(impact.get("formula_binding_changed")
@@ -1259,12 +1268,14 @@ def _make_preserve_plan(context, added, loaded, workbook_parts,
 
 
 def _plan_preserved(workbook, *, allow_formula_loss=False,
-                    expected_identity=None, target_is_source=False):
+                    expected_identity=None, target_is_source=False,
+                    skip_pivot_freshness=False):
     """Run every non-writing phase and return one immutable save plan."""
     context = _prepare_plan_context(workbook)
     try:
         force_calcpr = _validate_preserve_model(
-            workbook, context.ledger, allow_formula_loss)
+            workbook, context.ledger, allow_formula_loss,
+            skip_pivot_freshness=skip_pivot_freshness)
         added = _plan_new_sheets(context)
         requested_parts = {}
         _plan_requested_parts(context, requested_parts)

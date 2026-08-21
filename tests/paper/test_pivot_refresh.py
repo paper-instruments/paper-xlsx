@@ -6,8 +6,10 @@ import pytest
 from openpyxl import Workbook, load_workbook
 from openpyxl.errors import (
     BoundaryViolationError,
+    RelationshipPolicyError,
     UnsupportedStructureError,
 )
+from openpyxl.pivot.qualify import PAPER_TAG
 from openpyxl.worksheet.table import Table
 
 from .support.harness import save_and_reopen
@@ -180,14 +182,26 @@ def test_repoint_dedicated_source(tmp_path):
 
 
 def test_shared_cache_refresh_and_repoint_refuse(tmp_path):
-    src = _write_package(tmp_path, "shared.xlsx", _basic_package())
-    # add a second pivot relationship onto the same cache via overlay graph
+    src = _write_package(tmp_path, "shared.xlsx", _basic_package(
+        tag=PAPER_TAG,
+        extra_pivots=(
+            ("MarginByRegion", "xl/pivotTables/pivotTable2.xml",
+             "rIdPivot2", "1"),
+        ),
+    ))
     wb = load_workbook(str(src), preserve=True)
     pivot = wb["Summary"].pivots["SalesByRegion"]
-    # synthetic graph fixture is foreign (no Paper tag)
-    with pytest.raises(UnsupportedStructureError) as exc:
+    sibling = wb["Summary"].pivots["MarginByRegion"]
+    assert pivot.qualification_reasons
+    with pytest.raises(RelationshipPolicyError) as exc:
         pivot.refresh()
-    assert exc.value.kind == "unsupported-pivot-operation"
+    assert exc.value.kind == "pivot-cache-shared"
+    assert "Summary!MarginByRegion" in exc.value.options
+    with pytest.raises(RelationshipPolicyError) as repointed:
+        pivot.repoint_source("Data!A1:B5")
+    assert repointed.value.kind == "pivot-cache-shared"
+    assert sibling.name == "MarginByRegion"
+    assert wb["Summary"]["B3"].value == 10
 
 
 def test_foreign_refresh_on_open_does_not_grant_headless(tmp_path):
