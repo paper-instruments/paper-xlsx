@@ -947,19 +947,9 @@ def _charts_with_numeric_formula_entities(wb, sheet_title=None):
 
 
 def _pivots_referencing(wb, sheet_title):
-    source = getattr(wb, "_paper_source", None)
-    if not source:
-        return []
-    needles = _title_needles(sheet_title)
-    hits = []
-    with zipfile.ZipFile(io.BytesIO(source)) as z:
-        for name in z.namelist():
-            if name.startswith(("xl/pivotTables/", "xl/pivotCache/")) \
-                    and name.endswith(".xml"):
-                payload = z.read(name).lower()
-                if any(needle in payload for needle in needles):
-                    hits.append(name)
-    return hits
+    from .pivots import parts_referencing_sheet
+
+    return parts_referencing_sheet(wb, sheet_title)
 
 
 def _sheet_payload(wb, title):

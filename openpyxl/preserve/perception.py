@@ -7,10 +7,13 @@ import re
 from openpyxl.utils.cell import range_boundaries
 
 VOLATILE_NONDETERMINISTIC = ("NOW", "TODAY", "RAND", "RANDBETWEEN",
-                             "RANDARRAY")
+                             "RANDARRAY", "CELL", "INFO")
+_VOLATILE_FUNCTIONS = frozenset(
+    name + "(" for name in VOLATILE_NONDETERMINISTIC)
+_CONTEXTUAL_FUNCTIONS = frozenset(("SUBTOTAL(", "AGGREGATE("))
 
 _VOLATILE_RE = re.compile(
-    r"\b(NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY|INDIRECT|OFFSET)\s*\(",
+    r"\b(NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY|CELL|INFO|INDIRECT|OFFSET)\s*\(",
     re.IGNORECASE)
 
 
@@ -34,6 +37,8 @@ class DependencySketch:
     def __init__(self):
         self.references = {}      # "Model!B6" -> [(sheet, bounds, raw)]
         self.unresolved = {}      # "Model!B6" -> [raw operand]
+        self.volatile = set()     # formula addresses with known volatility
+        self.contextual = set()   # formulas affected by display/filter state
 
     def cells_referencing(self, sheet_title, bounds):
         """Formula cells whose references intersect ``bounds`` on the given
@@ -114,16 +119,30 @@ def dependency_sketch(wb):
                 # RANGE operand at all: the formula must
                 # count as unresolved (always-intersecting), never as
                 # invisible
+                functions = []
+                for token in tokens:
+                    if token.type != "FUNC" or token.subtype != "OPEN":
+                        continue
+                    name = token.value.upper()
+                    if name.startswith("_XLFN."):
+                        name = name[6:]
+                    functions.append(name)
                 indirect = any(
-                    t.type == "FUNC" and t.subtype == "OPEN"
-                    and t.value.upper().lstrip("_XLFN.")
-                    in ("INDIRECT(", "OFFSET(")
-                    for t in tokens)
-                cached = (operands, indirect)
+                    name in ("INDIRECT(", "OFFSET(")
+                    for name in functions)
+                volatile = any(
+                    name in _VOLATILE_FUNCTIONS for name in functions)
+                contextual = any(
+                    name in _CONTEXTUAL_FUNCTIONS for name in functions)
+                cached = (operands, indirect, volatile, contextual)
                 token_cache[formula] = cached
-            operands, indirect = cached
+            operands, indirect, volatile, contextual = cached
             if indirect:
                 sketch.unresolved.setdefault(address, []).append(formula)
+            if volatile:
+                sketch.volatile.add(address)
+            if contextual:
+                sketch.contextual.add(address)
             for raw in operands:
                 row_is_exact = formula_ref in (None, cell.coordinate)
                 _classify(sketch, wb, ws, row, col, row_is_exact,
@@ -188,7 +207,10 @@ def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw):
             sketch.unresolved.setdefault(address, []).append(raw)
             return
         try:
-            for dest_sheet, dest_ref in name.destinations:
+            destinations = list(name.destinations)
+            if not destinations:
+                raise ValueError("defined name has no static destinations")
+            for dest_sheet, dest_ref in destinations:
                 dest_bounds = range_boundaries(dest_ref.replace("$", ""))
                 canonical = sheets_by_name.get(dest_sheet.casefold())
                 if canonical is None:
@@ -212,7 +234,10 @@ def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw):
             sketch.unresolved.setdefault(address, []).append(raw)
             return
         try:
-            for dest_sheet, dest_ref in name.destinations:
+            destinations = list(name.destinations)
+            if not destinations:
+                raise ValueError("defined name has no static destinations")
+            for dest_sheet, dest_ref in destinations:
                 dest_bounds = range_boundaries(dest_ref.replace("$", ""))
                 canonical = sheets_by_name.get(dest_sheet.casefold())
                 if canonical is None:

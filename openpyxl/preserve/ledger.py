@@ -49,7 +49,7 @@ class DirtyLedger:
                  "orig_cell_styles_len", "rich_text_mode",
                  "sheet_states", "dxfs_len", "named_styles_len", "shifts",
                  "template_flag", "cache_writes", "pivot_refresh_requests",
-                 "image_replacements")
+                 "pivot_source_snapshots", "image_replacements")
 
     def __init__(self):
         self.armed = False
@@ -87,6 +87,7 @@ class DirtyLedger:
         self.cache_writes = {}         # ws -> {(row, col): computed value}
                                        # (preserved recalc candidate)
         self.pivot_refresh_requests = set()
+        self.pivot_source_snapshots = {}
         self.image_replacements = {}
 
     # -- arming --------------------------------------------------------
@@ -132,6 +133,9 @@ class DirtyLedger:
         led.template_flag = bool(wb.template)
         led.dxfs_len = len(wb._differential_styles.styles)
         led.named_styles_len = len(wb._named_styles)
+        from .pivots import snapshot_sources
+
+        led.pivot_source_snapshots = snapshot_sources(wb)
         led.armed = True
         return led
 

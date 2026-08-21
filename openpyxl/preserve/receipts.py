@@ -89,17 +89,38 @@ def _pivot_refresh_enabled(payload):
     except (ParseError, ValueError, TypeError):
         return False
     expected = "{{{0}}}pivotCacheDefinition".format(SHEET_MAIN_NS)
-    return root.tag == expected and root.attrib.get("refreshOnLoad") in (
-        "1", "true", "True")
+    refresh = root.attrib.get("refreshOnLoad", "false").casefold()
+    enabled = root.attrib.get("enableRefresh")
+    return root.tag == expected and refresh in ("1", "true") \
+        and (enabled is None or enabled.casefold() in ("1", "true"))
 
 
-def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
+def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
+                     workbook=None):
     effects = []
     image_rels = {
         request["rels_part"]
         for request in getattr(ledger, "image_replacements", {}).values()
     }
     pivot_parts = set(getattr(ledger, "pivot_refresh_requests", ()))
+    if ledger is not None and pivot_parts:
+        from .pivots import source_impacts
+
+        if workbook is None:
+            sheet = next(iter(ledger.value_overwrites), None)
+            workbook = getattr(sheet, "parent", None)
+        if workbook is not None:
+            for impact in source_impacts(workbook, ledger):
+                if impact["part"] not in pivot_parts:
+                    continue
+                effects.append({
+                    "kind": "pivot_source_changed_requires_refresh",
+                    "part": impact["part"],
+                    "cause": impact["cause"],
+                    "pivots": impact["pivots"],
+                    "source": impact["source"],
+                    "requirement": "excel_refresh_on_open",
+                })
     cause = "formula_changed" if getattr(ledger, "formulas_changed", False) \
         else "input_changed"
     if "xl/calcChain.xml" in names_a and "xl/calcChain.xml" not in names_b:
@@ -174,7 +195,7 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None):
     return effects
 
 
-def receipt(before, after, *, recalc=None, _ledger=None):
+def receipt(before, after, *, recalc=None, _ledger=None, _workbook=None):
     """Build an :class:`EditReceipt` from two package states (paths,
     bytes, or binary file-likes). ``recalc``: an oracle result
     (RecalcResult/CertificationResult/Evaluation) whose
@@ -218,7 +239,8 @@ def receipt(before, after, *, recalc=None, _ledger=None):
                 if refs:
                     cells_changed[name] = refs
         derived_effects = _derived_effects(
-            za, zb, names_a, names_b, ledger=_ledger)
+            za, zb, names_a, names_b, ledger=_ledger,
+            workbook=_workbook)
 
     from .inventory import scan_archive
 

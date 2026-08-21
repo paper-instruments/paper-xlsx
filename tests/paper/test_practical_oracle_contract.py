@@ -300,7 +300,7 @@ def test_preserved_recalc_candidate_writes_temporal_cache_with_source_style(
         oracle, "_certify_impl",
         lambda *_args, **_kwargs: (certification, recalculated))
 
-    candidate, written, _unchanged, excluded, _parts = \
+    candidate, written, _unchanged, excluded, _parts, _pivots = \
         oracle._preserved_recalc_candidate(
             source.getvalue(), recalculated, computed_formulas,
             computed_values, 1)
@@ -337,7 +337,7 @@ def test_preserved_recalc_candidate_refuses_temporal_cache_without_date_style(
         oracle, "_certify_impl",
         lambda *_args, **_kwargs: (certification, recalculated))
 
-    _candidate, written, _unchanged, excluded, _parts = \
+    _candidate, written, _unchanged, excluded, _parts, _pivots = \
         oracle._preserved_recalc_candidate(
             source.getvalue(), recalculated, computed_formulas,
             computed_values, 1)

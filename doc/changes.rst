@@ -15,6 +15,22 @@ Unreleased
   region, a headerless table's ``#Headers``, a ``#Totals`` with no totals
   row -- stay unresolved too, rather than being dropped from the sketch.
 
+Bugfixes
+--------
+
+* Refuse edits that would silently stale an existing worksheet-backed pivot
+  cache unless the caller explicitly requests refresh-on-open. Detect source
+  retargeting, formula dependency changes, staged formula-cache writes, and
+  transitive formula inputs as well as direct value writes; treat known
+  volatile built-ins as changing during value-writing saves; resolve direct
+  ranges, static defined names, and named worksheet tables; refuse structural
+  source edits through parsed OOXML references; integrate oracle candidates by
+  selecting affected caches; and report the remaining Excel-refresh
+  requirement in edit receipts and oracle results. Formula-source checks also
+  propagate calculation-relevant formatting, row/column display, and filter
+  changes, including conditional-volatility functions such as ``CELL`` and
+  ``INFO``.
+
 
 paper-xlsx 0.2.0 (2026-08-14)
 ================================
