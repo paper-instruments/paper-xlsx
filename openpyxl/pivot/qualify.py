@@ -494,6 +494,7 @@ _IGNORED_REFRESH_ATTRIBUTES = frozenset((
 
 def _normalized_graph_xml(payload):
     from openpyxl.pivot.graph import _local, _parse_xml
+    from openpyxl.xml.constants import REL_NS
 
     root = _parse_xml(payload)
     if root is None:
@@ -503,7 +504,7 @@ def _normalized_graph_xml(payload):
         attributes = []
         for raw, value in element.attrib.items():
             name = _local(raw)
-            if name == "id":
+            if is_root and raw == "{%s}id" % REL_NS:
                 continue
             if is_root and _local(element.tag) == "pivotCacheDefinition" \
                     and name in _IGNORED_REFRESH_ATTRIBUTES:
