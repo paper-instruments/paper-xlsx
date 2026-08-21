@@ -640,3 +640,43 @@ class TestConditionalFormatList:
         """
         diff = compare_xml(xml, expected)
         assert diff is None, diff
+
+
+def test_table_definition_keeps_conditional_formats_and_extLst(TableDefinition, Location):
+    from openpyxl.descriptors.excel import Extension, ExtensionList
+    from openpyxl.pivot.table import ConditionalFormatList
+
+    location = Location(ref="A3:B4", firstHeaderRow=1, firstDataRow=1,
+                        firstDataCol=1)
+    formats = ConditionalFormatList()
+    ext = ExtensionList(ext=[Extension(uri="{paper-table}")])
+    table = TableDefinition(
+        name="Sales",
+        cacheId=1,
+        dataCaption="Values",
+        location=location,
+        conditionalFormats=formats,
+        extLst=ext,
+    )
+    assert table.conditionalFormats is formats
+    xml = tostring(table.to_tree())
+    assert b'uri="{paper-table}"' in xml
+    loaded = TableDefinition.from_tree(fromstring(xml))
+    assert loaded.conditionalFormats is not None
+    assert loaded.extLst.ext[0].uri == "{paper-table}"
+    assert loaded.name == "Sales"
+    assert loaded.location.ref == "A3:B4"
+
+
+def test_pivot_field_keeps_extLst():
+    from openpyxl.descriptors.excel import Extension, ExtensionList
+    from openpyxl.pivot.table import PivotField
+
+    field = PivotField(
+        axis="axisRow",
+        extLst=ExtensionList(ext=[Extension(uri="{paper-pivot-field}")]),
+    )
+    xml = tostring(field.to_tree())
+    loaded = PivotField.from_tree(fromstring(xml))
+    assert loaded.axis == "axisRow"
+    assert loaded.extLst.ext[0].uri == "{paper-pivot-field}"

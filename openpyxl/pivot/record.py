@@ -55,7 +55,21 @@ class Record(Serialisable):
                  d=None,
                  x=None,
                 ):
-        self._fields = _fields
+        self._fields = list(_fields)
+        if m is not None:
+            self.m = m
+        if n is not None:
+            self.n = n
+        if b is not None:
+            self.b = b
+        if e is not None:
+            self.e = e
+        if s is not None:
+            self.s = s
+        if d is not None:
+            self.d = d
+        if x is not None:
+            self.x = x
 
 
 class RecordList(Serialisable):
@@ -70,7 +84,7 @@ class RecordList(Serialisable):
     r = Sequence(expected_type=Record, allow_none=True)
     extLst = Typed(expected_type=ExtensionList, allow_none=True)
 
-    __elements__ = ('r', )
+    __elements__ = ('r', 'extLst')
     __attrs__ = ('count', )
 
     def __init__(self,

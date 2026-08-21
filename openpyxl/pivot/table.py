@@ -787,7 +787,7 @@ class PivotField(Serialisable):
     showPropAsCaption = Bool(allow_none=True)
     defaultAttributeDrillState = Bool(allow_none=True)
 
-    __elements__ = ('items', 'autoSortScope',)
+    __elements__ = ('items', 'autoSortScope', 'extLst')
 
     def __init__(self,
                  items=(),
@@ -892,6 +892,7 @@ class PivotField(Serialisable):
         self.showPropTip = showPropTip
         self.showPropAsCaption = showPropAsCaption
         self.defaultAttributeDrillState = defaultAttributeDrillState
+        self.extLst = extLst
 
 
 class Location(Serialisable):
@@ -1022,7 +1023,7 @@ class TableDefinition(Serialisable):
                     'colFields', 'colItems', 'pageFields', 'dataFields', 'formats',
                     'conditionalFormats', 'chartFormats', 'pivotHierarchies',
                     'pivotTableStyleInfo', 'filters', 'rowHierarchiesUsage',
-                    'colHierarchiesUsage',)
+                    'colHierarchiesUsage', 'extLst')
 
     def __init__(self,
                  name=None,
@@ -1190,7 +1191,6 @@ class TableDefinition(Serialisable):
         self.dataFields = dataFields
         self.formats = formats
         self.conditionalFormats = conditionalFormats
-        self.conditionalFormats = None
         self.chartFormats = chartFormats
         self.pivotHierarchies = pivotHierarchies
         self.pivotTableStyleInfo = pivotTableStyleInfo
