@@ -35,6 +35,7 @@ accepted only with sidecars filled in by the human who authored each file.
 | `legacy/legacy.xls` | legacy | real BIFF .xls (LibreOffice-written) — refusal tests only |
 | `legacy/binary.xlsb` | legacy | DUMMY bytes (extension-trigger only; LO cannot write xlsb) — refusal tests only |
 | `large/large150k.xlsx` | large | 10,000×15 = 150k cells, 10k SUMs — perf smoke |
+| `pivots/` | pivot graph corpus | Honest Excel/LibreOffice/external-corpus entries; see `pivots/EXTERNAL_CORPUS.md` |
 
 ## Sidecar schema (pinned, CONVENTIONS §4)
 

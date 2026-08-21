@@ -77,9 +77,13 @@ def test_every_fixture_has_a_conforming_sidecar():
         prov = doc.get("provenance", {})
         if not isinstance(prov, dict) or "app" not in prov or "notes" not in prov:
             problems.append("{0}: sidecar provenance malformed".format(rel))
-        # provenance honesty: nothing in this corpus is Excel-authored
-        if "excel" in str(prov.get("app", "")).lower():
+        # Provenance honesty: Excel claims are allowed only for binaries
+        # under pivots/ that a human or desktop Excel actually authored.
+        # The rest of the corpus still cannot be relabeled as Excel.
+        if "excel" in str(prov.get("app", "")).lower() \
+                and not rel.startswith("pivots/"):
             problems.append(
-                "{0}: provenance claims Excel — this corpus cannot contain "
-                "Excel-authored fixtures".format(rel))
+                "{0}: provenance claims Excel — only tests/paper/fixtures/"
+                "pivots/ may contain honestly Excel-authored binaries".format(
+                    rel))
     assert not problems, "\n".join(problems)

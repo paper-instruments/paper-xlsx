@@ -1,6 +1,9 @@
 Unreleased
 ==========
 
+Changes
+-------
+
 * Allow guarded structural edits past provably disjoint array formulas,
   what-if data tables, comment-only VML, manual page breaks, and known x14
   ranges. Dynamic-reference refusals now ignore formulas that are provably
@@ -14,6 +17,10 @@ Unreleased
   unresolved. Selectors whose region does not exist -- an empty data
   region, a headerless table's ``#Headers``, a ``#Totals`` with no totals
   row -- stay unresolved too, rather than being dropped from the sketch.
+* Add a relationship-resolved, read-only PivotTable package graph. Refresh-on-open
+  targeting now consumes that graph. Foreign pivot parts are not deserialized
+  for inventory. Real Excel-authored pivot fixtures remain an external corpus
+  until honestly supplied.
 
 Bugfixes
 --------
