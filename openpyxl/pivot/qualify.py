@@ -36,9 +36,14 @@ MUTATION_CAPABILITIES = (
     "can_delete",
 )
 ALL_CAPABILITIES = ("can_refresh_on_open",) + MUTATION_CAPABILITIES
+# Shared caches refuse cache rebuild, source/catalog changes, movement,
+# layout/update, and delete. Layout-only shared-cache edits are deferred in
+# v1 because ``update()`` rebuilds cache records. Rename is excluded: it
+# replaces only the selected pivot definition.
 CACHE_ISOLATION_CAPABILITIES = (
     "can_headless_refresh",
     "can_rebuild_cache",
+    "can_edit_layout",
     "can_repoint_source",
     "can_move",
     "can_delete",

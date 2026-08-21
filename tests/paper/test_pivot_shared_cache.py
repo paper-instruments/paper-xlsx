@@ -22,11 +22,15 @@ def test_shared_cache_refuses_lifecycle_with_siblings(tmp_path):
     pivot = wb["Summary"].pivots["SalesByRegion"]
     sibling = wb["Summary"].pivots["MarginByRegion"]
     assert pivot.capabilities.can_headless_refresh is False
+    assert pivot.capabilities.can_edit_layout is False
     assert pivot.capabilities.can_delete is False
     with pytest.raises(RelationshipPolicyError) as refresh:
         pivot.refresh()
     assert refresh.value.kind == "pivot-cache-shared"
     assert "Summary!MarginByRegion" in refresh.value.options
+    with pytest.raises(RelationshipPolicyError) as updated:
+        pivot.update(layout="compact")
+    assert updated.value.kind == "pivot-cache-shared"
     with pytest.raises(RelationshipPolicyError) as deleted:
         pivot.delete()
     assert deleted.value.kind == "pivot-cache-shared"

@@ -127,6 +127,9 @@ def test_shared_cache_disables_isolation_sensitive_caps():
     )
     assert qualification.cache_shared is True
     assert qualification.capabilities.can_refresh_on_open is True
+    assert qualification.capabilities.can_edit_layout is False
+    assert qualification.capabilities.can_headless_refresh is False
+    assert qualification.capabilities.can_move is False
     assert qualification.refresh_on_open_scope == (
         "Summary!MarginByRegion",
         "Summary!SalesByRegion",
@@ -134,6 +137,8 @@ def test_shared_cache_disables_isolation_sensitive_caps():
     assert "pivot-cache-shared" in _codes(qualification, "can_delete")
     assert "pivot-cache-shared" in _codes(
         qualification, "can_repoint_source")
+    assert "pivot-cache-shared" in _codes(
+        qualification, "can_edit_layout")
 
 
 def test_broken_graph_disables_every_capability():

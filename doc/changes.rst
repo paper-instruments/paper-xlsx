@@ -24,12 +24,13 @@ Changes
 * Add immutable public PivotTable types and targeted ``Worksheet.pivots``
   inspection under preserve mode. Qualification reports graph validity and
   per-operation capabilities. Foreign pivots receive at most
-  ``can_refresh_on_open``. Public mutation is still withheld.
+  ``can_refresh_on_open``.
 * Complete bounded PivotTable creation, headless refresh, source repoint,
   same-sheet move, update, rename, and delete for Paper-managed dedicated
   caches. Formula-backed sources reuse the existing LibreOffice oracle seam
   without publishing LibreOffice workbook bytes. Foreign pivots remain
-  inspectable and may only request refresh-on-open when qualified.
+  inspectable and may only request refresh-on-open when qualified. Shared
+  caches disable managed refresh, layout/update, move, repoint, and delete.
 
 Bugfixes
 --------

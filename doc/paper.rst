@@ -227,19 +227,42 @@ and creates Paper-managed classic worksheet pivots. Created pivots have
 current materialized output, ``refreshOnLoad=False``, ``enableRefresh=True``,
 and ``saveData=True``. Full lifecycle (create, inspect, refresh, repoint,
 move, update, rename, delete) applies to Paper-managed dedicated-cache
-pivots. Foreign Excel-authored pivots stay inspectable and byte-preserved;
+pivots. A shared cache disables ``can_edit_layout`` and the other
+isolation-sensitive capabilities; ``update()``, headless ``refresh()``,
+``repoint_source()``, ``move()``, and ``delete()`` refuse rather than
+touching siblings. Layout-only shared-cache edits are not in v1.
+Foreign Excel-authored pivots stay inspectable and byte-preserved;
 v1 grants them at most ``can_refresh_on_open`` through
 ``Workbook.set_pivot_refresh_on_load``.
 
-Supported v1 sources are worksheet tables and sheet-qualified ranges. Formula
-columns may require stock LibreOffice via :mod:`openpyxl.oracle`; LibreOffice
-never authors the published package. Literal sources do not require
-LibreOffice. Data Model/OLAP, grouping, calculated fields, slicers,
-PivotCharts, ``showDataAs``, Strict mutation, and templates refuse.
+Supported v1 sources are worksheet tables, sheet-qualified ranges, and
+defined names that resolve to one rectangular range. Formula columns may
+require stock LibreOffice via :mod:`openpyxl.oracle`; no LibreOffice fork
+or commercial backend is required, and LibreOffice never authors the
+published package. Literal sources do not require LibreOffice. Data
+Model/OLAP, grouping, calculated fields, slicers, PivotCharts,
+``showDataAs``, Strict mutation, templates, and in-session creation on a
+newly added sheet refuse.
+
+Desktop Excel is not an installation or runtime dependency. Human-run Excel
+transcripts with pinned producer/version metadata are a release gate;
+``tests/paper/fixtures/pivots/RELEASE_MATRIX.json`` currently records that
+those transcripts are not yet committed.
 
 .. code-block:: python
 
-    from openpyxl import load_workbook
+    from openpyxl import Workbook, load_workbook
+    from openpyxl.worksheet.table import Table
+
+    wb = Workbook()
+    data = wb.active
+    data.title = "Data"
+    data.append(("Region", "Amount"))
+    data.append(("East", 10))
+    data.append(("West", 20))
+    data.add_table(Table(displayName="RegionTable", ref="A1:B3"))
+    wb.create_sheet("Summary")
+    wb.save("sales.xlsx")
 
     wb = load_workbook("sales.xlsx", preserve=True)
     pivot = wb["Summary"].pivots.create(
