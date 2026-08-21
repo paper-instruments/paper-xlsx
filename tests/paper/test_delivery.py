@@ -668,6 +668,88 @@ def test_formula_cache_write_in_pivot_source_requires_refresh(tmp_path):
     assert caught.value.kind == "stale-pivot-cache"
 
 
+@pytest.mark.parametrize("formula", ["=NOW()", "=TODAY()", "=RAND()"])
+def test_volatile_formula_in_pivot_source_requires_refresh(
+        tmp_path, formula):
+    from openpyxl import Workbook
+
+    source = tmp_path / "volatile-pivot-source.xlsx"
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws["A1"] = formula
+    ws["D1"] = 1
+    created.save(source)
+
+    wb = load_workbook(source, preserve=True)
+    _with_pivot_graph(
+        wb, [("VolatilePivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A1" sheet="Data"/>'})
+    wb["Data"]["D1"] = 2
+
+    with pytest.raises(UnsupportedStructureError) as caught:
+        wb.validate()
+    assert caught.value.kind == "stale-pivot-cache"
+
+
+def test_oracle_recalc_requests_formula_backed_pivot_refresh(
+        tmp_path, monkeypatch):
+    from openpyxl import Workbook, oracle
+
+    raw = tmp_path / "formula-pivot-raw.xlsx"
+    created = Workbook()
+    ws = created.active
+    ws.title = "Data"
+    ws["A1"] = "=D1*2"
+    ws["D1"] = 3
+    created.save(raw)
+
+    source = tmp_path / "formula-pivot.xlsx"
+    wb = load_workbook(raw, preserve=True)
+    _with_pivot_graph(
+        wb, [("FormulaPivot", "1")],
+        worksheet_sources={
+            "1": b'<worksheetSource ref="A1" sheet="Data"/>'})
+    wb.save(source)
+    original = source.read_bytes()
+
+    def recalculated(data, _timeout):
+        output = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(data)) as zin, \
+                zipfile.ZipFile(output, "w") as zout:
+            for info in zin.infolist():
+                payload = zin.read(info.filename)
+                if info.filename == "xl/worksheets/sheet1.xml":
+                    old = next((candidate for candidate in (
+                        b"<f>D1*2</f><v></v>",
+                        b"<f>D1*2</f><v/>",
+                        b"<f>D1*2</f><v />",
+                    ) if candidate in payload), None)
+                    assert old is not None
+                    payload = payload.replace(
+                        old, b"<f>D1*2</f><v>6</v>", 1)
+                zout.writestr(info, payload)
+        return output.getvalue()
+
+    monkeypatch.setattr(oracle, "_recalculate_bytes", recalculated)
+    candidate = tmp_path / "candidate.xlsx"
+    result = oracle.recalc(source, output_path=candidate)
+
+    assert source.read_bytes() == original
+    assert result.pivot_refreshes == [{
+        "part": "xl/pivotCache/pivotCacheDefinition1.xml",
+        "pivots": ["Data!FormulaPivot"],
+        "source": "Data!A1",
+        "requirement": "excel_refresh_on_open",
+    }]
+    assert result.to_dict()["pivot_refreshes"] == result.pivot_refreshes
+    with zipfile.ZipFile(candidate) as archive:
+        assert b'refreshOnLoad="1"' in archive.read(
+            "xl/pivotCache/pivotCacheDefinition1.xml")
+    assert load_workbook(candidate, data_only=True)["Data"]["A1"].value == 6
+
+
 def test_formula_change_outside_pivot_source_remains_allowed(tmp_path):
     from openpyxl import Workbook
 

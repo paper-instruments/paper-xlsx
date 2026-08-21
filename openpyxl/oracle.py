@@ -310,7 +310,8 @@ class RecalcResult:
     def __init__(self, cells_scanned, formula_cells, errors,
                  *, output_kind=None, written=None,
                  verified_unchanged=None, excluded=None,
-                 package_diff=None, artifact_sha256=None,
+                 package_diff=None, pivot_refreshes=None,
+                 artifact_sha256=None,
                  calculation_artifact_sha256=None):
         self.cells_scanned = cells_scanned
         self.formula_cells = formula_cells
@@ -321,6 +322,7 @@ class RecalcResult:
         self.verified_unchanged = list(verified_unchanged or ())
         self.excluded = dict(excluded or {})
         self.package_diff = list(package_diff or ())
+        self.pivot_refreshes = list(pivot_refreshes or ())
         self.artifact_sha256 = artifact_sha256
         self.calculation_artifact_sha256 = calculation_artifact_sha256
 
@@ -354,6 +356,7 @@ class RecalcResult:
             "verified_unchanged": list(self.verified_unchanged),
             "excluded": dict(self.excluded),
             "package_diff": list(self.package_diff),
+            "pivot_refreshes": list(self.pivot_refreshes),
             "artifact_sha256": self.artifact_sha256,
             "calculation_artifact_sha256":
                 self.calculation_artifact_sha256,
@@ -544,13 +547,25 @@ def _preserved_recalc_candidate(data, recalculated, wb_computed_formulas,
         ledger.cache_writes.setdefault(ws, {})[(row, col)] = computed
         written.append(address)
 
+    from openpyxl.preserve.pivots import _request_impacted_refreshes
+
+    pivot_impacts = _request_impacted_refreshes(
+        wb_candidate, ledger, force_recalculation=True)
+    pivot_refreshes = [{
+        "part": impact["part"],
+        "pivots": list(impact["pivots"]),
+        "source": impact["source"],
+        "requirement": "excel_refresh_on_open",
+    } for impact in pivot_impacts]
+
     buf = io.BytesIO()
     wb_candidate.save(buf)
     candidate = _with_forced_recalc(buf.getvalue())
     package_diff = _package_diff(data, candidate)
     if not package_diff:
         candidate = data
-    return (candidate, written, verified_unchanged, excluded, package_diff)
+    return (candidate, written, verified_unchanged, excluded, package_diff,
+            pivot_refreshes)
 
 
 def recalc(source, *, output_path=None, timeout=120.0):
@@ -559,6 +574,9 @@ def recalc(source, *, output_path=None, timeout=120.0):
     With no ``output_path``, return error-scan evidence and write nothing.
     With a separate ``output_path``, build a Paper-preserved candidate by
     splicing eligible calculated caches into the original package structure.
+    If those writes or the requested full recalculation can affect a local
+    pivot source, the candidate requests refresh-on-open and
+    ``RecalcResult.pivot_refreshes`` reports the Excel refresh requirement.
     LibreOffice's rewritten package is never delivered, and the result makes
     no claim of Excel equivalence or financial correctness.
     """
@@ -581,10 +599,11 @@ def recalc(source, *, output_path=None, timeout=120.0):
     verified_unchanged = []
     excluded = {}
     package_diff = []
+    pivot_refreshes = []
     artifact_sha256 = None
     if output_path is not None:
-        candidate, written, verified_unchanged, excluded, package_diff = \
-            _preserved_recalc_candidate(
+        (candidate, written, verified_unchanged, excluded, package_diff,
+         pivot_refreshes) = _preserved_recalc_candidate(
                 data, recalculated, wb_formulas, wb_values, timeout)
 
         def validate_source():
@@ -600,7 +619,8 @@ def recalc(source, *, output_path=None, timeout=120.0):
         cells_scanned, formula_cells, errors,
         output_kind=output_kind, written=written,
         verified_unchanged=verified_unchanged, excluded=excluded,
-        package_diff=package_diff, artifact_sha256=artifact_sha256,
+        package_diff=package_diff, pivot_refreshes=pivot_refreshes,
+        artifact_sha256=artifact_sha256,
         calculation_artifact_sha256=_artifact_sha256(recalculated))
 
 

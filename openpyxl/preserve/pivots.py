@@ -538,7 +538,7 @@ def _formula_binding_changes(wb, ledger):
     return cells, ranges
 
 
-def _dirty_closure(wb, dirty):
+def _dirty_closure(wb, dirty, *, force_recalculation=False):
     """Dirty cells plus every formula result they may affect transitively."""
     tainted = {
         (ws.title, row, column)
@@ -546,13 +546,17 @@ def _dirty_closure(wb, dirty):
         for row, column in coordinates
         if row is not None and column is not None
     }
-    if not tainted:
+    if not tainted and not force_recalculation:
         return tainted, set()
     from .perception import dependency_sketch
 
     formulas = _dependency_model(wb)
     sketch = dependency_sketch(formulas)
     outputs = _formula_outputs(formulas)
+    for address in sketch.volatile:
+        key = _address_key(address)
+        if key is not None:
+            tainted.add(key)
     tainted_ranges = set()
 
     def expand_outputs():
@@ -584,7 +588,7 @@ def _dirty_closure(wb, dirty):
     return tainted, tainted_ranges
 
 
-def source_impacts(wb, ledger):
+def source_impacts(wb, ledger, *, force_recalculation=False):
     """Return local pivot caches that workbook edits can make stale."""
     index, _cache_parts = _index(wb)
     if not index:
@@ -594,7 +598,8 @@ def source_impacts(wb, ledger):
     for ws, writes in ledger.cache_writes.items():
         if writes:
             changes.setdefault(ws, set()).update(writes)
-    tainted, tainted_ranges = _dirty_closure(wb, changes)
+    tainted, tainted_ranges = _dirty_closure(
+        wb, changes, force_recalculation=force_recalculation)
     binding_cells, binding_ranges = _formula_binding_changes(wb, ledger)
     tainted.update(binding_cells)
     tainted_ranges.update(binding_ranges)
@@ -616,7 +621,10 @@ def source_impacts(wb, ledger):
             if ws is None:
                 binding_intersects = bool(
                     binding_cells or binding_ranges)
-                intersects = bool(changes) or binding_intersects
+                recalculation_intersects = force_recalculation and bool(
+                    tainted or tainted_ranges)
+                intersects = bool(changes) or binding_intersects \
+                    or recalculation_intersects
             else:
                 binding_intersects = (
                     _bounds_hit(ws.title, bounds, binding_cells)
@@ -634,6 +642,15 @@ def source_impacts(wb, ledger):
                     else "input_changed",
                     "formula_binding_changed": binding_intersects,
                 })
+    return impacts
+
+
+def _request_impacted_refreshes(wb, ledger, *, force_recalculation=False):
+    """Select every cache affected by one explicit recalculation policy."""
+    impacts = source_impacts(
+        wb, ledger, force_recalculation=force_recalculation)
+    ledger.pivot_refresh_requests.update(
+        impact["part"] for impact in impacts)
     return impacts
 
 

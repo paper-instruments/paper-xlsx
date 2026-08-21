@@ -8,6 +8,8 @@ from openpyxl.utils.cell import range_boundaries
 
 VOLATILE_NONDETERMINISTIC = ("NOW", "TODAY", "RAND", "RANDBETWEEN",
                              "RANDARRAY")
+_VOLATILE_FUNCTIONS = frozenset(
+    name + "(" for name in VOLATILE_NONDETERMINISTIC)
 
 _VOLATILE_RE = re.compile(
     r"\b(NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY|INDIRECT|OFFSET)\s*\(",
@@ -34,6 +36,7 @@ class DependencySketch:
     def __init__(self):
         self.references = {}      # "Model!B6" -> [(sheet, bounds, raw)]
         self.unresolved = {}      # "Model!B6" -> [raw operand]
+        self.volatile = set()     # formula addresses with known volatility
 
     def cells_referencing(self, sheet_title, bounds):
         """Formula cells whose references intersect ``bounds`` on the given
@@ -112,16 +115,26 @@ def dependency_sketch(wb):
                 # RANGE operand at all: the formula must
                 # count as unresolved (always-intersecting), never as
                 # invisible
+                functions = []
+                for token in tokens:
+                    if token.type != "FUNC" or token.subtype != "OPEN":
+                        continue
+                    name = token.value.upper()
+                    if name.startswith("_XLFN."):
+                        name = name[6:]
+                    functions.append(name)
                 indirect = any(
-                    t.type == "FUNC" and t.subtype == "OPEN"
-                    and t.value.upper().lstrip("_XLFN.")
-                    in ("INDIRECT(", "OFFSET(")
-                    for t in tokens)
-                cached = (operands, indirect)
+                    name in ("INDIRECT(", "OFFSET(")
+                    for name in functions)
+                volatile = any(
+                    name in _VOLATILE_FUNCTIONS for name in functions)
+                cached = (operands, indirect, volatile)
                 token_cache[formula] = cached
-            operands, indirect = cached
+            operands, indirect, volatile = cached
             if indirect:
                 sketch.unresolved.setdefault(address, []).append(formula)
+            if volatile:
+                sketch.volatile.add(address)
             for raw in operands:
                 _classify(sketch, wb, ws, address, raw)
     return sketch
