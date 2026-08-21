@@ -45,6 +45,7 @@ __all__ = [
     "ERROR_TOKENS",
     "Evaluation",
     "NUMERIC_ULPS",
+    "NumericalToleranceResult",
     "ORACLE_UNSUPPORTED_FUNCS",
     "RecalcResult",
     "available",
@@ -687,8 +688,12 @@ class CertificationResult:
 
         Strict matches are not re-evaluated, so this cannot impose a policy
         narrower than Paper's strict comparator. The classification does not
-        alter :attr:`status` or establish complete coverage. Formula errors,
+        alter `status` or establish complete coverage. Formula errors,
         nonnumeric mismatches, and non-finite values always remain outside.
+
+        :return: A measurement-only classification of the recorded strict
+            divergences.
+        :rtype: openpyxl.oracle.NumericalToleranceResult
         """
         if abs_tol is None and rel_tol is None:
             raise ValueError("abs_tol or rel_tol must be provided")
@@ -727,6 +732,12 @@ class CertificationResult:
 
 
 class NumericalToleranceResult:
+    """Measurement-only classification of strict numeric divergences.
+
+    `strict_status` remains the original certification result. Coverage and
+    tolerance buckets are reported separately; this object never replaces or
+    weakens strict certification.
+    """
 
     SCHEMA = "oracle_numerical_tolerance"
     VERSION = 1

@@ -957,7 +957,7 @@ class Worksheet(_WorkbookChild):
         * If it's a dict: values are assigned to the columns indicated by the keys (numbers or letters)
 
         :param iterable: list, range or generator, or dict containing values to append
-        :type iterable: list`tuple`range|generator or dict
+        :type iterable: list or tuple or range or generator or dict
 
         Usage:
 

@@ -12,8 +12,13 @@ python -m pip install -r tools/autodoc/requirements.txt
 python tools/autodoc/generate_api_reference.py
 ```
 
-CI uses the non-writing check mode:
+The Documentation job runs the non-writing check on every pull request and on
+every push to `main`:
 
 ```bash
 python tools/autodoc/generate_api_reference.py --check
 ```
+
+CI does not rewrite or commit generated files. When the check reports drift,
+run the writing command locally and commit the updated Markdown with the source
+change.

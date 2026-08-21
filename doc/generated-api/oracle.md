@@ -40,6 +40,25 @@ CertificationResult(status, checked, divergences, volatile_excluded, unverifiabl
 to_dict()
 ```
 
+### `classify_tolerance`
+
+```python
+classify_tolerance(*, abs_tol = None, rel_tol = None)
+```
+
+Classify recorded strict divergences under a numeric tolerance.
+
+Strict matches are not re-evaluated, so this cannot impose a policy
+narrower than Paper's strict comparator. The classification does not
+alter `status` or establish complete coverage. Formula errors,
+nonnumeric mismatches, and non-finite values always remain outside.
+
+**Returns:**
+
+Type | Description
+---- | -----------
+<code>openpyxl.oracle.NumericalToleranceResult</code> | A measurement-only classification of the recorded strict divergences.
+
 
 ## `openpyxl.oracle.DATE_SERIAL_ABS_FLOOR`
 
@@ -87,6 +106,25 @@ to_dict()
 
 ```python
 NUMERIC_ULPS = 4
+```
+
+
+## `openpyxl.oracle.NumericalToleranceResult`
+
+```python
+NumericalToleranceResult(strict_status, coverage_complete, absolute_tolerance, relative_tolerance, within_tolerance, outside_tolerance)
+```
+
+Measurement-only classification of strict numeric divergences.
+
+`strict_status` remains the original certification result. Coverage and
+tolerance buckets are reported separately; this object never replaces or
+weakens strict certification.
+
+### `to_dict`
+
+```python
+to_dict()
 ```
 
 
