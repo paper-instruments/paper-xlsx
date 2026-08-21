@@ -217,43 +217,42 @@ def _write_body(cells, spec, result, start_row, origin_col, label_cols,
                 row_keys, column_keys, captions, values_on_columns):
     cursor = start_row
     for row_key in row_keys:
-        if isinstance(row_key, tuple) and row_key and row_key[0] == "__subtotal__":
+        is_sub = isinstance(row_key, tuple) and row_key and row_key[0] == "__subtotal__"
+        if is_sub:
             prefix = row_key[1]
             _write_label_row(
                 cells, spec, cursor, origin_col, prefix, ROLE_SUBTOTAL,
                 suffix=" Total")
             totals = result.row_subtotals.get(prefix, ())
             if isinstance(totals, dict):
-                flat = []
-                for col_key in column_keys:
-                    flat.extend(totals.get(col_key, ()))
-                totals = flat
-            _write_value_row(
-                cells, cursor, origin_col + label_cols, column_keys,
-                totals, captions, values_on_columns, ROLE_SUBTOTAL)
-            cursor += 1
-            continue
-        _write_label_row(cells, spec, cursor, origin_col, row_key, ROLE_ROW_LABEL)
-        measure_values = []
-        for col_key in column_keys:
-            measure_values.append(result.cells.get((row_key, col_key), ()))
+                measure_values = [
+                    totals.get(col_key, ()) for col_key in column_keys]
+            else:
+                measure_values = [totals]
+            role = ROLE_SUBTOTAL
+        else:
+            _write_label_row(
+                cells, spec, cursor, origin_col, row_key, ROLE_ROW_LABEL)
+            measure_values = [
+                result.cells.get((row_key, col_key), ()) for col_key in column_keys]
+            role = ROLE_VALUE
         if values_on_columns:
             _write_value_row(
                 cells, cursor, origin_col + label_cols, column_keys,
-                _flatten_measures(measure_values), captions, True, ROLE_VALUE)
+                _flatten_measures(measure_values), captions, True, role)
             cursor += 1
-        else:
-            for measure_index, caption in enumerate(captions):
-                _put(cells, cursor, origin_col + label_cols - 1 if label_cols
-                     else origin_col, caption, ROLE_HEADER)
-                values = []
-                for group in measure_values:
-                    values.append(group[measure_index] if measure_index < len(group)
-                                  else None)
-                _write_value_row(
-                    cells, cursor, origin_col + label_cols, column_keys,
-                    values, captions, True, ROLE_VALUE)
-                cursor += 1
+            continue
+        for measure_index, caption in enumerate(captions):
+            _put(cells, cursor, origin_col + label_cols - 1 if label_cols
+                 else origin_col, caption, ROLE_HEADER)
+            values = []
+            for group in measure_values:
+                values.append(group[measure_index] if measure_index < len(group)
+                              else None)
+            _write_value_row(
+                cells, cursor, origin_col + label_cols, column_keys,
+                values, captions, True, role)
+            cursor += 1
 
 
 def _write_row_grand_total(cells, spec, result, start_row, origin_col,

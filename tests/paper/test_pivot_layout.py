@@ -13,13 +13,14 @@ from openpyxl.pivot.api_types import (
     PivotSource,
     PivotSpec,
 )
-from openpyxl.pivot.layout import ROLE_GRAND_TOTAL, ROLE_HEADER, ROLE_VALUE
+from openpyxl.pivot.layout import ROLE_GRAND_TOTAL, ROLE_HEADER, ROLE_SUBTOTAL, ROLE_VALUE
 from openpyxl.pivot.plan import plan_pivot
 from openpyxl.pivot.source import (
     DEFAULT_LIMITS,
     PivotLimits,
     snapshot_from_matrix,
 )
+from openpyxl.utils.cell import range_boundaries
 from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW
 
 from .conftest import FIXTURES_DIR
@@ -100,6 +101,41 @@ def test_multiple_measures_and_values_axis_orientations():
     assert rows.output.row_count >= 4
     assert "Sum" in _grid(rows).values()
     assert "Count" in _grid(rows).values()
+
+
+def test_subtotals_on_values_axis_rows_stay_inside_ref():
+    plan = _plan(
+        data=[["East", "A", 10], ["East", "B", 4], ["West", "A", 7]],
+        rows=(PivotAxisField("Region"), PivotAxisField("Product")),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Sum"),
+            PivotMeasure("Amount", aggregate="count", caption="Count"),
+        ),
+        values_axis="rows",
+        subtotals=True,
+        layout="tabular",
+    )
+    min_col, min_row, max_col, max_row = range_boundaries(plan.output.ref)
+    for cell in plan.output.cells:
+        assert min_row <= cell.row <= max_row
+        assert min_col <= cell.column <= max_col
+    grid = _grid(plan)
+    assert "East Total" in grid.values()
+    subtotal_rows = sorted({
+        cell.row for cell in plan.output.cells if cell.role == ROLE_SUBTOTAL
+    })
+    assert len(subtotal_rows) == 4
+    east_total_row = min(
+        cell.row for cell in plan.output.cells
+        if cell.value == "East Total")
+    assert grid[(east_total_row, 7)] == 14
+    assert grid[(east_total_row + 1, 7)] == 2
+    grand_row = min(
+        cell.row for cell in plan.output.cells
+        if cell.value == "Grand Total")
+    assert grand_row == max(subtotal_rows) + 1
+    assert grid[(grand_row, 7)] == 21
+    assert grid[(grand_row + 1, 7)] == 3
 
 
 def test_compact_outline_and_tabular_label_columns():

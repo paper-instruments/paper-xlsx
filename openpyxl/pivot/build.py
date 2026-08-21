@@ -473,7 +473,13 @@ def _item_tuples(keys, field_names, item_lookups, measures):
         if isinstance(key, tuple) and key and key[0] == "__subtotal__":
             prefix = key[1]
             indexes = _key_indexes(prefix, field_names, item_lookups)
-            items.append(RowColItem(t="default", x=indexes))
+            if measures is None:
+                items.append(RowColItem(t="default", x=indexes))
+            else:
+                for measure_index, _measure in enumerate(measures):
+                    items.append(RowColItem(
+                        t="default",
+                        x=indexes + (Index(v=measure_index),)))
             continue
         indexes = _key_indexes(key, field_names, item_lookups)
         if measures is None:
