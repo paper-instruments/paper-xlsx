@@ -800,6 +800,36 @@ def test_dirty_closure_follows_reverse_order_chain():
     assert tainted_ranges == set()
 
 
+def test_dirty_closure_indexes_per_row_ranges(monkeypatch):
+    from openpyxl import Workbook
+    import openpyxl.preserve.pivots as pivots
+
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = 1
+    formula_count = 5000
+    for row in range(1, formula_count + 1):
+        ws.cell(row, 2, "=$A$1*SUM(C{0}:D{0})".format(row))
+
+    candidates = 0
+    original = pivots._DependencyIndex._range_candidates
+
+    def counted_candidates(self, sheet, bounds):
+        nonlocal candidates
+        found = original(self, sheet, bounds)
+        candidates += len(found)
+        return found
+
+    monkeypatch.setattr(
+        pivots._DependencyIndex, "_range_candidates", counted_candidates)
+    tainted, tainted_ranges = pivots._dirty_closure(
+        wb, {ws: {(1, 1)}})
+
+    assert len(tainted) == formula_count + 1
+    assert tainted_ranges == set()
+    assert candidates <= formula_count
+
+
 def test_oracle_recalc_requests_formula_backed_pivot_refresh(
         tmp_path, monkeypatch):
     from openpyxl import Workbook, oracle

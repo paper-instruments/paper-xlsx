@@ -655,6 +655,10 @@ def _calculation_context_changes(wb, ledger, direct_changes):
     return cells, visibility_ranges, format_ranges, retained
 
 
+_RANGE_BUCKET_ROWS = 64
+_RANGE_BUCKET_LIMIT = 64
+
+
 class _DependencyIndex:
     """Consumable reverse index from referenced cells and ranges.
 
@@ -666,6 +670,7 @@ class _DependencyIndex:
     def __init__(self, sketch):
         point_groups = {}
         range_groups = {}
+        memberships = {}
         for address, references in sketch.references.items():
             for sheet, bounds, _raw in references:
                 closed = _closed_bounds(bounds)
@@ -675,13 +680,115 @@ class _DependencyIndex:
                     point_groups.setdefault(
                         folded, {}).setdefault(
                             (min_row, min_col), set()).add(address)
+                    membership = ("point", folded, (min_row, min_col))
                 else:
                     range_groups.setdefault(
                         folded, {}).setdefault(
                             closed, set()).add(address)
+                    membership = ("range", folded, closed)
+                memberships.setdefault(address, set()).add(membership)
 
         self._points = point_groups
         self._ranges = range_groups
+        self._memberships = memberships
+        self._range_buckets = {}
+        self._wide_ranges = {}
+        self._range_locations = {}
+        for sheet, ranges in range_groups.items():
+            buckets = self._range_buckets.setdefault(sheet, {})
+            wide = self._wide_ranges.setdefault(sheet, set())
+            locations = self._range_locations.setdefault(sheet, {})
+            for bounds in ranges:
+                keys = self._bucket_keys(bounds)
+                locations[bounds] = keys
+                if keys is None:
+                    wide.add(bounds)
+                    continue
+                for key in keys:
+                    buckets.setdefault(key, set()).add(bounds)
+
+    @staticmethod
+    def _bucket_keys(bounds):
+        """Return bounded row/column buckets, or ``None`` for broad ranges."""
+        min_col, min_row, max_col, max_row = bounds
+        first_row = (min_row - 1) // _RANGE_BUCKET_ROWS
+        last_row = (max_row - 1) // _RANGE_BUCKET_ROWS
+        count = (last_row - first_row + 1) * (max_col - min_col + 1)
+        if count > _RANGE_BUCKET_LIMIT:
+            return None
+        return tuple(
+            (row_bucket, column)
+            for row_bucket in range(first_row, last_row + 1)
+            for column in range(min_col, max_col + 1)
+        )
+
+    def _range_candidates(self, sheet, bounds):
+        ranges = self._ranges.get(sheet)
+        if ranges is None:
+            return set()
+        keys = self._bucket_keys(bounds)
+        if keys is None:
+            return set(ranges)
+        candidates = set(self._wide_ranges.get(sheet, ()))
+        buckets = self._range_buckets.get(sheet, {})
+        for key in keys:
+            candidates.update(buckets.get(key, ()))
+        return candidates
+
+    def _drop_range_group(self, sheet, bounds):
+        ranges = self._ranges.get(sheet)
+        if ranges is None:
+            return ()
+        formulas = ranges.pop(bounds, None)
+        if formulas is None:
+            return ()
+        locations = self._range_locations.get(sheet, {})
+        keys = locations.pop(bounds, None)
+        if keys is None:
+            wide = self._wide_ranges.get(sheet)
+            if wide is not None:
+                wide.discard(bounds)
+                if not wide:
+                    self._wide_ranges.pop(sheet)
+        else:
+            buckets = self._range_buckets.get(sheet, {})
+            for key in keys:
+                group = buckets.get(key)
+                if group is None:
+                    continue
+                group.discard(bounds)
+                if not group:
+                    buckets.pop(key)
+            if not buckets:
+                self._range_buckets.pop(sheet, None)
+        if not locations:
+            self._range_locations.pop(sheet, None)
+        if not ranges:
+            self._ranges.pop(sheet)
+            self._range_buckets.pop(sheet, None)
+            self._wide_ranges.pop(sheet, None)
+            self._range_locations.pop(sheet, None)
+        return formulas
+
+    def discard_formula(self, address):
+        """Remove references that cannot discover new work after tainting."""
+        for kind, sheet, key in self._memberships.pop(address, ()):
+            groups = self._points if kind == "point" else self._ranges
+            sheet_groups = groups.get(sheet)
+            if sheet_groups is None:
+                continue
+            formulas = sheet_groups.get(key)
+            if formulas is None:
+                continue
+            formulas.discard(address)
+            if formulas:
+                continue
+            if kind == "range":
+                self._drop_range_group(sheet, key)
+                continue
+            sheet_groups.pop(key)
+            if not sheet_groups:
+                self._points.pop(sheet)
 
     def _pop_point(self, sheet, row, column):
         points = self._points.get(sheet)
@@ -716,17 +823,14 @@ class _DependencyIndex:
         min_col, min_row, max_col, max_row = bounds
         formulas = set()
         matches = []
-        for other, addresses in ranges.items():
+        for other in self._range_candidates(sheet, bounds):
             other_min_col, other_min_row, other_max_col, other_max_row = other
             if other_max_col < min_col or other_min_col > max_col \
                     or other_max_row < min_row or other_min_row > max_row:
                 continue
             matches.append(other)
-            formulas.update(addresses)
         for other in matches:
-            ranges.pop(other)
-        if not ranges:
-            self._ranges.pop(sheet)
+            formulas.update(self._drop_range_group(sheet, other))
         return formulas
 
     def pop_cell(self, cell):
@@ -792,6 +896,7 @@ def _dirty_closure(wb, dirty, *, dependency_cells=(),
             pending.append(("range", item))
 
     def taint_formula(address):
+        dependency_index.discard_formula(address)
         enqueue_cell(keys.get(address))
 
     for key in tuple(tainted):
