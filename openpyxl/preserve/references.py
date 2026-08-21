@@ -4,8 +4,8 @@ import re
 
 
 _DYNAMIC_REFERENCE = re.compile(
-    r"(?i)(?<![A-Z0-9_.])(?:INDIRECT|EVALUATE|OFFSET|INDEX)\s*\(")
-_DYNAMIC_FUNCTIONS = {"INDIRECT(", "EVALUATE(", "OFFSET(", "INDEX("}
+    r"(?i)(?<![A-Z0-9_.])(?:INDIRECT|EVALUATE|OFFSET)\s*\(")
+_DYNAMIC_FUNCTIONS = {"INDIRECT(", "EVALUATE(", "OFFSET("}
 
 
 def _has_dynamic_reference(value):
@@ -22,6 +22,124 @@ def _has_dynamic_reference(value):
         token.type == "FUNC" and token.subtype == "OPEN"
         and token.value.upper() in _DYNAMIC_FUNCTIONS
         for token in tokens)
+
+
+def _function_arguments(tokens, start):
+    """Return top-level argument token lists for one function call."""
+    arguments = [[]]
+    depth = 0
+    for token in tokens[start + 1:]:
+        if token.type == "FUNC" and token.subtype == "OPEN":
+            depth += 1
+        elif token.type == "FUNC" and token.subtype == "CLOSE":
+            if depth == 0:
+                return arguments
+            depth -= 1
+        if token.type == "SEP" and token.subtype == "ARG" and depth == 0:
+            arguments.append([])
+        else:
+            arguments[-1].append(token)
+    return None
+
+
+def _direct_literal_reference(tokens):
+    """Return a literal reference from one function argument, if exact."""
+    if len(tokens) != 1 or tokens[0].type != "OPERAND" \
+            or tokens[0].subtype != "TEXT":
+        return None
+    literal = tokens[0].value
+    if len(literal) < 2 or not literal.startswith('"') \
+            or not literal.endswith('"'):
+        return None
+    literal = literal[1:-1].replace('""', '"')
+    from openpyxl.formula import Tokenizer
+    from openpyxl.utils.cell import range_boundaries
+    from .rewrite import _SHEET_PREFIX_RE
+
+    try:
+        parsed = Tokenizer("=" + literal).items
+    except Exception:
+        return None
+    if len(parsed) != 1 or parsed[0].type != "OPERAND" \
+            or parsed[0].subtype != "RANGE":
+        return None
+    reference = parsed[0].value
+    match = _SHEET_PREFIX_RE.match(reference)
+    if match is not None:
+        reference = match.group(3)
+    try:
+        range_boundaries(reference.replace("$", ""))
+    except (TypeError, ValueError):
+        return None
+    return literal
+
+
+def _dynamic_base_is_off_target(tokens, context_sheet, target_sheet):
+    """Whether a dynamic call has one direct base on another sheet."""
+    if len(tokens) != 1 or tokens[0].type != "OPERAND" \
+            or tokens[0].subtype != "RANGE":
+        return False
+    raw = tokens[0].value
+    if "[" in raw:
+        return False
+    from openpyxl.utils.cell import range_boundaries
+    from .rewrite import _SHEET_PREFIX_RE
+
+    match = _SHEET_PREFIX_RE.match(raw)
+    if match is None:
+        sheet = context_sheet
+        reference = raw
+    else:
+        sheet = match.group(1).replace("''", "'") \
+            if match.group(1) else match.group(2)
+        reference = match.group(3)
+    try:
+        range_boundaries(reference.replace("$", ""))
+    except (TypeError, ValueError):
+        return False
+    return sheet is not None and sheet.casefold() != target_sheet.casefold()
+
+
+def _dynamic_reference_affects_shift(value, context_sheet, target_sheet,
+                                     axis, index, amount, is_delete):
+    """Conservatively classify opaque references for one target shift."""
+    from openpyxl.formula import Tokenizer
+
+    probe = value[1:] if value.startswith("#") else value
+    formula = probe if probe.startswith("=") else "=" + probe
+    try:
+        tokens = Tokenizer(formula).items
+    except Exception:
+        return bool(_DYNAMIC_REFERENCE.search(probe))
+
+    for position, token in enumerate(tokens):
+        if token.type != "FUNC" or token.subtype != "OPEN" \
+                or token.value.upper() not in _DYNAMIC_FUNCTIONS:
+            continue
+        arguments = _function_arguments(tokens, position)
+        if not arguments:
+            return True
+        function = token.value.upper()
+        if function == "OFFSET(":
+            if not _dynamic_base_is_off_target(
+                    arguments[0], context_sheet, target_sheet):
+                return True
+            continue
+        literal = _direct_literal_reference(arguments[0])
+        if literal is None:
+            return True
+        from .rewrite import _SHEET_PREFIX_RE
+
+        if context_sheet is None and _SHEET_PREFIX_RE.match(literal) is None:
+            return True
+        from .rewrite import shift_formula
+
+        _rewritten, changed = shift_formula(
+            "=" + literal, context_sheet, target_sheet, axis, index,
+            amount, is_delete)
+        if changed:
+            return True
+    return False
 
 
 class FormulaSurface:
@@ -205,7 +323,10 @@ def plan_shift(wb, target_sheet, operation, index, amount):
                 "Nothing was changed.".format(operation, surface.label),
                 kind="three-dimensional-structural-reference",
                 anchor=surface.label)
-        if _has_dynamic_reference(value):
+        if _dynamic_reference_affects_shift(
+                value,
+                surface.sheet.title if surface.sheet is not None else None,
+                target_sheet.title, axis, index, amount, is_delete):
             from openpyxl.errors import UnsupportedStructureError
 
             raise UnsupportedStructureError(

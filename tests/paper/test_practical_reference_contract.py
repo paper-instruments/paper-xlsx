@@ -142,7 +142,7 @@ def test_rename_rewrites_modeled_formula_surfaces(tmp_path):
 @pytest.mark.parametrize(
     "formula",
     ['=INDIRECT("Da"&"ta!A2")', '=EVALUATE("Da"&"ta!A2")',
-     "=OFFSET(Data!A1,1,0)", "=INDEX(Data!A:A,2)"],
+     "=OFFSET(Data!A1,1,0)"],
 )
 def test_dynamic_structural_reference_refuses_before_mutation(
         tmp_path, formula):
@@ -157,6 +157,50 @@ def test_dynamic_structural_reference_refuses_before_mutation(
 
     assert refusal.value.kind == "dynamic-structural-reference"
     assert workbook["Data"]["A2"].value == 10
+
+
+@pytest.mark.parametrize(
+    "formula",
+    ['=INDIRECT("Other!A1")', '=EVALUATE("Other!A1")',
+     "=OFFSET(Other!A1,1,0)", '=INDIRECT("Data!A1")'],
+)
+def test_provably_unaffected_dynamic_reference_does_not_block_shift(
+        tmp_path, formula):
+    workbook = Workbook()
+    workbook.active.title = "Data"
+    workbook.active["A2"] = 10
+    workbook.create_sheet("Other")["A1"] = formula
+    workbook = _preserved(tmp_path, workbook, "unrelated-dynamic.xlsx")
+
+    workbook["Data"].insert_rows(2)
+
+    assert workbook["Other"]["A1"].value == formula
+
+
+def test_index_reference_is_rewritten_like_an_ordinary_range(tmp_path):
+    workbook = Workbook()
+    workbook.active.title = "Data"
+    workbook.active["A2"] = 10
+    workbook.create_sheet("Other")["A1"] = "=INDEX(Data!A2:A4,2)"
+    workbook = _preserved(tmp_path, workbook, "index-shift.xlsx")
+
+    workbook["Data"].insert_rows(2)
+
+    assert workbook["Other"]["A1"].value == "=INDEX(Data!A3:A5,2)"
+
+
+def test_workbook_name_with_unqualified_dynamic_reference_still_refuses(
+        tmp_path):
+    workbook = Workbook()
+    workbook.active.title = "Data"
+    workbook.defined_names.add(
+        DefinedName("DynamicCell", attr_text='INDIRECT("A1")'))
+    workbook = _preserved(tmp_path, workbook, "ambiguous-dynamic-name.xlsx")
+
+    with pytest.raises(PaperRefusal) as refusal:
+        workbook["Data"].insert_rows(2)
+
+    assert refusal.value.kind == "dynamic-structural-reference"
 
 
 def test_dynamic_function_name_inside_text_does_not_block_shift(tmp_path):

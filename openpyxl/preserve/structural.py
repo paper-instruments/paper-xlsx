@@ -535,10 +535,12 @@ def shift_blockers(ws, operation, index, amount=1):
             "formula text; exact reference rewriting cannot be guaranteed"
             .format(", ".join(numeric_chart_parts)))
     from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+    from .references import _dynamic_reference_affects_shift
     from .rewrite import shift_formula, title_in_string_literals
 
     axis = "rows" if "rows" in operation else "cols"
     is_delete = operation.startswith("delete")
+    modeled_formula_types = {"array": 0, "dataTable": 0}
     for other in wb.worksheets:
         for cell in other._cells.values():
             formula = cell._value
@@ -556,8 +558,16 @@ def shift_blockers(ws, operation, index, amount=1):
             if not isinstance(formula, ArrayFormula) \
                     or not isinstance(formula_text, str):
                 if isinstance(formula, DataTableFormula):
+                    if other is ws:
+                        modeled_formula_types["dataTable"] += 1
+                        if not _range_precedes_shift(
+                                formula.ref, axis, index):
+                            blockers.append(
+                                "the sheet carries what-if data tables; "
+                                "their ref/r1/r2 inputs live in unmodeled "
+                                "bytes and would silently mis-shift")
                     for ref in (formula.r1, formula.r2):
-                        if not isinstance(ref, str) or "!" not in ref:
+                        if not isinstance(ref, str):
                             continue
                         _rewritten, changed = shift_formula(
                             "=" + ref, other.title, ws.title, axis, index,
@@ -568,6 +578,20 @@ def shift_blockers(ws, operation, index, amount=1):
                                 "shifted sheet through {2!r}; rewriting "
                                 "data-table metadata is not supported"
                                 .format(other.title, cell.coordinate, ref))
+                continue
+            if other is ws:
+                modeled_formula_types["array"] += 1
+                if not _range_precedes_shift(formula.ref, axis, index):
+                    blockers.append(
+                        "the sheet carries array formulas (ref rewriting "
+                        "for spill ranges is not supported in v0)")
+            if _dynamic_reference_affects_shift(
+                    formula_text, other.title, ws.title,
+                    axis, index, amount, is_delete):
+                blockers.append(
+                    "array formula {0}!{1} contains a dynamic reference "
+                    "that may target shifted cells".format(
+                        other.title, cell.coordinate))
                 continue
             _rewritten, changed = shift_formula(
                 formula_text, other.title, ws.title, axis, index, amount,
@@ -602,22 +626,40 @@ def shift_blockers(ws, operation, index, amount=1):
     if part_payload is None:
         blockers.append("the sheet's package part could not be located")
         return blockers
-    if b"extLst" in part_payload:
+    extension_blocker = _extension_shift_blocker(
+        part_payload, ws.title, axis, index, amount, is_delete)
+    if extension_blocker:
         blockers.append(
             "the sheet carries extension content (extLst: sparklines, x14 "
             "rules, ...) whose cell ranges live in unmodeled bytes")
-    if b"t=\"array\"" in part_payload or b"t='array'" in part_payload:
+    raw_formula_types = _raw_special_formula_types(part_payload)
+    if raw_formula_types["array"] > modeled_formula_types["array"]:
         blockers.append("the sheet carries array formulas (ref rewriting "
                         "for spill ranges is not supported in v0)")
-    if b"t=\"dataTable\"" in part_payload \
-            or b"t='dataTable'" in part_payload:
+    if raw_formula_types["dataTable"] > \
+            modeled_formula_types["dataTable"]:
         blockers.append("the sheet carries what-if data tables; their "
                         "ref/r1/r2 inputs live in unmodeled bytes and "
                         "would silently mis-shift")
-    if any(cell._comment is not None for cell in ws._cells.values()):
+    comments = [cell for cell in ws._cells.values()
+                if cell._comment is not None]
+    comments_before = all(
+        (cell.row if axis == "rows" else cell.column) < index
+        for cell in comments)
+    has_legacy_drawing = ws.legacy_drawing is not None \
+        or b"<legacyDrawing" in part_payload
+    comment_kind, source_anchors_before = (None, False)
+    if comments or has_legacy_drawing:
+        comment_kind, source_anchors_before = _comment_machinery_state(
+            wb, lookup_title, axis, index)
+    comments_unsafe = comment_kind == "comments" and (
+        not comments or not comments_before or not source_anchors_before)
+    comments_unsafe = comments_unsafe or (
+        bool(comments) and comment_kind != "comments")
+    if comments_unsafe:
         blockers.append("the sheet carries comments; their anchors live in "
                         "comment/VML parts the shift cannot rewrite")
-    if b"<legacyDrawing" in part_payload:
+    if has_legacy_drawing and comment_kind != "comments":
         blockers.append("the sheet references a legacy (VML) drawing")
     charts = _charts_referencing(wb, lookup_title)
     if charts:
@@ -644,7 +686,17 @@ def shift_blockers(ws, operation, index, amount=1):
         blockers.append(
             "preserved pivot part(s) {0} reference this sheet".format(
                 ", ".join(sorted(pivots))))
-    if ws.row_breaks or ws.col_breaks:
+    breaks = ws.row_breaks if axis == "rows" else ws.col_breaks
+    opposite_breaks = ws.col_breaks if axis == "rows" else ws.row_breaks
+    direct_break_affected = any(
+        item.id is None or item.id < 0 or item.id >= index - 1
+        for item in breaks.brk)
+    opposite_span_affected = any(
+        item.min is None or item.max is None
+        or item.min < 0 or item.max < item.min
+        or item.max >= index - 1
+        for item in opposite_breaks.brk)
+    if direct_break_affected or opposite_span_affected:
         blockers.append("the sheet carries manual page breaks, which "
                         "anchor to row/column numbers (not rewritten in v0)")
     for other in wb.worksheets:
@@ -657,6 +709,156 @@ def shift_blockers(ws, operation, index, amount=1):
                                                    cell.coordinate))
                 break
     return blockers
+
+
+def _range_precedes_shift(ref, axis, index):
+    """Whether a local range is wholly before the affected half-plane."""
+    from openpyxl.utils.cell import range_boundaries
+
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(ref)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    edge = max_row if axis == "rows" else max_col
+    return edge is not None and edge < index
+
+
+def _raw_special_formula_types(payload):
+    """Count special formulas represented by the source worksheet XML."""
+    counts = {"array": 0, "dataTable": 0}
+    if not any(marker in payload for marker in (
+            b't="array"', b"t='array'", b't="dataTable"',
+            b"t='dataTable'")):
+        return counts
+    try:
+        from openpyxl.xml.functions import fromstring
+
+        root = fromstring(payload)
+    except Exception:
+        return {"array": float("inf"), "dataTable": float("inf")}
+    for element in root.iter():
+        if _xml_local_name(element) != "f":
+            continue
+        formula_type = element.get("t")
+        if formula_type in counts:
+            counts[formula_type] += 1
+    return counts
+
+
+_KNOWN_RANGE_EXTENSIONS = {
+    "{05C60535-1F16-4FD2-B633-F4F36F0B64E0}": "sparklineGroups",
+    "{78C0D931-6437-407D-A8EE-F0AAD7539E65}":
+        "conditionalFormattings",
+    "{CCE6A557-97BC-4B89-ADB6-D9C93CAAB3DF}": "dataValidations",
+}
+
+_KNOWN_NESTED_EXTENSIONS = {
+    "{B025F937-C7B1-47D3-B67F-A62EFF666E3E}": "id",
+}
+
+
+def _xml_local_name(element):
+    tag = getattr(element, "tag", None)
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else None
+
+
+def _extension_shift_blocker(payload, context_sheet, axis, index, amount,
+                             is_delete):
+    """Whether a sheet-level extension is unknown or shift-relevant."""
+    if b"extLst" not in payload:
+        return False
+    try:
+        from openpyxl.xml.functions import fromstring
+
+        root = fromstring(payload)
+    except Exception:
+        return b"extLst" in payload
+    direct_ext_lists = [element for element in root
+                        if _xml_local_name(element) == "extLst"]
+    ext_lists = [element for element in root.iter()
+                 if _xml_local_name(element) == "extLst"]
+    if not ext_lists:
+        return False
+    from .rewrite import shift_formula
+
+    for ext_list in ext_lists:
+        if not len(ext_list):
+            return True
+        if ext_list not in direct_ext_lists:
+            for extension in ext_list:
+                expected = _KNOWN_NESTED_EXTENSIONS.get(
+                    (extension.get("uri") or "").upper())
+                children = list(extension)
+                if expected is None or len(children) != 1 \
+                        or _xml_local_name(children[0]) != expected \
+                        or not (children[0].text or "").strip():
+                    return True
+            continue
+        for extension in ext_list:
+            expected = _KNOWN_RANGE_EXTENSIONS.get(
+                (extension.get("uri") or "").upper())
+            children = list(extension)
+            if expected is None or len(children) != 1 \
+                    or _xml_local_name(children[0]) != expected:
+                return True
+            saw_reference = False
+            for element in extension.iter():
+                local = _xml_local_name(element)
+                if local not in ("f", "sqref"):
+                    continue
+                saw_reference = True
+                value = element.text or ""
+                if not value.strip():
+                    return True
+                references = value.split() if local == "sqref" else [value]
+                if not references:
+                    return True
+                for reference in references:
+                    try:
+                        formula = reference if reference.startswith("=") \
+                            else "=" + reference
+                        if local == "f":
+                            from .references import \
+                                _dynamic_reference_affects_shift
+
+                            if _dynamic_reference_affects_shift(
+                                    formula, context_sheet, context_sheet,
+                                    axis, index, amount, is_delete):
+                                return True
+                        _rewritten, changed = shift_formula(
+                            formula, context_sheet, context_sheet,
+                            axis, index, amount, is_delete)
+                    except UnsupportedStructureError:
+                        return True
+                    if changed:
+                        return True
+            if not saw_reference:
+                return True
+    return False
+
+
+def _comment_machinery_state(wb, title, axis, index):
+    """Return source VML kind and whether all note anchors precede a shift."""
+    source = getattr(wb, "_paper_source", None)
+    if not source:
+        return None, False
+    from .comments import (
+        comment_anchors_precede_shift,
+        comment_machinery_kind,
+    )
+    from .saver import _package_info
+
+    with zipfile.ZipFile(io.BytesIO(source)) as archive:
+        _workbook_part, mapping = _package_info(archive)
+        sheet_part = mapping.get(title)
+        if sheet_part is None:
+            return "other-vml", False
+        names = set(archive.namelist())
+        kind = comment_machinery_kind(archive, sheet_part, names)
+        anchors_before = kind == "comments" and \
+            comment_anchors_precede_shift(
+                archive, sheet_part, names, axis, index)
+        return kind, anchors_before
 
 
 def _three_d_formula_references_sheet(wb, formula, target_title):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import re
 import zipfile
 from copy import copy
 
@@ -17,6 +19,7 @@ from openpyxl.errors import (
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.pagebreak import Break
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
@@ -511,6 +514,261 @@ def test_cross_sheet_array_formula_blocks_shift_before_mutation(tmp_path):
         wb["Data"].insert_rows(1)
     assert wb["Data"]["A1"].value == 10
     assert wb["Calc"]["A1"].value.text == "=Data!A1+{1;2}"
+
+
+def test_shift_after_local_array_formula_preserves_it(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = 1
+    ws["B1"] = ArrayFormula(ref="B1:B2", text="=A1:A2*2")
+    ws["A5"] = "tail"
+
+    wb = _preserved(tmp_path, wb, "array-before-shift.xlsx")
+    wb.active.insert_rows(5)
+    output = tmp_path / "array-before-shift-output.xlsx"
+    wb.save(output)
+
+    reloaded = load_workbook(output)
+    assert reloaded.active["B1"].value.ref == "B1:B2"
+    assert reloaded.active["A6"].value == "tail"
+
+
+def test_dynamic_reference_in_disjoint_array_formula_still_refuses(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = ArrayFormula(
+        ref="A1:A2", text='=INDIRECT("A5")*{1;2}')
+    ws["A5"] = "target"
+    wb = _preserved(tmp_path, wb, "dynamic-array-before-shift.xlsx")
+
+    with pytest.raises(PaperRefusal, match="dynamic reference"):
+        wb.active.insert_rows(5)
+
+    assert wb.active["A5"].value == "target"
+
+
+def test_shift_after_local_data_table_preserves_it(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = DataTableFormula(ref="A1:B2", r1="D1")
+    ws["A5"] = "tail"
+
+    wb = _preserved(tmp_path, wb, "data-table-before-shift.xlsx")
+    wb.active.insert_rows(5)
+    output = tmp_path / "data-table-before-shift-output.xlsx"
+    wb.save(output)
+
+    reloaded = load_workbook(output)
+    assert reloaded.active["A1"].value.ref == "A1:B2"
+    assert reloaded.active["A6"].value == "tail"
+
+
+def test_shift_after_comment_preserves_comment_machinery(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"].comment = Comment("note", "paper")
+    ws["A5"] = "tail"
+
+    wb = _preserved(tmp_path, wb, "comment-before-shift.xlsx")
+    with zipfile.ZipFile(io.BytesIO(wb._paper_source)) as source:
+        source_vml = {
+            name: source.read(name) for name in source.namelist()
+            if name.endswith(".vml")
+        }
+    wb.active.insert_rows(5)
+    output = tmp_path / "comment-before-shift-output.xlsx"
+    wb.save(output)
+
+    reloaded = load_workbook(output)
+    assert reloaded.active["A1"].comment.text == "note"
+    assert reloaded.active["A6"].value == "tail"
+    with zipfile.ZipFile(output) as delivered:
+        assert {name: delivered.read(name) for name in delivered.namelist()
+                if name.endswith(".vml")} == source_vml
+
+
+def test_shift_affecting_comment_still_refuses(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws["A5"].comment = Comment("note", "paper")
+    wb = _preserved(tmp_path, wb, "comment-affected.xlsx")
+
+    with pytest.raises(PaperRefusal, match="comments"):
+        wb.active.insert_rows(5)
+
+    assert wb.active["A5"].comment.text == "note"
+
+
+def test_non_comment_vml_still_refuses_disjoint_shift(tmp_path):
+    wb = Workbook()
+    wb.active["A1"].comment = Comment("note", "paper")
+    source = tmp_path / "comment-source.xlsx"
+    wb.save(source)
+    patched = tmp_path / "control-vml.xlsx"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(patched, "w") as zout:
+        for item in zin.infolist():
+            payload = zin.read(item.filename)
+            if item.filename.endswith(".vml"):
+                payload = payload.replace(
+                    b'ObjectType="Note"', b'ObjectType="Button"')
+            zout.writestr(copy(item), payload)
+
+    wb = load_workbook(patched, preserve=True)
+    with pytest.raises(PaperRefusal, match="legacy|VML"):
+        wb.active.insert_rows(5)
+
+
+def test_mixed_vml_still_refuses_disjoint_shift(tmp_path):
+    wb = Workbook()
+    wb.active["A1"].comment = Comment("note", "paper")
+    source = tmp_path / "mixed-vml-source.xlsx"
+    wb.save(source)
+    patched = tmp_path / "mixed-vml.xlsx"
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(patched, "w") as zout:
+        for item in zin.infolist():
+            payload = zin.read(item.filename)
+            if item.filename.endswith(".vml"):
+                payload = payload.replace(
+                    b"</xml>",
+                    b'<v:shape xmlns:v="urn:schemas-microsoft-com:vml" '
+                    b'id="unknown"/></xml>')
+            zout.writestr(copy(item), payload)
+
+    wb = load_workbook(patched, preserve=True)
+    with pytest.raises(PaperRefusal, match="legacy|VML"):
+        wb.active.insert_rows(5)
+
+
+def test_disjoint_page_break_does_not_block_shift(tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws.row_breaks.append(Break(id=2))
+    ws["A5"] = "tail"
+
+    wb = _preserved(tmp_path, wb, "page-break-before-shift.xlsx")
+    wb.active.insert_rows(5)
+    output = tmp_path / "page-break-before-shift-output.xlsx"
+    wb.save(output)
+
+    reloaded = load_workbook(output)
+    assert [item.id for item in reloaded.active.row_breaks.brk] == [2]
+    assert reloaded.active["A6"].value == "tail"
+
+
+def test_affected_page_break_still_refuses(tmp_path):
+    wb = Workbook()
+    wb.active.row_breaks.append(Break(id=4))
+    wb = _preserved(tmp_path, wb, "page-break-affected.xlsx")
+
+    with pytest.raises(PaperRefusal, match="page breaks"):
+        wb.active.insert_rows(5)
+
+
+@pytest.mark.parametrize(
+    "breaks, operation",
+    [("row_breaks", "insert_cols"), ("col_breaks", "insert_rows")],
+)
+def test_affected_opposite_axis_page_break_span_refuses(
+        tmp_path, breaks, operation):
+    wb = Workbook()
+    getattr(wb.active, breaks).append(Break(id=2, min=2, max=8))
+    wb = _preserved(tmp_path, wb, "opposite-page-break.xlsx")
+
+    with pytest.raises(PaperRefusal, match="page breaks"):
+        getattr(wb.active, operation)(3)
+
+
+def _workbook_with_sheet_extension(tmp_path, extension, name, *, wrap=True):
+    wb = Workbook()
+    wb.active["A5"] = "tail"
+    source = tmp_path / (name + "-source.xlsx")
+    wb.save(source)
+    patched = tmp_path / (name + ".xlsx")
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(patched, "w") as zout:
+        for item in zin.infolist():
+            payload = zin.read(item.filename)
+            if item.filename.startswith("xl/worksheets/sheet"):
+                content = b"<extLst>" + extension + b"</extLst>" \
+                    if wrap else extension
+                payload = payload.replace(
+                    b"</worksheet>", content + b"</worksheet>", 1)
+            zout.writestr(copy(item), payload)
+    return load_workbook(patched, preserve=True)
+
+
+def _x14_cf_extension(sqref):
+    return (
+        b'<ext uri="{78C0D931-6437-407D-A8EE-F0AAD7539E65}" '
+        b'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/'
+        b'2009/9/main"><x14:conditionalFormattings>'
+        b'<x14:conditionalFormatting xmlns:xm="http://schemas.microsoft.com/'
+        b'office/excel/2006/main"><x14:cfRule type="dataBar"/>'
+        b'<xm:sqref>' + sqref + b'</xm:sqref></x14:conditionalFormatting>'
+        b'</x14:conditionalFormattings></ext>')
+
+
+def test_disjoint_known_extension_does_not_block_shift(tmp_path):
+    nested_pointer = (
+        b'<conditionalFormatting sqref="A1"><cfRule type="dataBar" '
+        b'priority="1"><extLst><ext '
+        b'uri="{B025F937-C7B1-47D3-B67F-A62EFF666E3E}" '
+        b'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/'
+        b'2009/9/main"><x14:id>{11111111-1111-1111-1111-111111111111}'
+        b'</x14:id></ext></extLst></cfRule></conditionalFormatting>')
+    wb = _workbook_with_sheet_extension(
+        tmp_path,
+        nested_pointer + b"<extLst>" + _x14_cf_extension(b"A1")
+        + b"</extLst>",
+        "known-extension-before", wrap=False)
+    with zipfile.ZipFile(io.BytesIO(wb._paper_source)) as source:
+        source_sheet = source.read("xl/worksheets/sheet1.xml")
+    source_extensions = re.findall(
+        br"<extLst\b.*?</extLst>", source_sheet, re.S)
+    wb.active.insert_rows(5)
+    output = tmp_path / "known-extension-before-output.xlsx"
+    wb.save(output)
+
+    reloaded = load_workbook(output)
+    assert reloaded.active["A6"].value == "tail"
+    with zipfile.ZipFile(output) as delivered:
+        delivered_sheet = delivered.read("xl/worksheets/sheet1.xml")
+    assert re.findall(
+        br"<extLst\b.*?</extLst>", delivered_sheet,
+        re.S) == source_extensions
+
+
+def test_affected_known_extension_still_refuses(tmp_path):
+    wb = _workbook_with_sheet_extension(
+        tmp_path, _x14_cf_extension(b"A5"), "known-extension-affected")
+
+    with pytest.raises(PaperRefusal, match="extension"):
+        wb.active.insert_rows(5)
+
+
+def test_unknown_extension_still_refuses_disjoint_shift(tmp_path):
+    extension = (
+        b'<ext uri="{00000000-0000-0000-0000-000000000000}" '
+        b'xmlns:x="urn:vendor"><x:feature><x:ref>A1</x:ref>'
+        b'</x:feature></ext>')
+    wb = _workbook_with_sheet_extension(
+        tmp_path, extension, "unknown-extension")
+
+    with pytest.raises(PaperRefusal, match="extension"):
+        wb.active.insert_rows(5)
+
+
+def test_unknown_nested_extension_still_refuses_disjoint_shift(tmp_path):
+    extension = (
+        b'<conditionalFormatting sqref="A1"><cfRule type="expression" '
+        b'priority="1"><formula>TRUE</formula><extLst>'
+        b'<ext uri="{00000000-0000-0000-0000-000000000000}" '
+        b'xmlns:x="urn:vendor"><x:ref>A1</x:ref></ext>'
+        b'</extLst></cfRule></conditionalFormatting>')
+    wb = _workbook_with_sheet_extension(
+        tmp_path, extension, "unknown-nested-extension", wrap=False)
+
+    with pytest.raises(PaperRefusal, match="extension"):
+        wb.active.insert_rows(5)
 
 
 def test_cross_sheet_array_formula_blocks_rename_before_mutation(tmp_path):
