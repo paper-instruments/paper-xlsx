@@ -100,62 +100,101 @@ def allocate_create(workbook, worksheet, graph, ledger):
 
 
 def plan_creates(context):
-    """Add staged create payloads to the save ``PartPlan``."""
+    """Add staged pivot-operation payloads to the save ``PartPlan``."""
     ledger = context.ledger
     operations = getattr(ledger, "pivot_operations", None)
     if not operations:
         return
+    registry = []
+    removals = []
+    for operation in operations.values():
+        if getattr(operation, "noop", False):
+            continue
+        if operation.kind == "create":
+            registry.extend(_plan_add(context, operation))
+        elif operation.kind in ("refresh", "repoint", "move", "update", "rename"):
+            _plan_replace(context, operation)
+        elif operation.kind == "delete":
+            _plan_remove(context, operation)
+            removals.append(int(operation.allocation.cache_id))
+    context.part_plan.pivot_cache_registry = tuple(registry)
+    context.part_plan.pivot_cache_removals = tuple(removals)
+
+
+def _plan_add(context, operation):
     part_plan = context.part_plan
     archive = context.archive
     names = context.names
-    registry = []
-    for operation in operations.values():
-        if operation.kind != "create":
-            continue
-        allocation = operation.allocation
-        payloads = operation.payloads
-        _validate_allocation_free(allocation, names, part_plan)
-        cache_rid = part_plan.reserve_rid(
-            context.workbook_rels_part,
-            archive.read(context.workbook_rels_part)
-            if context.workbook_rels_part in names else None)
-        sheet_rels = _rels_path(allocation.worksheet_part)
-        pivot_rid = part_plan.reserve_rid(
-            sheet_rels,
-            archive.read(sheet_rels) if sheet_rels in names else None)
-        part_plan.add_part(
-            allocation.records_part,
-            payloads.cache_records,
-            content_type=RecordList.mime_type,
-            relate_from=allocation.cache_part,
-            rel_type=RecordList.rel_type,
-            rel_id="rId1",
-        )
-        part_plan.add_part(
-            allocation.cache_part,
-            payloads.cache_definition,
-            content_type=CacheDefinition.mime_type,
-            relate_from=context.workbook_part,
-            rel_type=CacheDefinition.rel_type,
-            rel_id=cache_rid,
-        )
-        part_plan.add_part(
-            allocation.pivot_part,
-            payloads.pivot_table,
-            content_type=TableDefinition.mime_type,
-            relate_from=allocation.worksheet_part,
-            rel_type=TableDefinition.rel_type,
-            rel_id=pivot_rid,
-        )
-        part_plan.rel_appends.setdefault(
-            allocation.pivot_rels_part, []).append((
-                "rId1",
-                CacheDefinition.rel_type,
-                _relative_target(allocation.pivot_part, allocation.cache_part),
-                None,
-            ))
-        registry.append((allocation.cache_id, cache_rid))
-    part_plan.pivot_cache_registry = tuple(registry)
+    allocation = operation.allocation
+    payloads = operation.payloads
+    _validate_allocation_free(allocation, names, part_plan)
+    cache_rid = part_plan.reserve_rid(
+        context.workbook_rels_part,
+        archive.read(context.workbook_rels_part)
+        if context.workbook_rels_part in names else None)
+    sheet_rels = _rels_path(allocation.worksheet_part)
+    pivot_rid = part_plan.reserve_rid(
+        sheet_rels,
+        archive.read(sheet_rels) if sheet_rels in names else None)
+    part_plan.add_part(
+        allocation.records_part,
+        payloads.cache_records,
+        content_type=RecordList.mime_type,
+        relate_from=allocation.cache_part,
+        rel_type=RecordList.rel_type,
+        rel_id="rId1",
+    )
+    part_plan.add_part(
+        allocation.cache_part,
+        payloads.cache_definition,
+        content_type=CacheDefinition.mime_type,
+        relate_from=context.workbook_part,
+        rel_type=CacheDefinition.rel_type,
+        rel_id=cache_rid,
+    )
+    part_plan.add_part(
+        allocation.pivot_part,
+        payloads.pivot_table,
+        content_type=TableDefinition.mime_type,
+        relate_from=allocation.worksheet_part,
+        rel_type=TableDefinition.rel_type,
+        rel_id=pivot_rid,
+    )
+    part_plan.rel_appends.setdefault(
+        allocation.pivot_rels_part, []).append((
+            "rId1",
+            CacheDefinition.rel_type,
+            _relative_target(allocation.pivot_part, allocation.cache_part),
+            None,
+        ))
+    return ((allocation.cache_id, cache_rid),)
+
+
+def _plan_replace(context, operation):
+    allocation = operation.allocation
+    payloads = operation.payloads
+    context.part_plan.replace_part(allocation.pivot_part, payloads.pivot_table)
+    if operation.kind in ("refresh", "repoint", "update"):
+        context.part_plan.replace_part(
+            allocation.cache_part, payloads.cache_definition)
+        context.part_plan.replace_part(
+            allocation.records_part, payloads.cache_records)
+
+
+def _plan_remove(context, operation):
+    allocation = operation.allocation
+    sheet_rels = _rels_path(allocation.worksheet_part)
+    workbook_rels = context.workbook_rels_part
+    context.part_plan.remove_part(
+        allocation.pivot_part,
+        referencing_rels=((sheet_rels, allocation.pivot_part),),
+    )
+    context.part_plan.remove_part(
+        allocation.cache_part,
+        referencing_rels=((workbook_rels, allocation.cache_part),),
+    )
+    if allocation.records_part:
+        context.part_plan.remove_part(allocation.records_part)
 
 
 def splice_workbook_caches(payload, entries):
@@ -191,13 +230,48 @@ def splice_workbook_caches(payload, entries):
 
 def apply_workbook_cache_registry(context, workbook_xml):
     """Splice staged cache registry entries into workbook.xml bytes."""
-    entries = getattr(context.part_plan, "pivot_cache_registry", ())
-    if not entries:
-        return workbook_xml
     payload = workbook_xml
     if payload is None:
         payload = context.archive.read(context.workbook_part)
+    removals = getattr(context.part_plan, "pivot_cache_removals", ())
+    if removals:
+        payload = drop_workbook_caches(payload, removals)
+    entries = getattr(context.part_plan, "pivot_cache_registry", ())
+    if not entries:
+        return payload
     return splice_workbook_caches(payload, entries)
+
+
+def drop_workbook_caches(payload, cache_ids):
+    """Remove ``pivotCache`` registry rows for deleted Paper-owned caches."""
+    wanted = {str(cache_id) for cache_id in cache_ids}
+    root = crosspart.scan_small(payload, "workbook", max_depth=3)
+    container = None
+    for child in root.children:
+        if child.local() == "pivotCaches":
+            container = child
+            break
+    if container is None:
+        return payload
+    edits = []
+    kept = 0
+    for child in container.children:
+        if child.local() != "pivotCache":
+            continue
+        cache_id = child.attrs.get("cacheId")
+        if cache_id in wanted:
+            edits.append((child.start, child.end, b""))
+        else:
+            kept += 1
+    if not edits:
+        return payload
+    if kept == 0:
+        return crosspart.apply_edits(
+            payload, [(container.start, container.end, b"")])
+    if "count" in container.attrs:
+        edits.append(crosspart._patch_attr(
+            payload, container, "count", str(kept)))
+    return crosspart.apply_edits(payload, edits)
 
 
 def _next_numbered(prefix, reserved):

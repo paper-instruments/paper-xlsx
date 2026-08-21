@@ -27,7 +27,8 @@ from openpyxl.pivot.graph import load_workbook_pivot_graph
 from openpyxl.pivot.inspect import PivotProjection
 from openpyxl.pivot.plan import plan_pivot
 from openpyxl.pivot.qualify import PivotCapabilities, PivotQualification
-from openpyxl.pivot.source import _source_identity, snapshot_from_workbook
+from openpyxl.pivot.calculate import snapshot_for_pivot
+from openpyxl.pivot.source import _source_identity
 from openpyxl.preserve.pivotgraph import allocate_create
 from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
@@ -50,6 +51,10 @@ class PivotCreateOperation:
     output_range: str
     output_cells: tuple
     owned_coordinates: tuple
+    clear_coordinates: tuple = ()
+    noop: bool = False
+    replace_existing: bool = False
+    relationship_id: str | None = None
 
 
 def create_pivot(worksheet, name, source, destination, rows, values,
@@ -100,14 +105,7 @@ def create_pivot(worksheet, name, source, destination, rows, values,
     _assert_name_available(name, graph, ledger)
     _checkpoint("validated", workbook)
 
-    snapshot = snapshot_from_workbook(workbook, spec.source)
-    if snapshot.formula_coordinates:
-        raise UnsupportedStructureError(
-            "formula-backed pivot sources require the refresh/oracle path. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-source",
-            options=list(snapshot.formula_coordinates),
-        )
+    snapshot = snapshot_for_pivot(workbook, spec.source)
     spec = replace(spec, filters=_resolve_filters(spec.filters, snapshot))
     plan = plan_pivot(spec, snapshot)
     _assert_output_legal(worksheet, plan, snapshot, graph, ledger)
@@ -163,9 +161,9 @@ def create_pivot(worksheet, name, source, destination, rows, values,
 def validate_create_freshness(workbook, ledger):
     """Refuse a save when a staged create's source changed after planning."""
     for operation in getattr(ledger, "pivot_operations", {}).values():
-        if operation.kind != "create":
+        if operation.kind == "delete" or getattr(operation, "noop", False):
             continue
-        snapshot = snapshot_from_workbook(workbook, operation.spec.source)
+        snapshot = snapshot_for_pivot(workbook, operation.spec.source)
         if _content_identity(snapshot) != operation.source_identity:
             raise UnsupportedStructureError(
                 "the source of staged pivot %r changed after create; "
@@ -216,10 +214,11 @@ def staged_qualification():
 
 def _staged_identity(operation):
     from openpyxl.pivot.graph import PivotIdentity
+    rid = operation.relationship_id or ("staged:%s" % operation.session_id)
     return PivotIdentity(
         worksheet_part=operation.allocation.worksheet_part,
         pivot_part=operation.allocation.pivot_part,
-        relationship_id="staged:%s" % operation.session_id,
+        relationship_id=rid,
         name=operation.name,
     )
 
@@ -231,7 +230,7 @@ def iter_staged_states(workbook):
         return ()
     states = []
     for operation in getattr(ledger, "pivot_operations", {}).values():
-        if operation.kind != "create":
+        if operation.kind == "delete" or operation.noop:
             continue
         identity = _staged_identity(operation)
         states.append(_PivotState(
@@ -370,7 +369,8 @@ def _assert_name_available(name, graph, ledger):
         )
 
 
-def _assert_output_legal(worksheet, plan, snapshot, graph, ledger):
+def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
+                         ignore_coordinates=(), ignore_name=None):
     output = range_boundaries(plan.output.ref)
     source_bounds = snapshot.bounds
     if source_bounds[1] is not None and source_bounds[0] == worksheet.title:
@@ -407,6 +407,8 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger):
     for node in graph.pivots:
         if node.sheet_title != worksheet.title or not node.output_range:
             continue
+        if ignore_name and node.identity.name == ignore_name:
+            continue
         try:
             bounds = range_boundaries(node.output_range)
         except (TypeError, ValueError):
@@ -421,6 +423,8 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger):
     for operation in getattr(ledger, "pivot_operations", {}).values():
         if operation.sheet != worksheet.title:
             continue
+        if ignore_name and operation.name == ignore_name:
+            continue
         bounds = range_boundaries(operation.output_range)
         if _ranges_overlap(output, bounds):
             raise BoundaryViolationError(
@@ -430,7 +434,10 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger):
                 anchor="%s!%s" % (worksheet.title, plan.output.ref),
             )
     cells = getattr(worksheet, "_cells", {})
+    ignored = set(ignore_coordinates)
     for cell in plan.output.cells:
+        if (cell.row, cell.column) in ignored:
+            continue
         existing = cells.get((cell.row, cell.column))
         if existing is None:
             continue

@@ -23,6 +23,7 @@ from openpyxl.pivot.qualify import qualify_pivot
 TO_DICT_SCHEMA = "pivot_table"
 TO_DICT_VERSION = 1
 _SESSION_ATTR = "_paper_pivot_session"
+_GENERATION_ATTR = "_paper_pivot_generation"
 
 
 class _PivotSession:
@@ -116,7 +117,9 @@ def _session_for(workbook):
 
     for state in iter_staged_states(workbook):
         states[state.identity] = state
-    session = _PivotSession(1, graph, states)
+    generation = getattr(workbook, _GENERATION_ATTR, 0) + 1
+    setattr(workbook, _GENERATION_ATTR, generation)
+    session = _PivotSession(generation, graph, states)
     setattr(workbook, _SESSION_ATTR, session)
     return session
 
@@ -126,7 +129,7 @@ def invalidate_pivot_overlay(workbook):
     session = getattr(workbook, _SESSION_ATTR, None)
     if session is None:
         return
-    session.generation += 1
+    setattr(workbook, _GENERATION_ATTR, session.generation)
     session.closed = True
 
 
@@ -326,3 +329,28 @@ class PivotTable:
             item.to_dict() for item in state.qualification.reasons
         ]
         return payload
+
+    def refresh(self):
+        from openpyxl.pivot.mutate import refresh_pivot
+        return refresh_pivot(self)
+
+    def repoint_source(self, source, spec=None):
+        from openpyxl.pivot.mutate import repoint_pivot
+        return repoint_pivot(self, source, spec=spec)
+
+    def move(self, destination, destination_sheet=None):
+        from openpyxl.pivot.mutate import move_pivot
+        return move_pivot(
+            self, destination, destination_sheet=destination_sheet)
+
+    def update(self, **changes):
+        from openpyxl.pivot.mutate import update_pivot
+        return update_pivot(self, **changes)
+
+    def rename(self, name):
+        from openpyxl.pivot.mutate import rename_pivot
+        return rename_pivot(self, name)
+
+    def delete(self):
+        from openpyxl.pivot.mutate import delete_pivot
+        return delete_pivot(self)

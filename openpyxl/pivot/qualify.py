@@ -202,6 +202,10 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
                  referenced_by=",".join(
                      "%s!%s" % item for item in cache.referenced_by))
 
+    if origin == "paper" and not cache_shared and projection.complete \
+            and workbook is not None and _output_owned(workbook, node, projection):
+        ownership_proved = True
+
     if not ownership_proved:
         _disable(flags, reasons, OWNERSHIP_CAPABILITIES,
                  "output-ownership-unproved",
@@ -322,8 +326,6 @@ def _header_reason(source, workbook):
         else:
             folded.append(str(value).casefold())
     if any(not isinstance(value, str) or not value for value in headers):
-        if all(value is None for value in headers):
-            return None
         return _reason(
             None, "invalid-pivot-source",
             sheet=source.sheet, ref=source.ref, detail="blank-or-nonstring-header")
@@ -417,3 +419,90 @@ def _ensure_false_capabilities_explained(flags, reasons):
             continue
         code = "graph-invalid" if graph_invalid else "capability-disabled"
         reasons.append(_reason(name, code))
+
+
+def _output_owned(workbook, node, projection):
+    """Prove Paper-managed output against cache records, not live source."""
+    if projection.spec is None or not node.output_range:
+        return False
+    package = getattr(workbook, "_paper_source", None)
+    if not package or not node.cache_definition_part or not node.cache_records_part:
+        return False
+    try:
+        from openpyxl.pivot.plan import plan_pivot
+
+        snapshot = _snapshot_from_cache_package(package, node, projection)
+        spec = _spec_without_explicit_items(projection.spec)
+        plan = plan_pivot(spec, snapshot)
+    except Exception:
+        return False
+    if plan.output.ref != node.output_range:
+        return False
+    worksheet = None
+    for item in workbook.worksheets:
+        if item.title == node.sheet_title:
+            worksheet = item
+            break
+    if worksheet is None:
+        return False
+    cells = getattr(worksheet, "_cells", {})
+    for cell in plan.output.cells:
+        existing = cells.get((cell.row, cell.column))
+        actual = None if existing is None else existing.value
+        if actual != cell.value:
+            return False
+    return True
+
+
+def _snapshot_from_cache_package(package, node, projection):
+    import io
+    import zipfile
+
+    from openpyxl.pivot.inspect import _shared_item_value, _shared_items
+    from openpyxl.pivot.graph import _children, _local, _parse_xml
+    from openpyxl.pivot.source import snapshot_from_matrix
+
+    with zipfile.ZipFile(io.BytesIO(package)) as zin:
+        names = set(zin.namelist())
+        if node.cache_definition_part not in names or node.cache_records_part not in names:
+            raise ValueError("missing cache parts")
+        definition = _parse_xml(zin.read(node.cache_definition_part))
+        shared = _shared_items(definition)
+        headers = []
+        fields = _children(_first_local(definition, "cacheFields"), "cacheField") \
+            if _first_local(definition, "cacheFields") is not None else []
+        for field in fields:
+            from openpyxl.pivot.graph import _attr
+            headers.append(_attr(field, "name") or "")
+        records_root = _parse_xml(zin.read(node.cache_records_part))
+        rows = []
+        for record in _children(records_root, "r"):
+            values = []
+            field_index = 0
+            for child in list(record):
+                tag = _local(child.tag)
+                if tag == "x":
+                    from openpyxl.pivot.graph import _attr
+                    index = int(_attr(child, "v") or 0)
+                    catalog = shared[field_index] if field_index < len(shared) else ()
+                    values.append(catalog[index] if index < len(catalog) else None)
+                else:
+                    values.append(_shared_item_value(child))
+                field_index += 1
+            rows.append(values)
+    return snapshot_from_matrix(headers, rows, source=projection.source)
+
+
+def _first_local(root, tag):
+    from openpyxl.pivot.graph import _first
+    return _first(root, tag)
+
+
+def _spec_without_explicit_items(spec):
+    from dataclasses import replace
+    from openpyxl.pivot.api_types import PivotAxisField
+
+    def _clear(fields):
+        return tuple(PivotAxisField(field.field) for field in fields)
+
+    return replace(spec, rows=_clear(spec.rows), columns=_clear(spec.columns))

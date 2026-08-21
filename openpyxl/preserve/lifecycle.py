@@ -31,6 +31,7 @@ class PartPlan:
         self.rel_removals = {}   # rels_part -> [target suffix]
         self.replaced = {}       # existing name -> payload (private)
         self.pivot_cache_registry = ()
+        self.pivot_cache_removals = ()
         self._rid_base = {}      # rels_part -> first reserved number
         self._rid_reserved = {}  # rels_part -> count reserved
 

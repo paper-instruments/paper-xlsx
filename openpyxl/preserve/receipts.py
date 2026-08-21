@@ -105,16 +105,59 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
     pivot_parts = set(getattr(ledger, "pivot_refresh_requests", ()))
     if ledger is not None:
         for operation in getattr(ledger, "pivot_operations", {}).values():
-            if operation.kind != "create":
+            if getattr(operation, "noop", False):
                 continue
-            effects.append({
-                "kind": "pivot_created",
-                "name": operation.name,
-                "sheet": operation.sheet,
-                "output_range": operation.output_range,
-                "cache_id": operation.allocation.cache_id,
-                "parts": list(operation.allocation.owned_parts()),
-            })
+            if operation.kind == "create":
+                effects.append({
+                    "kind": "pivot_created",
+                    "name": operation.name,
+                    "sheet": operation.sheet,
+                    "output_range": operation.output_range,
+                    "cache_id": operation.allocation.cache_id,
+                    "parts": list(operation.allocation.owned_parts()),
+                })
+            elif operation.kind == "refresh":
+                effects.append({
+                    "kind": "pivot_refreshed",
+                    "name": operation.name,
+                    "sheet": operation.sheet,
+                    "output_range": operation.output_range,
+                    "source_identity": operation.source_identity,
+                })
+            elif operation.kind == "repoint":
+                effects.append({
+                    "kind": "pivot_source_repointed",
+                    "name": operation.name,
+                    "sheet": operation.sheet,
+                    "output_range": operation.output_range,
+                })
+            elif operation.kind == "move":
+                effects.append({
+                    "kind": "pivot_moved",
+                    "name": operation.name,
+                    "sheet": operation.sheet,
+                    "output_range": operation.output_range,
+                })
+            elif operation.kind == "update":
+                effects.append({
+                    "kind": "pivot_updated",
+                    "name": operation.name,
+                    "sheet": operation.sheet,
+                    "output_range": operation.output_range,
+                })
+            elif operation.kind == "rename":
+                effects.append({
+                    "kind": "pivot_renamed",
+                    "name": operation.name,
+                    "sheet": operation.sheet,
+                })
+            elif operation.kind == "delete":
+                effects.append({
+                    "kind": "pivot_deleted",
+                    "name": operation.name,
+                    "sheet": operation.sheet,
+                    "parts": list(operation.allocation.owned_parts()),
+                })
     if ledger is not None and pivot_parts:
         from .pivots import source_impacts
 

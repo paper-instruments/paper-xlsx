@@ -436,10 +436,11 @@ def _load_from_zip(zin, workbook):
                 zin, names, sheet_title, sheet_part, rel, cache_nodes,
                 incoming, workbook))
 
+    caches_by_id, caches_by_part, _id_reasons = _index_caches(cache_nodes)
+    pivots = tuple(_rebind_pivot_caches(node, caches_by_id) for node in pivots)
     cache_nodes = _attach_cache_references(cache_nodes, pivots)
     caches_by_id, caches_by_part, id_reasons = _index_caches(cache_nodes)
     graph_reasons.extend(id_reasons)
-    pivots = tuple(_rebind_pivot_caches(node, caches_by_id) for node in pivots)
     identities = {}
     for node in pivots:
         identities[node.identity] = node
@@ -625,8 +626,7 @@ def _parse_cache(zin, names, part, cache_ids, rels_by_owner, incoming,
     fields, kinds, grouping, calculated, field_reasons = _cache_fields(root)
     reasons.extend(field_reasons)
     fingerprints = _extension_fingerprints(root)
-    cache_id = cache_ids[0] if len(cache_ids) == 1 else (
-        cache_ids[0] if cache_ids else None)
+    cache_id = cache_ids[0] if len(cache_ids) == 1 else None
     if len(cache_ids) > 1:
         reasons.append(_reason(
             "duplicate-cache-id", part=part,
@@ -1094,6 +1094,10 @@ def _index_caches(cache_nodes):
 def _rebind_pivot_caches(node, caches_by_id):
     cache = caches_by_id.get(node.cache_id)
     if cache is None:
+        return node
+    if (node.cache_definition_part
+            and cache.definition_part
+            and node.cache_definition_part != cache.definition_part):
         return node
     return PivotNode(
         identity=node.identity,

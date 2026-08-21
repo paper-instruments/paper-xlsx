@@ -827,8 +827,15 @@ def _request_impacted_refreshes(wb, ledger, *, force_recalculation=False):
 def validate_source_freshness(wb, ledger):
     """Refuse silent stale pivot caches without explicit refresh consent."""
     impacts = source_impacts(wb, ledger)
+    rebuilt = set()
+    for operation in getattr(ledger, "pivot_operations", {}).values():
+        if getattr(operation, "noop", False):
+            continue
+        if operation.kind in ("create", "refresh", "repoint", "update"):
+            rebuilt.add(operation.allocation.cache_part)
     unsafe = [impact for impact in impacts
-              if impact["part"] not in ledger.pivot_refresh_requests]
+              if impact["part"] not in ledger.pivot_refresh_requests
+              and impact["part"] not in rebuilt]
     if not unsafe:
         return impacts
     details = "; ".join(

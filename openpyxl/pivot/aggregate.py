@@ -114,14 +114,15 @@ def aggregate_snapshot(snapshot, spec, limits=None):
             cells[(row_key, col_key)] = tuple(values)
 
     row_totals = {}
-    if spec.row_grand_totals and column_fields:
+    if spec.column_grand_totals and column_fields:
         for row_key in row_order:
             row_totals[row_key] = _totals_for(
                 included, measures, field_index,
-                lambda record: _key(record, row_fields, field_index) == row_key)
+                lambda record, row_key=row_key: _key(
+                    record, row_fields, field_index) == row_key)
 
     column_totals = {}
-    if spec.column_grand_totals and row_fields:
+    if spec.row_grand_totals and column_fields:
         for col_key in column_order:
             column_totals[col_key] = _totals_for(
                 included, measures, field_index,
@@ -142,10 +143,26 @@ def aggregate_snapshot(snapshot, spec, limits=None):
                     continue
                 seen.add(prefix)
                 prefixes.append(prefix)
-                subtotals[prefix] = _totals_for(
-                    included, measures, field_index,
-                    lambda record, prefix=prefix: _key(
-                        record, row_fields, field_index)[:len(prefix)] == prefix)
+                if column_fields:
+                    by_column = {}
+                    for col_key in column_order:
+                        by_column[col_key] = _totals_for(
+                            included, measures, field_index,
+                            lambda record, prefix=prefix, col_key=col_key: (
+                                _key(record, row_fields, field_index)[:len(prefix)]
+                                == prefix
+                                and _key(record, column_fields, field_index)
+                                == col_key))
+                    by_column[None] = _totals_for(
+                        included, measures, field_index,
+                        lambda record, prefix=prefix: _key(
+                            record, row_fields, field_index)[:len(prefix)] == prefix)
+                    subtotals[prefix] = by_column
+                else:
+                    subtotals[prefix] = _totals_for(
+                        included, measures, field_index,
+                        lambda record, prefix=prefix: _key(
+                            record, row_fields, field_index)[:len(prefix)] == prefix)
 
     return AggregateResult(
         row_keys=tuple(row_order),
