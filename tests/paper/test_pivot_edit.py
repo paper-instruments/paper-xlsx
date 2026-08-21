@@ -5,15 +5,15 @@ import pytest
 
 from openpyxl import load_workbook
 from openpyxl.errors import (
+    AmbiguousTargetError,
     TargetNotFoundError,
     UnsupportedStructureError,
 )
-from openpyxl.worksheet.table import Table
 
 from .support.harness import save_and_reopen
+from .support.partdiff import part_payloads
 from .test_pivot_create_package import _create_by_region
 from .test_pivot_graph import _basic_package, _write_package
-from .test_pivot_refresh import _preserved_matrix
 
 
 _TABLE = "features/tables.xlsx"
@@ -38,23 +38,72 @@ def test_rename_and_reopen(fixture_copy, tmp_path):
     handle = _create_by_region(wb["Data"])
     renamed = handle.rename("RegionalSales")
     assert renamed.name == "RegionalSales"
+    names = [pivot.name for pivot in wb["Data"].pivots]
+    assert names == ["RegionalSales"]
+    with pytest.raises(TargetNotFoundError) as stale:
+        handle.name
+    assert stale.value.kind == "stale-pivot-handle"
     wb = save_and_reopen(wb, str(tmp_path / "renamed.xlsx"), preserve=True)
     names = [pivot.name for pivot in wb["Data"].pivots]
     assert names == ["RegionalSales"]
     assert wb["Data"].pivots["RegionalSales"].origin == "paper"
 
 
+def test_rename_uniqueness_refuses(fixture_copy):
+    src = fixture_copy(_TABLE)
+    wb = load_workbook(src, preserve=True)
+    _create_by_region(wb["Data"])
+    _create_by_region(wb["Data"], name="Other", destination="H3")
+    with pytest.raises(AmbiguousTargetError) as exc:
+        wb["Data"].pivots["ByRegion"].rename("other")
+    assert exc.value.kind == "ambiguous-pivot"
+    assert wb["Data"].pivots["ByRegion"].name == "ByRegion"
+    assert wb["Data"].pivots["Other"].name == "Other"
+
+
 def test_create_then_delete_is_noop(fixture_copy, tmp_path):
     src = fixture_copy(_TABLE)
     wb = load_workbook(src, preserve=True)
-    before = open(src, "rb").read()
     handle = _create_by_region(wb["Data"])
     handle.delete()
     out = str(tmp_path / "noop.xlsx")
     wb.save(out)
-    after = open(out, "rb").read()
-    from .support.partdiff import part_payloads
     assert part_payloads(src) == part_payloads(out)
+
+
+def test_receipt_consolidates_lifecycle(fixture_copy, tmp_path):
+    src = fixture_copy(_TABLE)
+    wb = load_workbook(src, preserve=True)
+    handle = _create_by_region(wb["Data"])
+    handle.update(layout="compact")
+    created = wb.save(str(tmp_path / "created.xlsx"), receipt=True)
+    created_kinds = [
+        item["kind"] for item in created.derived_effects
+        if str(item.get("kind", "")).startswith("pivot_")
+    ]
+    assert created_kinds == ["pivot_created"]
+
+    wb = load_workbook(src, preserve=True)
+    handle = _create_by_region(wb["Data"])
+    handle.delete()
+    cancelled = wb.save(str(tmp_path / "cancelled.xlsx"), receipt=True)
+    cancelled_kinds = [
+        item["kind"] for item in cancelled.derived_effects
+        if str(item.get("kind", "")).startswith("pivot_")
+    ]
+    assert cancelled_kinds == []
+
+    wb = load_workbook(src, preserve=True)
+    _create_by_region(wb["Data"])
+    wb = save_and_reopen(wb, str(tmp_path / "reopened.xlsx"), preserve=True)
+    wb["Data"].pivots["ByRegion"].update(layout="outline")
+    wb["Data"].pivots["ByRegion"].delete()
+    deleted = wb.save(str(tmp_path / "deleted.xlsx"), receipt=True)
+    deleted_kinds = [
+        item["kind"] for item in deleted.derived_effects
+        if str(item.get("kind", "")).startswith("pivot_")
+    ]
+    assert deleted_kinds == ["pivot_deleted"]
 
 
 def test_delete_reopened_dedicated_pivot(fixture_copy, tmp_path):
@@ -63,7 +112,12 @@ def test_delete_reopened_dedicated_pivot(fixture_copy, tmp_path):
     _create_by_region(wb["Data"])
     created = str(tmp_path / "created.xlsx")
     wb = save_and_reopen(wb, created, preserve=True)
-    wb["Data"].pivots["ByRegion"].delete()
+    handle = wb["Data"].pivots["ByRegion"]
+    handle.delete()
+    assert list(wb["Data"].pivots) == []
+    with pytest.raises(TargetNotFoundError) as stale:
+        handle.refresh()
+    assert stale.value.kind == "stale-pivot-handle"
     wb = save_and_reopen(wb, str(tmp_path / "deleted.xlsx"), preserve=True)
     assert list(wb["Data"].pivots) == []
     assert wb["Data"]["E3"].value is None

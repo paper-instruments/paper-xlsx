@@ -22,6 +22,7 @@ from openpyxl.pivot.build import build_pivot_payloads
 from openpyxl.pivot.calculate import snapshot_for_pivot
 from openpyxl.pivot.create import (
     PivotCreateOperation,
+    _assert_name_available,
     _assert_output_legal,
     _cell_snapshots,
     _checkpoint,
@@ -34,7 +35,6 @@ from openpyxl.pivot.create import (
 from openpyxl.pivot.graph import PivotIdentity, load_workbook_pivot_graph
 from openpyxl.pivot.plan import plan_pivot
 from openpyxl.preserve.pivotgraph import PivotAllocation
-from openpyxl.utils.cell import range_boundaries
 
 
 def refresh_pivot(handle):
@@ -107,13 +107,10 @@ def delete_pivot(handle):
     overwrites_before = set(ledger.value_overwrites.get(worksheet, ()))
     ops_before = dict(ledger.pivot_operations)
     try:
-        _clear_cells(worksheet, old_cells)
         if staged is not None and staged.kind == "create" and not staged.replace_existing:
-            remaining = dict(ledger.pivot_operations)
-            remaining.pop(staged.session_id, None)
-            ledger.pivot_operations = remaining
-            operation = None
+            _drop_in_session_create(worksheet, ledger, staged)
         else:
+            _clear_cells(worksheet, old_cells)
             allocation = staged.allocation if staged is not None else _allocation_from_handle(
                 workbook, worksheet, handle)
             operation = PivotCreateOperation(
@@ -177,6 +174,8 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
         if allow_self_overlap else (),
         ignore_name=state.name if allow_self_overlap or kind != "create" else None,
     )
+    if spec.name.casefold() != (state.name or "").casefold():
+        _assert_name_available(spec.name, graph, ledger, ignore_name=state.name)
     noop = _is_noop(
         kind, state, plan, worksheet, spec, snapshot, staged, workbook, handle)
     if noop and kind == "refresh":
@@ -321,23 +320,50 @@ def _find_staged(ledger, handle):
 
 def _owned_cells(state, staged, worksheet):
     if staged is not None and staged.output_cells:
-        return tuple(staged.output_cells)
-    output = state.projection.output_range
-    if not output:
-        return ()
-    try:
-        min_col, min_row, max_col, max_row = range_boundaries(output)
-    except (TypeError, ValueError):
-        return ()
-    cells = []
+        return tuple(
+            cell for cell in staged.output_cells if cell[2] is not None)
+    from openpyxl.pivot.qualify import _reconstruct_owned_output
+
+    workbook = worksheet.parent
+    graph = load_workbook_pivot_graph(workbook)
+    node = graph.pivots_by_identity.get(state.identity)
+    if node is None:
+        for item in graph.pivots:
+            if item.identity.pivot_part == state.identity.pivot_part:
+                node = item
+                break
+    owned = None if node is None else _reconstruct_owned_output(
+        workbook, node, state.projection)
+    if owned is None:
+        raise BoundaryViolationError(
+            "cannot prove ownership of pivot output before clearing",
+            kind="pivot-output-collision",
+            anchor="%s!%s" % (
+                worksheet.title, state.projection.output_range or state.name),
+        )
+    return owned
+
+
+def _drop_in_session_create(worksheet, ledger, staged):
+    """Cancel an unsaved create so save is a true package no-op."""
     store = getattr(worksheet, "_cells", {})
-    for row in range(min_row, max_row + 1):
-        for column in range(min_col, max_col + 1):
-            existing = store.get((row, column))
-            if existing is None or existing.value is None:
-                continue
-            cells.append((row, column, existing.value, "value"))
-    return tuple(cells)
+    dirty = ledger.cells.get(worksheet)
+    overwrites = ledger.value_overwrites.get(worksheet)
+    coords = staged.owned_coordinates or tuple(
+        (row, column) for row, column, _value, _role in staged.output_cells)
+    for row, column in coords:
+        store.pop((row, column), None)
+        if dirty is not None:
+            dirty.discard((row, column))
+        if overwrites is not None:
+            overwrites.discard((row, column))
+    if dirty is not None and not dirty:
+        ledger.cells.pop(worksheet, None)
+    if overwrites is not None and not overwrites:
+        ledger.value_overwrites.pop(worksheet, None)
+    remaining = dict(ledger.pivot_operations)
+    remaining.pop(staged.session_id, None)
+    ledger.pivot_operations = remaining
 
 
 def _new_output_values(plan):
@@ -378,6 +404,13 @@ def _clear_cells(worksheet, cells):
         if getattr(existing, "comment", None) is not None:
             raise BoundaryViolationError(
                 "pivot output at %s has a comment and cannot be cleared"
+                % existing.coordinate,
+                kind="pivot-output-collision",
+                anchor="%s!%s" % (worksheet.title, existing.coordinate),
+            )
+        if getattr(existing, "_hyperlink", None) is not None:
+            raise BoundaryViolationError(
+                "pivot output at %s has a hyperlink and cannot be cleared"
                 % existing.coordinate,
                 kind="pivot-output-collision",
                 anchor="%s!%s" % (worksheet.title, existing.coordinate),

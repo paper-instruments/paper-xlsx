@@ -73,7 +73,9 @@ def test_paper_marker_does_not_grant_ownership_dependent_caps():
 def test_missing_field_unknown_aggregate_and_bad_item_index():
     missing = _qualify(_basic_package(tag=PAPER_TAG, rows=(5,)))[0]
     assert missing.capabilities.can_edit_layout is False
+    assert missing.capabilities.can_rename is False
     assert "missing-field" in _codes(missing, "can_edit_layout")
+    assert "missing-field" in _codes(missing, "can_rename")
 
     unknown = _qualify(_basic_package(
         tag=PAPER_TAG,
@@ -90,6 +92,8 @@ def test_grouping_extension_and_data_model_disable_mutation():
     grouping = _qualify(_basic_package(tag=PAPER_TAG, grouping=True))[0]
     assert grouping.origin == "paper"
     assert "unsupported-grouping" in _codes(grouping, "can_edit_layout")
+    assert grouping.capabilities.can_rename is False
+    assert "unsupported-grouping" in _codes(grouping, "can_rename")
     assert grouping.capabilities.can_refresh_on_open is True
 
     extension = _qualify(_basic_package(

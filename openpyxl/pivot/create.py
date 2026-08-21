@@ -346,15 +346,40 @@ def _coerce_values(values):
     return tuple(out)
 
 
-def _assert_name_available(name, graph, ledger):
+def hidden_pivot_parts(ledger):
+    """Package parts superseded by staged replace or delete operations."""
+    parts = set()
+    if ledger is None:
+        return parts
+    for operation in getattr(ledger, "pivot_operations", {}).values():
+        if getattr(operation, "noop", False):
+            continue
+        if operation.kind == "delete" or operation.replace_existing:
+            part = getattr(operation.allocation, "pivot_part", None)
+            if part:
+                parts.add(part)
+    return parts
+
+
+def _assert_name_available(name, graph, ledger, ignore_name=None):
     folded = name.casefold()
+    ignore = None if not ignore_name else ignore_name.casefold()
+    hidden = hidden_pivot_parts(ledger)
     matches = [
         node.identity.name for node in graph.pivots
-        if node.identity.name and node.identity.name.casefold() == folded
+        if node.identity.name
+        and node.identity.name.casefold() == folded
+        and node.identity.pivot_part not in hidden
+        and (ignore is None or node.identity.name.casefold() != ignore)
     ]
     for operation in getattr(ledger, "pivot_operations", {}).values():
-        if operation.name.casefold() == folded:
-            matches.append(operation.name)
+        if operation.kind == "delete" or getattr(operation, "noop", False):
+            continue
+        if operation.name.casefold() != folded:
+            continue
+        if ignore is not None and operation.name.casefold() == ignore:
+            continue
+        matches.append(operation.name)
     if len(matches) == 1:
         raise AmbiguousTargetError(
             "pivot name %r already exists" % name,
@@ -404,8 +429,11 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
                 kind="pivot-output-collision",
                 anchor="%s!%s" % (worksheet.title, plan.output.ref),
             )
+    hidden = hidden_pivot_parts(ledger)
     for node in graph.pivots:
         if node.sheet_title != worksheet.title or not node.output_range:
+            continue
+        if node.identity.pivot_part in hidden:
             continue
         if ignore_name and node.identity.name == ignore_name:
             continue
@@ -423,7 +451,11 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
     for operation in getattr(ledger, "pivot_operations", {}).values():
         if operation.sheet != worksheet.title:
             continue
+        if operation.kind == "delete" or getattr(operation, "noop", False):
+            continue
         if ignore_name and operation.name == ignore_name:
+            continue
+        if not operation.output_range:
             continue
         bounds = range_boundaries(operation.output_range)
         if _ranges_overlap(output, bounds):

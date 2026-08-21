@@ -93,10 +93,15 @@ def _session_for(workbook):
     session = getattr(workbook, _SESSION_ATTR, None)
     if session is not None and not session.closed:
         return session
+    from openpyxl.pivot.create import hidden_pivot_parts, iter_staged_states
+
     graph = load_workbook_pivot_graph(workbook)
     states = {}
     source = workbook._paper_source
+    hidden = hidden_pivot_parts(getattr(workbook, "_paper_ledger", None))
     for node in graph.pivots:
+        if node.identity.pivot_part in hidden:
+            continue
         cache = None
         if node.cache_definition_part:
             cache = graph.caches_by_part.get(node.cache_definition_part)
@@ -113,8 +118,6 @@ def _session_for(workbook):
             projection=projection,
             qualification=qualification,
         )
-    from openpyxl.pivot.create import iter_staged_states
-
     for state in iter_staged_states(workbook):
         states[state.identity] = state
     generation = getattr(workbook, _GENERATION_ATTR, 0) + 1
