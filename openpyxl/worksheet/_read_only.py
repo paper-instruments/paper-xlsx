@@ -30,6 +30,7 @@ class ReadOnlyWorksheet:
     rows = Worksheet.rows
     __getitem__ = Worksheet.__getitem__
     __iter__ = Worksheet.__iter__
+    pivots = Worksheet.pivots
 
 
     def __init__(self, parent_workbook, title, worksheet_path, shared_strings):

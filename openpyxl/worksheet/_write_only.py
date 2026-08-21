@@ -35,6 +35,7 @@ class WriteOnlyWorksheet(_WorkbookChild):
     add_image = Worksheet.add_image
     add_table = Worksheet.add_table
     tables = Worksheet.tables
+    pivots = Worksheet.pivots
     print_titles = Worksheet.print_titles
     print_title_cols = Worksheet.print_title_cols
     print_title_rows = Worksheet.print_title_rows

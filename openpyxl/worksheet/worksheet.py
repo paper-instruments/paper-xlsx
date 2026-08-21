@@ -838,6 +838,18 @@ class Worksheet(_WorkbookChild):
         return self._tables
 
 
+    @property
+    def pivots(self):
+        """Targeted preserve-mode PivotTable collection.
+
+        Inspection only. The collection does not enumerate formulas, cells,
+        charts, or unrelated workbook content, and it does not mutate
+        ``Worksheet._pivots``.
+        """
+        from openpyxl.pivot.api import pivot_collection_for
+        return pivot_collection_for(self)
+
+
     def add_pivot(self, pivot):
         self._pivots.append(pivot)
 

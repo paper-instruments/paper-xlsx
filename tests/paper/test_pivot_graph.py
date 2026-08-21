@@ -104,13 +104,16 @@ def _cache_xml(source, fields, record_count=0, records_rid="rId1",
     if source["kind"] == "range":
         ws = '<worksheetSource sheet="%s" ref="%s"/>' % (
             source["sheet"], source["ref"])
+        source_type = source.get("type", "worksheet")
     elif source["kind"] in ("table", "defined-name", "named"):
         name = source["name"]
         sheet = source.get("sheet")
         ws = ('<worksheetSource name="%s"%s/>'
               % (name, ' sheet="%s"' % sheet if sheet else ""))
+        source_type = source.get("type", "worksheet")
     else:
         ws = ""
+        source_type = source.get("type", source["kind"])
     field_xml = "".join(
         '<cacheField name="%s"><sharedItems count="%s">%s</sharedItems>'
         '%s%s</cacheField>' % (
@@ -145,11 +148,11 @@ def _cache_xml(source, fields, record_count=0, records_rid="rId1",
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<%s%s recordCount="%s"%s>'
-        '<%s type="worksheet">%s</%s>'
+        '<%s type="%s">%s</%s>'
         '<%s count="%s">%s</%s>%s%s</%s>'
-        % (root, ns, record_count, rid, source_tag, ws, source_tag,
-           fields_tag, len(fields) + (1 if calculated else 0), field_xml,
-           fields_tag, extras, ext, root)
+        % (root, ns, record_count, rid, source_tag, source_type, ws,
+           source_tag, fields_tag, len(fields) + (1 if calculated else 0),
+           field_xml, fields_tag, extras, ext, root)
     )
 
 
@@ -163,7 +166,8 @@ def _records_xml(rows):
 
 
 def _pivot_xml(name, cache_id, location="A3:B6", rows=(), columns=(),
-               pages=(), values=(), tag=None, ext_uri=None):
+               pages=(), values=(), tag=None, ext_uri=None,
+               compact=None, outline=None, data_on_rows=None):
     row_xml = ""
     if rows:
         row_xml = '<rowFields count="%s">%s</rowFields>' % (
@@ -175,9 +179,20 @@ def _pivot_xml(name, cache_id, location="A3:B6", rows=(), columns=(),
             "".join('<field x="%s"/>' % item for item in columns))
     page_xml = ""
     if pages:
+        page_bits = []
+        for item in pages:
+            if isinstance(item, tuple):
+                fld = item[0]
+                extra = item[1] if len(item) > 1 else None
+                if extra is None:
+                    page_bits.append('<pageField fld="%s"/>' % fld)
+                else:
+                    page_bits.append(
+                        '<pageField fld="%s" item="%s"/>' % (fld, extra))
+            else:
+                page_bits.append('<pageField fld="%s"/>' % item)
         page_xml = '<pageFields count="%s">%s</pageFields>' % (
-            len(pages),
-            "".join('<pageField fld="%s"/>' % item for item in pages))
+            len(pages), "".join(page_bits))
     data_xml = ""
     if values:
         data_xml = '<dataFields count="%s">%s</dataFields>' % (
@@ -185,10 +200,20 @@ def _pivot_xml(name, cache_id, location="A3:B6", rows=(), columns=(),
             "".join(
                 '<dataField name="%s" fld="%s" subtotal="%s"/>' % item
                 for item in values))
-    field_count = 1 + max([0] + list(rows) + list(columns) + list(pages)
-                          + [item[1] for item in values])
+    page_indexes = [
+        item[0] if isinstance(item, tuple) else item for item in pages]
+    field_count = 1 + max(
+        [0] + list(rows) + list(columns) + page_indexes
+        + [item[1] for item in values])
     fields = "".join('<pivotField showAll="0"/>' for _ in range(field_count))
     tag_attr = ' tag="%s"' % tag if tag else ""
+    layout_attr = ""
+    if compact is not None:
+        layout_attr += ' compact="%s"' % (1 if compact else 0)
+    if outline is not None:
+        layout_attr += ' outline="%s"' % (1 if outline else 0)
+    if data_on_rows is not None:
+        layout_attr += ' dataOnRows="%s"' % (1 if data_on_rows else 0)
     ext = ""
     if ext_uri:
         ext = (
@@ -198,13 +223,13 @@ def _pivot_xml(name, cache_id, location="A3:B6", rows=(), columns=(),
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<pivotTableDefinition xmlns="%s" name="%s" cacheId="%s"'
-        ' dataCaption="Values"%s>'
+        ' dataCaption="Values"%s%s>'
         '<location ref="%s" firstHeaderRow="1" firstDataRow="1"'
         ' firstDataCol="1"/>'
         '<pivotFields count="%s">%s</pivotFields>'
         '%s%s%s%s%s</pivotTableDefinition>'
-        % (_NS, name, cache_id, tag_attr, location, field_count, fields,
-           row_xml, col_xml, page_xml, data_xml, ext)
+        % (_NS, name, cache_id, tag_attr, layout_attr, location, field_count,
+           fields, row_xml, col_xml, page_xml, data_xml, ext)
     )
 
 
@@ -240,7 +265,13 @@ def _basic_package(
         records=None,
         location="B3:C8",
         rows=(0,),
+        columns=(),
+        pages=(),
         values=(("Sum of Amount", 1, "sum"),),
+        tag=None,
+        compact=None,
+        outline=None,
+        data_on_rows=None,
         ext_uri=None,
         cache_ext_uri=None,
         grouping=False,
@@ -401,7 +432,9 @@ def _basic_package(
             pivot_part,
             _pivot_xml(
                 pivot_name, cache_id, location=location, rows=rows,
-                values=values, ext_uri=ext_uri),
+                columns=columns, pages=pages, values=values, tag=tag,
+                ext_uri=ext_uri, compact=compact, outline=outline,
+                data_on_rows=data_on_rows),
         ))
         pivot_rels = []
         if include_pivot_cache_rel:
