@@ -198,11 +198,15 @@ class PivotTableCollection:
     def create(self, name, source, destination, rows, values,
                columns=None, filters=None, layout="tabular",
                values_axis="columns", row_grand_totals=True,
-               column_grand_totals=True, subtotals=False, style=None):
+               column_grand_totals=True, subtotals=False, style=None,
+               **kwargs):
         """Create one Paper-owned pivot on this worksheet.
 
-        PR 4 accepts a literal table or range source, one row field, one
-        ``sum`` measure, and tabular layout. Other breadth refuses.
+        Accepts table or sheet-qualified range sources, the full v1 axis,
+        filter, aggregate, layout, totals, caption, number-format, and
+        built-in style vocabulary. Formula-backed sources and later
+        mutators remain out of this method. Unexpected keywords raise
+        ``TypeError``.
         """
         from openpyxl.pivot.create import create_pivot
 
@@ -221,6 +225,7 @@ class PivotTableCollection:
             column_grand_totals=column_grand_totals,
             subtotals=subtotals,
             style=style,
+            **kwargs,
         )
 
 

@@ -67,6 +67,9 @@ def aggregate_snapshot(snapshot, spec, limits=None):
         included, row_fields, field_index, spec.rows)
     column_keys, column_order = _ordered_keys(
         included, column_fields, field_index, spec.columns)
+    if not row_fields:
+        row_keys = ((),)
+        row_order = [()]
     if not column_fields:
         column_keys = ((),)
         column_order = [()]

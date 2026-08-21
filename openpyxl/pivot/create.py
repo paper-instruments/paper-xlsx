@@ -8,7 +8,7 @@ exception rolls both back.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from openpyxl.errors import (
     AmbiguousTargetError,
@@ -17,11 +17,12 @@ from openpyxl.errors import (
 )
 from openpyxl.pivot.api_types import (
     PivotAxisField,
+    PivotItemFilter,
     PivotMeasure,
     PivotSource,
     PivotSpec,
 )
-from openpyxl.pivot.build import build_pivot_payloads
+from openpyxl.pivot.build import BUILT_IN_PIVOT_STYLES, build_pivot_payloads
 from openpyxl.pivot.graph import load_workbook_pivot_graph
 from openpyxl.pivot.inspect import PivotProjection
 from openpyxl.pivot.plan import plan_pivot
@@ -54,8 +55,9 @@ class PivotCreateOperation:
 def create_pivot(worksheet, name, source, destination, rows, values,
                  columns=None, filters=None, layout="tabular",
                  values_axis="columns", row_grand_totals=True,
-                 column_grand_totals=True, subtotals=False, style=None):
-    """Validate, plan, build, then stage one PR 4 pivot create."""
+                 column_grand_totals=True, subtotals=False, style=None,
+                 **kwargs):
+    """Validate, plan, build, then stage one v1 pivot create."""
     from openpyxl.pivot.api import (
         invalidate_pivot_overlay,
         require_pivot_inspection,
@@ -67,15 +69,17 @@ def create_pivot(worksheet, name, source, destination, rows, values,
     workbook = worksheet.parent
     ledger = workbook._paper_ledger
     _checkpoint("start", workbook)
-    _refuse_unsupported_breadth(
-        columns, filters, values, layout, values_axis, style, rows)
+    if kwargs:
+        raise TypeError(
+            "Worksheet.pivots.create() got unexpected keyword argument(s): %s"
+            % ", ".join(sorted(kwargs)))
     spec = PivotSpec(
         name=name,
         source=PivotSource.parse(source),
         destination=destination,
         rows=_coerce_rows(rows),
-        columns=(),
-        filters=(),
+        columns=_coerce_rows(columns),
+        filters=_coerce_filters(filters),
         values=_coerce_values(values),
         layout=layout,
         values_axis=values_axis,
@@ -84,9 +88,10 @@ def create_pivot(worksheet, name, source, destination, rows, values,
         subtotals=subtotals,
         style=style,
     )
+    _validate_public_spec(spec)
     if spec.source.kind not in ("table", "range"):
         raise UnsupportedStructureError(
-            "PR 4 pivot creation accepts a table or sheet-qualified range "
+            "pivot creation accepts a table or sheet-qualified range "
             "source only. Nothing was changed.",
             kind="unsupported-pivot-source",
             options=[spec.source.kind],
@@ -98,24 +103,26 @@ def create_pivot(worksheet, name, source, destination, rows, values,
     snapshot = snapshot_from_workbook(workbook, spec.source)
     if snapshot.formula_coordinates:
         raise UnsupportedStructureError(
-            "formula-backed pivot sources are not supported on the PR 4 "
-            "create spine. Nothing was changed.",
+            "formula-backed pivot sources require the refresh/oracle path. "
+            "Nothing was changed.",
             kind="unsupported-pivot-source",
             options=list(snapshot.formula_coordinates),
         )
+    spec = replace(spec, filters=_resolve_filters(spec.filters, snapshot))
     plan = plan_pivot(spec, snapshot)
     _assert_output_legal(worksheet, plan, snapshot, graph, ledger)
     _checkpoint("planned", workbook)
 
     allocation = allocate_create(workbook, worksheet, graph, ledger)
-    payloads = build_pivot_payloads(plan, allocation.cache_id)
-    _checkpoint("built", workbook)
-
     dirty_before = set(ledger.dirty_coordinates(worksheet))
     overwrites_before = set(ledger.value_overwrites.get(worksheet, ()))
     ops_before = dict(ledger.pivot_operations)
     cell_snapshots = _cell_snapshots(worksheet, plan.output.cells)
+    formats_before = tuple(workbook._number_formats)
+    styles_before = tuple(workbook._cell_styles)
     try:
+        payloads = build_pivot_payloads(plan, allocation.cache_id, workbook)
+        _checkpoint("built", workbook)
         _write_output_cells(worksheet, plan.output.cells)
         _checkpoint("cells", workbook)
         operation = PivotCreateOperation(
@@ -144,6 +151,7 @@ def create_pivot(worksheet, name, source, destination, rows, values,
         _restore_cells(worksheet, cell_snapshots)
         _restore_ledger_cells(ledger, worksheet, dirty_before, overwrites_before)
         ledger.pivot_operations = ops_before
+        _restore_styles(workbook, formats_before, styles_before)
         raise
 
     invalidate_pivot_overlay(workbook)
@@ -236,91 +244,74 @@ def iter_staged_states(workbook):
     return tuple(states)
 
 
-def _refuse_unsupported_breadth(columns, filters, values, layout,
-                                values_axis, style, rows):
-    if columns:
+def _validate_public_spec(spec):
+    if spec.style is not None and spec.style not in BUILT_IN_PIVOT_STYLES:
         raise UnsupportedStructureError(
-            "PR 4 pivot creation does not accept column fields. "
-            "Nothing was changed.",
+            "pivot style %r is not a supported built-in PivotTable style. "
+            "Nothing was changed." % spec.style,
             kind="unsupported-pivot-feature",
-            options=["columns"],
+            options=sorted(BUILT_IN_PIVOT_STYLES)[:8],
         )
-    if filters:
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation does not accept filters. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=["filters"],
-        )
-    if layout != "tabular":
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation only supports tabular layout. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=[layout],
-        )
-    if values_axis != "columns":
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation only places values on columns. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=[values_axis],
-        )
-    if style is not None:
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation does not accept a style override. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=["style"],
-        )
-    coerced_values = list(values or ())
-    if len(coerced_values) != 1:
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation requires exactly one sum measure. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=["values"],
-        )
-    measure = coerced_values[0]
-    if isinstance(measure, str):
-        aggregate = "sum"
-    elif isinstance(measure, dict):
-        aggregate = measure.get("aggregate", "sum")
-    else:
-        aggregate = getattr(measure, "aggregate", None)
-    if aggregate != "sum":
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation only supports the sum aggregate. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=[aggregate],
-        )
-    if getattr(measure, "number_format", None):
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation does not accept a measure number format. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=["number_format"],
-        )
-    coerced_rows = list(rows or ())
-    if len(coerced_rows) != 1:
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation requires exactly one row field. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=["rows"],
-        )
-    row = coerced_rows[0]
-    if isinstance(row, PivotAxisField) and row.items:
-        raise UnsupportedStructureError(
-            "PR 4 pivot creation does not accept selected row items. "
-            "Nothing was changed.",
-            kind="unsupported-pivot-feature",
-            options=["rows.items"],
-        )
+    from openpyxl.pivot.aggregate import _default_caption
+    captions = []
+    for measure in spec.values:
+        caption = measure.caption or _default_caption(measure)
+        if caption in captions:
+            raise BoundaryViolationError(
+                "measure captions must be unique; %r is repeated" % caption,
+                kind="invalid-pivot-source",
+                options=captions,
+            )
+        captions.append(caption)
+
+
+def _resolve_filters(filters, snapshot):
+    from openpyxl.pivot.source import typed_value
+
+    resolved = []
+    for item in filters:
+        if item.field not in snapshot.field_index:
+            raise BoundaryViolationError(
+                "filter field %r is not in the source" % item.field,
+                kind="invalid-pivot-source",
+                options=list(snapshot.fields),
+            )
+        shared = snapshot.shared_items[snapshot.field_index[item.field]]
+        shared_set = set(shared)
+        if item.include is not None:
+            selected = []
+            for value in item.include:
+                typed = typed_value(value)
+                if typed not in shared_set:
+                    raise BoundaryViolationError(
+                        "filter value %r is not in field %r"
+                        % (value, item.field),
+                        kind="invalid-pivot-source",
+                        options=[item.field],
+                    )
+                selected.append(_plain(typed))
+            resolved.append(PivotItemFilter(item.field, include=selected))
+            continue
+        excluded = {typed_value(value) for value in (item.exclude or ())}
+        include = [_plain(value) for value in shared if value not in excluded]
+        if not include:
+            raise BoundaryViolationError(
+                "filters excluded every source row",
+                kind="invalid-pivot-source",
+            )
+        resolved.append(PivotItemFilter(item.field, include=include))
+    return tuple(resolved)
+
+
+def _plain(value):
+    if getattr(value, "kind", None) == "blank":
+        return None
+    return getattr(value, "value", value)
 
 
 def _coerce_rows(rows):
+    if not rows:
+        return ()
     out = []
     for item in rows:
         if isinstance(item, str):
@@ -328,7 +319,19 @@ def _coerce_rows(rows):
         elif isinstance(item, PivotAxisField):
             out.append(item)
         else:
-            raise TypeError("rows must contain field names or PivotAxisField")
+            raise TypeError("rows/columns must contain field names or PivotAxisField")
+    return tuple(out)
+
+
+def _coerce_filters(filters):
+    if not filters:
+        return ()
+    out = []
+    for item in filters:
+        if isinstance(item, PivotItemFilter):
+            out.append(item)
+        else:
+            raise TypeError("filters must contain PivotItemFilter values")
     return tuple(out)
 
 
@@ -476,7 +479,9 @@ def _write_output_cells(worksheet, cells):
     for item in cells:
         if item.value is None:
             continue
-        worksheet.cell(item.row, item.column, value=item.value)
+        cell = worksheet.cell(item.row, item.column, value=item.value)
+        if item.number_format:
+            cell.number_format = item.number_format
 
 
 def _restore_cells(worksheet, snapshots):
@@ -500,6 +505,13 @@ def _restore_ledger_cells(ledger, worksheet, dirty_before, overwrites_before):
         ledger.value_overwrites[worksheet] = set(overwrites_before)
     else:
         ledger.value_overwrites.pop(worksheet, None)
+
+
+def _restore_styles(workbook, formats_before, styles_before):
+    from openpyxl.utils.indexed_list import IndexedList
+
+    workbook._number_formats = IndexedList(formats_before)
+    workbook._cell_styles = IndexedList(styles_before)
 
 
 def _content_identity(snapshot):
