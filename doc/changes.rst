@@ -9,6 +9,11 @@ Unreleased
 * Report absolute, relative, and ULP-scale evidence for finite numeric oracle
   divergences, with a separate caller-supplied tolerance classification that
   leaves strict certification unchanged.
+* Resolve common table structured references in dependency analysis while
+  leaving ambiguous, unsupported, and external-workbook references
+  unresolved. Selectors whose region does not exist -- an empty data
+  region, a headerless table's ``#Headers``, a ``#Totals`` with no totals
+  row -- stay unresolved too, rather than being dropped from the sketch.
 
 
 paper-xlsx 0.2.0 (2026-08-14)
