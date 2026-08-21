@@ -119,9 +119,10 @@ surface:
     media part and drawing XML remain unchanged.
 
 ``wb.set_pivot_refresh_on_load(pivots=[...])``
-    Set refresh metadata for named pivots. Use a sheet-qualified name when the
-    name is ambiguous. ``all=True`` is an explicit package-wide alternative;
-    omitting both scopes is an error. Validation and save refuse an edit that
+    Permit refresh and request refresh-on-open for named pivots. Use a
+    sheet-qualified name when the name is ambiguous. ``all=True`` is an
+    explicit package-wide alternative; omitting both scopes is an error.
+    Validation and save refuse an edit that
     changes an existing pivot's local source, directly intersects it, or
     transitively affects a formula inside it unless its cache is selected
     through this method. Exact direct ranges, static defined names, and named

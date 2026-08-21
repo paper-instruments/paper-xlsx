@@ -15,9 +15,11 @@ Bugfixes
 
 * Refuse edits that would silently stale an existing worksheet-backed pivot
   cache unless the caller explicitly requests refresh-on-open. Detect source
-  retargeting and transitive formula inputs as well as direct value writes;
-  resolve direct ranges, static defined names, and named worksheet tables;
-  and report the remaining Excel-refresh requirement in edit receipts.
+  retargeting, formula dependency changes, staged formula-cache writes, and
+  transitive formula inputs as well as direct value writes; resolve direct
+  ranges, static defined names, and named worksheet tables; refuse structural
+  source edits through parsed OOXML references; and report the remaining
+  Excel-refresh requirement in edit receipts.
 
 
 paper-xlsx 0.2.0 (2026-08-14)

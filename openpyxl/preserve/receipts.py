@@ -89,8 +89,10 @@ def _pivot_refresh_enabled(payload):
     except (ParseError, ValueError, TypeError):
         return False
     expected = "{{{0}}}pivotCacheDefinition".format(SHEET_MAIN_NS)
-    return root.tag == expected and root.attrib.get("refreshOnLoad") in (
-        "1", "true", "True")
+    refresh = root.attrib.get("refreshOnLoad", "false").casefold()
+    enabled = root.attrib.get("enableRefresh")
+    return root.tag == expected and refresh in ("1", "true") \
+        and (enabled is None or enabled.casefold() in ("1", "true"))
 
 
 def _derived_effects(za, zb, names_a, names_b, *, ledger=None,

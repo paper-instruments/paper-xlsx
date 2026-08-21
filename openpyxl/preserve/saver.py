@@ -358,9 +358,11 @@ def _validate_preserve_model(workbook, led, allow_formula_loss):
     led.check_style_registry(workbook)
     from .pivots import validate_source_freshness
 
-    validate_source_freshness(workbook, led)
+    pivot_impacts = validate_source_freshness(workbook, led)
     force_calcpr = led.formulas_changed \
-        or _dirty_feeds_formulas(workbook, led)
+        or _dirty_feeds_formulas(workbook, led) \
+        or any(impact.get("formula_binding_changed")
+               for impact in pivot_impacts)
     if force_calcpr:
         # A human opener must compute fresh numbers. This applies both to
         # formula text edits and writes to cells that formulas read.

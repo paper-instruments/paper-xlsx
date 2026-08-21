@@ -173,7 +173,10 @@ def _classify(sketch, wb, ws, address, raw):
             sketch.unresolved.setdefault(address, []).append(raw)
             return
         try:
-            for dest_sheet, dest_ref in name.destinations:
+            destinations = list(name.destinations)
+            if not destinations:
+                raise ValueError("defined name has no static destinations")
+            for dest_sheet, dest_ref in destinations:
                 dest_bounds = range_boundaries(dest_ref.replace("$", ""))
                 canonical = sheets_by_name.get(dest_sheet.casefold())
                 if canonical is None:
@@ -197,7 +200,10 @@ def _classify(sketch, wb, ws, address, raw):
             sketch.unresolved.setdefault(address, []).append(raw)
             return
         try:
-            for dest_sheet, dest_ref in name.destinations:
+            destinations = list(name.destinations)
+            if not destinations:
+                raise ValueError("defined name has no static destinations")
+            for dest_sheet, dest_ref in destinations:
                 dest_bounds = range_boundaries(dest_ref.replace("$", ""))
                 canonical = sheets_by_name.get(dest_sheet.casefold())
                 if canonical is None:

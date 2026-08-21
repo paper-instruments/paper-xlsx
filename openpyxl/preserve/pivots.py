@@ -13,7 +13,7 @@ from openpyxl.errors import (
     UnsupportedStructureError,
 )
 from openpyxl.utils.cell import coordinate_to_tuple, range_boundaries
-from openpyxl.xml.constants import SHEET_MAIN_NS
+from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW, SHEET_MAIN_NS
 
 from . import crosspart
 from .tables import _rels_path, _resolve_target
@@ -86,19 +86,19 @@ def _index(wb):
         cache_by_id = {}
         workbook_root = crosspart.scan_small(
             zin.read(wb_part), "workbook", max_depth=3)
-        def descendants(node):
-            for child in node.children:
-                yield child
-                yield from descendants(child)
-
-        for child in descendants(workbook_root):
-            if child.local() != "pivotCache":
-                continue
-            cache_id = child.attrs.get("cacheId")
-            rid = child.attrs.get("id") or child.attrs.get("r:id")
-            target = cache_targets.get(rid)
-            if cache_id is not None and target in names:
-                cache_by_id[cache_id] = target
+        pivot_cache_groups = [
+            child for child in workbook_root.children
+            if child.local() == "pivotCaches"
+        ]
+        for group in pivot_cache_groups:
+            for child in group.children:
+                if child.local() != "pivotCache":
+                    continue
+                cache_id = child.attrs.get("cacheId")
+                rid = child.attrs.get("id") or child.attrs.get("r:id")
+                target = cache_targets.get(rid)
+                if cache_id is not None and target in names:
+                    cache_by_id[cache_id] = target
 
         qualified = {}
         ledger = getattr(wb, "_paper_ledger", None)
@@ -131,9 +131,23 @@ def _worksheet(wb, title):
 
 def _bounds(ref):
     try:
-        return range_boundaries(ref)
+        bounds = range_boundaries(ref)
     except (TypeError, ValueError):
         return None
+    min_col, min_row, max_col, max_row = bounds
+    if min_col is not None and not 1 <= min_col <= MAX_COLUMN:
+        return None
+    if max_col is not None and not 1 <= max_col <= MAX_COLUMN:
+        return None
+    if min_row is not None and not 1 <= min_row <= MAX_ROW:
+        return None
+    if max_row is not None and not 1 <= max_row <= MAX_ROW:
+        return None
+    if min_col is not None and max_col is not None and min_col > max_col:
+        return None
+    if min_row is not None and max_row is not None and min_row > max_row:
+        return None
+    return bounds
 
 
 def _named_source(wb, name):
@@ -264,6 +278,38 @@ def snapshot_sources(wb):
     return snapshots
 
 
+def parts_referencing_sheet(wb, sheet_title):
+    """Return local pivot-cache parts that may depend on one worksheet."""
+    target = _worksheet(wb, sheet_title)
+    if target is None:
+        return []
+    _index_map, cache_parts = _index(wb)
+    hits = []
+    with zipfile.ZipFile(io.BytesIO(wb._paper_source)) as zin:
+        for part in cache_parts:
+            source = _cache_source(wb, zin.read(part))
+            if source is None:  # external source
+                continue
+            ws, _bounds_value, _label, binding = source
+            if ws is target:
+                hits.append(part)
+                continue
+            if ws is not None:
+                continue
+            # A direct source still names its sheet even when its range is
+            # invalid. Other unresolved local sources cannot be proven
+            # independent of any particular sheet, so a structural edit must
+            # refuse rather than strand an unmodeled reference.
+            if binding[:1] == ("direct",):
+                title = binding[1]
+                if isinstance(title, str) \
+                        and title.casefold() == sheet_title.casefold():
+                    hits.append(part)
+            else:
+                hits.append(part)
+    return sorted(set(hits))
+
+
 def _address_key(address):
     title, separator, coordinate = address.rpartition("!")
     if not separator:
@@ -278,11 +324,7 @@ def _address_key(address):
 
 
 def _bounds_hit(sheet, bounds, cells):
-    min_col, min_row, max_col, max_row = bounds
-    if min_col is None:
-        min_col, max_col = 1, 1 << 20
-    if min_row is None:
-        min_row, max_row = 1, 1 << 22
+    min_col, min_row, max_col, max_row = _closed_bounds(bounds)
     folded = sheet.casefold()
     return any(
         title.casefold() == folded
@@ -291,32 +333,33 @@ def _bounds_hit(sheet, bounds, cells):
         for title, row, column in cells)
 
 
+def _closed_bounds(bounds):
+    min_col, min_row, max_col, max_row = bounds
+    return (
+        1 if min_col is None else min_col,
+        1 if min_row is None else min_row,
+        MAX_COLUMN if max_col is None else max_col,
+        MAX_ROW if max_row is None else max_row,
+    )
+
+
 def _ranges_hit(sheet, bounds, ranges):
     """Whether one sheet range intersects any other range on that sheet."""
-    min_col, min_row, max_col, max_row = bounds
-    min_col = 1 if min_col is None else min_col
-    min_row = 1 if min_row is None else min_row
-    max_col = 1 << 20 if max_col is None else max_col
-    max_row = 1 << 22 if max_row is None else max_row
+    min_col, min_row, max_col, max_row = _closed_bounds(bounds)
     folded = sheet.casefold()
     for title, other in ranges:
         if title.casefold() != folded:
             continue
-        o_min_col, o_min_row, o_max_col, o_max_row = other
-        o_min_col = 1 if o_min_col is None else o_min_col
-        o_min_row = 1 if o_min_row is None else o_min_row
-        o_max_col = 1 << 20 if o_max_col is None else o_max_col
-        o_max_row = 1 << 22 if o_max_row is None else o_max_row
+        o_min_col, o_min_row, o_max_col, o_max_row = \
+            _closed_bounds(other)
         if not (o_max_col < min_col or o_min_col > max_col
                 or o_max_row < min_row or o_min_row > max_row):
             return True
     return False
 
 
-def _dependency_model(wb):
-    """Return the formula view retained in a data-only source package."""
-    if not wb.data_only:
-        return wb
+def _source_formula_model(wb):
+    """Load the original formula view retained by preservation."""
     from openpyxl.reader.excel import load_workbook
 
     with warnings.catch_warnings():
@@ -325,16 +368,174 @@ def _dependency_model(wb):
             io.BytesIO(wb._paper_source), data_only=False, preserve=False)
 
 
+def _use_current_defined_names(model, wb):
+    """Overlay current name bindings on a retained formula model."""
+    model.defined_names = wb.defined_names.copy()
+    current = {ws.title.casefold(): ws for ws in wb.worksheets}
+    for ws in model.worksheets:
+        live = current.get(ws.title.casefold())
+        if live is not None:
+            ws.defined_names = live.defined_names.copy()
+
+
+def _dependency_model(wb):
+    """Return formulas with the workbook's current defined-name bindings."""
+    if not wb.data_only:
+        return wb
+    formulas = _source_formula_model(wb)
+    _use_current_defined_names(formulas, wb)
+    return formulas
+
+
 def _formula_outputs(wb):
-    """Map array/spill anchors to their declared multi-cell result ranges."""
+    """Map multi-cell formula anchors to their declared result ranges."""
+    from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+
     outputs = {}
     for ws in wb.worksheets:
-        for address, ref in ws.array_formulae.items():
-            bounds = _bounds(ref)
+        for (row, column), cell in ws._cells.items():
+            formula = cell._value
+            if not isinstance(formula, (ArrayFormula, DataTableFormula)):
+                continue
+            bounds = _bounds(formula.ref)
             if bounds is not None:
-                outputs[(ws.title, *coordinate_to_tuple(address))] = (
-                    ws.title, bounds)
+                outputs[(ws.title, row, column)] = (ws.title, bounds)
     return outputs
+
+
+def _table_semantics(table):
+    """Return the table properties that affect structured references."""
+    def formula(value):
+        if value is None:
+            return None
+        return value.array, value.attr_text
+
+    columns = tuple(
+        (column.id, column.uniqueName, column.name,
+         column.totalsRowFunction, column.totalsRowLabel,
+         column.queryTableFieldId,
+         formula(column.calculatedColumnFormula),
+         formula(column.totalsRowFormula))
+        for column in table.tableColumns
+    )
+    return (
+        table.name, table.displayName, table.ref, table.tableType,
+        table.headerRowCount, table.insertRow, table.insertRowShift,
+        table.totalsRowCount, table.totalsRowShown, columns,
+    )
+
+
+def _table_binding(wb, raw):
+    """Fingerprint the exact table named by one structured operand."""
+    if not isinstance(raw, str) or "[" not in raw:
+        return None
+    folded = raw.casefold()
+    matches = []
+    for ws in wb.worksheets:
+        for key in ws.tables:
+            table = ws.tables[key]
+            names = (key, table.name, table.displayName)
+            if not any(isinstance(name, str)
+                       and folded.startswith(name.casefold() + "[")
+                       for name in names):
+                continue
+            matches.append((ws.title, key, _table_semantics(table)))
+    if not matches:
+        return None
+    return tuple(sorted(matches, key=repr))
+
+
+def _operand_binding(wb, address, raw):
+    """Fingerprint a name or table behind an unresolved formula operand."""
+    if not isinstance(raw, str) or raw.startswith("="):
+        return None
+    table = _table_binding(wb, raw)
+    if table is not None:
+        return "table", table
+    key = _address_key(address)
+    ws = _worksheet(wb, key[0]) if key is not None else None
+    if ws is None:
+        return None
+    from .perception import _defined_name
+
+    definition = _defined_name(wb, ws, raw)
+    if definition is None:
+        return None
+    return "defined-name", definition.name, definition.attr_text
+
+
+def _dependency_signature(sketch, wb, address):
+    references = tuple(sorted([
+        (sheet.casefold(), _closed_bounds(bounds), raw)
+        for sheet, bounds, raw in sketch.references.get(address, ())
+    ], key=repr))
+    unresolved = tuple(sorted([
+        (raw, _operand_binding(wb, address, raw))
+        for raw in sketch.unresolved.get(address, ())
+    ], key=repr))
+    return references, unresolved
+
+
+def _tables_changed(wb, ledger):
+    """Whether any retained table model differs from its armed snapshot."""
+    from openpyxl.xml.functions import tostring
+    from .ledger import _settled
+
+    for ws in wb.worksheets:
+        before = getattr(ledger, "object_snapshots", {}).get(
+            ws, {}).get("table", {})
+        current = {}
+        for key in ws.tables:
+            table = ws.tables[key]
+            current[key] = _settled(
+                lambda value=table: tostring(value.to_tree()))[0]
+        if current != before:
+            return True
+    return False
+
+
+def _formula_binding_changes(wb, ledger):
+    """Formula outputs whose effective name/table dependencies changed."""
+    snapshot = getattr(ledger, "workbook_snapshot", None) or {}
+    current = crosspart.render_workbook_elements(wb)
+    names_changed = current.get("definedNames") != \
+        snapshot.get("definedNames")
+    if not names_changed and not _tables_changed(wb, ledger):
+        return set(), set()
+
+    from .perception import dependency_sketch
+
+    original = _source_formula_model(wb)
+    old_sketch = dependency_sketch(original)
+    old_outputs = _formula_outputs(original)
+    old_addresses = set(old_sketch.references) | set(old_sketch.unresolved)
+    old_signatures = {
+        address: _dependency_signature(old_sketch, original, address)
+        for address in old_addresses
+    }
+    if wb.data_only:
+        current_model = original
+        _use_current_defined_names(current_model, wb)
+    else:
+        current_model = wb
+    new_sketch = dependency_sketch(current_model)
+    new_outputs = _formula_outputs(current_model)
+    addresses = old_addresses | set(new_sketch.references) \
+        | set(new_sketch.unresolved)
+    cells = set()
+    ranges = set()
+    for address in addresses:
+        if old_signatures.get(address, ((), ())) == \
+                _dependency_signature(new_sketch, wb, address):
+            continue
+        key = _address_key(address)
+        if key is not None:
+            cells.add(key)
+            for outputs in (old_outputs, new_outputs):
+                output = outputs.get(key)
+                if output is not None:
+                    ranges.add(output)
+    return cells, ranges
 
 
 def _dirty_closure(wb, dirty):
@@ -388,9 +589,15 @@ def source_impacts(wb, ledger):
     index, _cache_parts = _index(wb)
     if not index:
         return []
-    dirty = {ws: set(coords) for ws, coords in ledger.value_overwrites.items()
-             if coords}
-    tainted, tainted_ranges = _dirty_closure(wb, dirty)
+    changes = {ws: set(coords)
+               for ws, coords in ledger.value_overwrites.items() if coords}
+    for ws, writes in ledger.cache_writes.items():
+        if writes:
+            changes.setdefault(ws, set()).update(writes)
+    tainted, tainted_ranges = _dirty_closure(wb, changes)
+    binding_cells, binding_ranges = _formula_binding_changes(wb, ledger)
+    tainted.update(binding_cells)
+    tainted_ranges.update(binding_ranges)
     pivots_by_cache = {}
     for pivot_name, entries in index.items():
         for title, cache_part in entries:
@@ -406,9 +613,17 @@ def source_impacts(wb, ledger):
             ws, bounds, label, binding = source
             source_changed = cache_part in snapshots \
                 and snapshots[cache_part] != binding
-            intersects = bool(dirty) if ws is None else (
-                _bounds_hit(ws.title, bounds, tainted)
-                or _ranges_hit(ws.title, bounds, tainted_ranges))
+            if ws is None:
+                binding_intersects = bool(
+                    binding_cells or binding_ranges)
+                intersects = bool(changes) or binding_intersects
+            else:
+                binding_intersects = (
+                    _bounds_hit(ws.title, bounds, binding_cells)
+                    or _ranges_hit(ws.title, bounds, binding_ranges))
+                intersects = (
+                    _bounds_hit(ws.title, bounds, tainted)
+                    or _ranges_hit(ws.title, bounds, tainted_ranges))
             intersects = intersects or source_changed
             if intersects:
                 impacts.append({
@@ -417,6 +632,7 @@ def source_impacts(wb, ledger):
                     "source": label,
                     "cause": "source_changed" if source_changed
                     else "input_changed",
+                    "formula_binding_changed": binding_intersects,
                 })
     return impacts
 
@@ -471,7 +687,8 @@ def resolve_requests(wb, pivots=None, *, all=False):
             raise TypeError("pivot names must be non-empty strings")
         if "!" in name:
             title, pivot_name = name.rsplit("!", 1)
-            title = title.strip("'").replace("''", "'")
+            if title.startswith("'") and title.endswith("'"):
+                title = title[1:-1].replace("''", "'")
             matches = [item for item in index.get(pivot_name, [])
                        if item[0].casefold() == title.casefold()]
         else:
@@ -508,10 +725,22 @@ def plan_refresh(zin, parts, plan):
     for part in sorted(parts):
         payload = plan.get(part, zin.read(part))
         root = _cache_root(payload)
-        if root.attrs.get("refreshOnLoad") in ("1", "true", "True"):
-            continue
-        start, end, head = crosspart._patch_attr(
-            payload, root, "refreshOnLoad", "1")
-        plan[part] = payload[:start] + head + payload[end:]
-        patched.append(part)
+        changed = False
+        enable_refresh = root.attrs.get("enableRefresh")
+        if enable_refresh is not None \
+                and enable_refresh.casefold() not in ("1", "true"):
+            start, end, head = crosspart._patch_attr(
+                payload, root, "enableRefresh", "1")
+            payload = payload[:start] + head + payload[end:]
+            root = _cache_root(payload)
+            changed = True
+        if root.attrs.get("refreshOnLoad", "false").casefold() \
+                not in ("1", "true"):
+            start, end, head = crosspart._patch_attr(
+                payload, root, "refreshOnLoad", "1")
+            payload = payload[:start] + head + payload[end:]
+            changed = True
+        if changed:
+            plan[part] = payload
+            patched.append(part)
     return patched
