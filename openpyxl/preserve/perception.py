@@ -153,7 +153,9 @@ def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw):
         ranges = _structured_reference_ranges(
             wb, ws, row, col, row_is_exact, ref,
             sheet_title if m else None)
-        if ranges is not None:
+        # a resolved structured reference is always a non-empty range
+        # list; anything else stays unresolved (always-intersecting)
+        if ranges:
             for range_sheet, bounds in ranges:
                 sketch.references.setdefault(address, []).append(
                     (range_sheet, bounds, raw))
@@ -289,7 +291,12 @@ def _structured_reference_ranges(wb, ws, row, col, row_is_exact, raw,
         col_bounds = (min_col + start_index, min_col + end_index)
 
     if row_bounds is None:
-        return []
+        # the selected region does not exist (headerless table, no totals
+        # row, empty data region): Excel yields #REF! and the table shape
+        # is degenerate, so take the conservative unresolved path rather
+        # than recording no dependency at all (an operand recorded nowhere
+        # is invisible to the move guards and to certification taint)
+        return None
 
     return [(table_ws.title, (col_bounds[0], row_bounds[0],
                              col_bounds[1], row_bounds[1]))]

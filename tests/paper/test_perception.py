@@ -203,3 +203,62 @@ class TestDependencySketch:
             "'Sheet'!C5": ["Only[[#Headers],[#Data],[Amount]]"],
             "'Sheet'!C6": ["EmptyTable[Missing]"],
         }
+
+    def test_missing_table_regions_stay_unresolved(self):
+        # a selector whose region does not exist must stay unresolved
+        # (always-intersecting), never resolve to an empty range list: an
+        # operand recorded in neither map is invisible to the move guards
+        # and to certification taint
+        wb = Workbook()
+        ws = wb.active
+
+        empty = wb.create_sheet("Empty")
+        empty["A1"] = "Amount"
+        empty.add_table(Table(displayName="EmptyData", ref="A1:A1"))
+        ws["C1"] = "=SUM(EmptyData[Amount])"
+        ws["C2"] = "=SUM(EmptyData[#Data])"
+
+        headerless = wb.create_sheet("Headerless")
+        headerless["A1"] = 10
+        headerless.add_table(Table(displayName="NoHeaders", ref="A1:A1",
+                                   headerRowCount=0,
+                                   tableColumns=[
+                                       TableColumn(id=1, name="Amount"),
+                                   ]))
+        ws["C3"] = "=SUM(NoHeaders[#Headers])"
+
+        plain = wb.create_sheet("Plain")
+        plain.append(["Amount"])
+        plain.append([10])
+        plain.add_table(Table(displayName="NoTotals", ref="A1:A2"))
+        ws["C4"] = "=SUM(NoTotals[#Totals])"
+
+        # an ambiguous totals flag collapses the data region: the operand
+        # still reads a real cell, so it must not vanish
+        ambiguous = wb.create_sheet("Ambiguous")
+        ambiguous.append(["Amount"])
+        ambiguous.append([10])
+        flagged = Table(displayName="Flagged", ref="A1:A2",
+                        tableColumns=[TableColumn(id=1, name="Amount")])
+        flagged.totalsRowShown = True
+        ambiguous._tables.add(flagged)
+        ws["C5"] = "=SUM(Flagged[Amount])"
+
+        sk = dependency_sketch(wb)
+        assert sk.to_dict() == {
+            "schema": "dependency_sketch",
+            "version": 1,
+            "references": {},
+            "unresolved": {
+                "'Sheet'!C1": ["EmptyData[Amount]"],
+                "'Sheet'!C2": ["EmptyData[#Data]"],
+                "'Sheet'!C3": ["NoHeaders[#Headers]"],
+                "'Sheet'!C4": ["NoTotals[#Totals]"],
+                "'Sheet'!C5": ["Flagged[Amount]"],
+            },
+        }
+        # and they stay conservative: every one is reported for any region
+        assert sk.cells_referencing("Empty", (1, 1, 1, 1)) == [
+            "'Sheet'!C1", "'Sheet'!C2", "'Sheet'!C3", "'Sheet'!C4",
+            "'Sheet'!C5",
+        ]
