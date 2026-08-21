@@ -27,8 +27,8 @@ class DependencySketch:
     ``references`` maps each formula cell (sheet-qualified A1) to the list
     of references its formula makes, as (sheet_title, bounds, raw) tuples —
     bounds may contain None for open-ended (whole-row/column) ranges.
-    Table/structured references cannot be resolved to cells and are listed
-    in ``unresolved`` (treated as always-intersecting).
+    Structured references that cannot be resolved to cells are listed in
+    ``unresolved`` (treated as always-intersecting).
     """
 
     def __init__(self):
@@ -91,7 +91,9 @@ def dependency_sketch(wb):
                 continue
             address = "{0}!{1}".format(_quoted(ws.title), cell.coordinate)
             formula = cell._value
+            formula_ref = None
             if not isinstance(formula, str):
+                formula_ref = getattr(formula, "ref", None)
                 formula = getattr(formula, "text", None)
             if not isinstance(formula, str):
                 ref = getattr(cell._value, "ref", None)
@@ -123,11 +125,13 @@ def dependency_sketch(wb):
             if indirect:
                 sketch.unresolved.setdefault(address, []).append(formula)
             for raw in operands:
-                _classify(sketch, wb, ws, address, raw)
+                row_is_exact = formula_ref in (None, cell.coordinate)
+                _classify(sketch, wb, ws, row, col, row_is_exact,
+                          address, raw)
     return sketch
 
 
-def _classify(sketch, wb, ws, address, raw):
+def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw):
     ref = raw
     sheet_title = ws.title
     m = _SHEET_REF_RE.match(ref)
@@ -146,7 +150,16 @@ def _classify(sketch, wb, ws, address, raw):
     sheet_title = canonical_title
 
     if "[" in raw or "]" in raw:
-        # structured/table or external-workbook reference: not resolvable
+        ranges = _structured_reference_ranges(
+            wb, ws, row, col, row_is_exact, ref,
+            sheet_title if m else None)
+        if ranges is not None:
+            for range_sheet, bounds in ranges:
+                sketch.references.setdefault(address, []).append(
+                    (range_sheet, bounds, raw))
+            return
+        # unsupported structured/table or external-workbook reference: not
+        # resolvable
         sketch.unresolved.setdefault(address, []).append(raw)
         return
     if ":" in sheet_title:
@@ -219,3 +232,267 @@ def _defined_name(wb, ws, raw):
             if key.casefold() == folded:
                 return value
     return None
+
+
+_STRUCTURED_ROW_SELECTORS = {
+    "#all": "all",
+    "#data": "data",
+    "#headers": "headers",
+    "#totals": "totals",
+}
+
+
+def _structured_reference_ranges(wb, ws, row, col, row_is_exact, raw,
+                                 qualified_sheet):
+    parsed = _parse_structured_reference(raw)
+    if parsed is None:
+        return None
+    table_name, selector = parsed
+    if table_name is None:
+        if qualified_sheet is not None or not selector["current"]:
+            return None
+        table_ws, table = _same_table_for_current_row(ws, row, col)
+    else:
+        table_ws, table = _table_by_name(wb, table_name, qualified_sheet)
+    if table is None:
+        return None
+
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+    except Exception:
+        return None
+    layout = _table_layout(table, min_row, max_row)
+    if layout is None:
+        return None
+
+    if selector["current"]:
+        if not row_is_exact or layout["data"] is None \
+                or not (layout["data"][0] <= row <= layout["data"][1]):
+            return None
+        row_bounds = (row, row)
+    else:
+        row_bounds = layout[selector["row"]]
+
+    col_bounds = (min_col, max_col)
+    if selector["columns"] is not None:
+        columns = _table_column_map(table, table_ws, min_col, min_row,
+                                    max_col)
+        if columns is None:
+            return None
+        start_name, end_name = selector["columns"]
+        start_index = columns.get(start_name.casefold())
+        end_index = columns.get(end_name.casefold())
+        if start_index is None or end_index is None:
+            return None
+        if start_index > end_index:
+            return None
+        col_bounds = (min_col + start_index, min_col + end_index)
+
+    if row_bounds is None:
+        return []
+
+    return [(table_ws.title, (col_bounds[0], row_bounds[0],
+                             col_bounds[1], row_bounds[1]))]
+
+
+def _parse_structured_reference(raw):
+    first = raw.find("[")
+    if first == -1:
+        return None
+    if first == 0:
+        table_name = None
+    else:
+        table_name = raw[:first]
+        if not table_name:
+            return None
+    spec = raw[first:]
+    if not (spec.startswith("[") and spec.endswith("]")):
+        return None
+    if spec.startswith("[["):
+        if not spec.endswith("]]"):
+            return None
+        parts = _split_top_level(spec[1:-1], ",")
+        if not parts:
+            return None
+    else:
+        inner = spec[1:-1]
+        if not inner or "[" in inner or "]" in inner:
+            return None
+        parts = [inner]
+
+    row_selector = None
+    columns = None
+    current = False
+    for part in parts:
+        parsed = _parse_structured_part(part.strip())
+        if parsed is None:
+            return None
+        kind, value = parsed
+        if kind == "row":
+            if row_selector is not None or current:
+                return None
+            row_selector = value
+        elif kind == "current":
+            if row_selector is not None or columns is not None or current:
+                return None
+            current = True
+            columns = (value, value)
+        else:
+            if columns is not None:
+                return None
+            columns = value
+
+    if current:
+        row_kind = "data"
+    else:
+        row_kind = row_selector or "data"
+    return table_name, {
+        "row": row_kind,
+        "columns": columns,
+        "current": current,
+    }
+
+
+def _parse_structured_part(part):
+    if not part:
+        return None
+    range_parts = _split_top_level(part, ":")
+    if range_parts and len(range_parts) == 2:
+        left = _simple_bracket_value(range_parts[0].strip())
+        right = _simple_bracket_value(range_parts[1].strip())
+        if not left or not right or left.startswith(("#", "@")) \
+                or right.startswith(("#", "@")):
+            return None
+        return "columns", (left, right)
+    if range_parts is None:
+        return None
+
+    value = _simple_bracket_value(part)
+    if value is None:
+        value = part
+        if "[" in value or "]" in value:
+            return None
+    if value.startswith("#"):
+        row = _STRUCTURED_ROW_SELECTORS.get(value.casefold())
+        if row is None:
+            return None
+        return "row", row
+    if value.startswith("@"):
+        name = value[1:]
+        if not name:
+            return None
+        return "current", name
+    return "columns", (value, value)
+
+
+def _simple_bracket_value(part):
+    if not (part.startswith("[") and part.endswith("]")):
+        return None
+    value = part[1:-1]
+    if not value or "[" in value or "]" in value:
+        return None
+    return value
+
+
+def _split_top_level(value, separator):
+    parts = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(value):
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == separator and depth == 0:
+            parts.append(value[start:index])
+            start = index + 1
+    if depth != 0:
+        return None
+    parts.append(value[start:])
+    return parts
+
+
+def _table_by_name(wb, name, qualified_sheet):
+    folded = name.casefold()
+    matches = []
+    for table_ws in wb.worksheets:
+        if qualified_sheet is not None \
+                and table_ws.title.casefold() != qualified_sheet.casefold():
+            continue
+        for table in table_ws.tables.values():
+            names = (getattr(table, "displayName", None),
+                     getattr(table, "name", None))
+            if any(candidate and candidate.casefold() == folded
+                   for candidate in names):
+                matches.append((table_ws, table))
+    if len(matches) != 1:
+        return None, None
+    return matches[0]
+
+
+def _same_table_for_current_row(ws, row, col):
+    matches = []
+    for table in ws.tables.values():
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        except Exception:
+            continue
+        layout = _table_layout(table, min_row, max_row)
+        if layout is None:
+            continue
+        if layout["data"] is None:
+            continue
+        data_min, data_max = layout["data"]
+        if min_col <= col <= max_col and data_min <= row <= data_max:
+            matches.append((ws, table))
+    if len(matches) != 1:
+        return None, None
+    return matches[0]
+
+
+def _table_layout(table, min_row, max_row):
+    header_rows = table.headerRowCount
+    if header_rows is None:
+        header_rows = 1
+    totals_rows = table.totalsRowCount or 0
+    if getattr(table, "totalsRowShown", False) and not totals_rows:
+        totals_rows = 1
+    if header_rows < 0 or totals_rows < 0 \
+            or min_row + header_rows + totals_rows - 1 > max_row:
+        return None
+    headers = None
+    if header_rows:
+        headers = (min_row, min_row + header_rows - 1)
+    totals = None
+    if totals_rows:
+        totals = (max_row - totals_rows + 1, max_row)
+    data = (min_row + header_rows, max_row - totals_rows)
+    if data[0] > data[1]:
+        data = None
+    return {
+        "all": (min_row, max_row),
+        "data": data,
+        "headers": headers,
+        "totals": totals,
+    }
+
+
+def _table_column_map(table, ws, min_col, min_row, max_col):
+    width = max_col - min_col + 1
+    if len(table.tableColumns):
+        names = [column.name for column in table.tableColumns]
+        if len(names) != width:
+            return None
+    elif table.headerRowCount is None or table.headerRowCount:
+        names = [ws.cell(min_row, column).value
+                 for column in range(min_col, max_col + 1)]
+    else:
+        return None
+    if any(not isinstance(name, str) or not name for name in names):
+        return None
+    folded = [name.casefold() for name in names]
+    if len(set(folded)) != len(folded):
+        return None
+    return {name.casefold(): index for index, name in enumerate(names)}
