@@ -5,6 +5,7 @@
 import io
 import warnings
 import zipfile
+from collections import deque
 from xml.etree.ElementTree import ParseError, fromstring
 
 from openpyxl.errors import (
@@ -654,6 +655,99 @@ def _calculation_context_changes(wb, ledger, direct_changes):
     return cells, visibility_ranges, format_ranges, retained
 
 
+class _DependencyIndex:
+    """Consumable reverse index from referenced cells and ranges.
+
+    A reference group is removed the first time a tainted cell or output
+    range intersects it: every formula in that group has then been tainted,
+    so later intersections cannot add information.
+    """
+
+    def __init__(self, sketch):
+        point_groups = {}
+        range_groups = {}
+        for address, references in sketch.references.items():
+            for sheet, bounds, _raw in references:
+                closed = _closed_bounds(bounds)
+                min_col, min_row, max_col, max_row = closed
+                folded = sheet.casefold()
+                if min_col == max_col and min_row == max_row:
+                    point_groups.setdefault(
+                        folded, {}).setdefault(
+                            (min_row, min_col), set()).add(address)
+                else:
+                    range_groups.setdefault(
+                        folded, {}).setdefault(
+                            closed, set()).add(address)
+
+        self._points = point_groups
+        self._ranges = range_groups
+
+    def _pop_point(self, sheet, row, column):
+        points = self._points.get(sheet)
+        if points is None:
+            return ()
+        formulas = points.pop((row, column), ())
+        if not points:
+            self._points.pop(sheet)
+        return formulas
+
+    def _pop_points_in(self, sheet, bounds):
+        points = self._points.get(sheet)
+        if points is None:
+            return set()
+        min_col, min_row, max_col, max_row = bounds
+        formulas = set()
+        matches = [
+            point for point in points
+            if min_row <= point[0] <= max_row
+            and min_col <= point[1] <= max_col
+        ]
+        for point in matches:
+            formulas.update(points.pop(point))
+        if not points:
+            self._points.pop(sheet)
+        return formulas
+
+    def _pop_ranges_in(self, sheet, bounds):
+        ranges = self._ranges.get(sheet)
+        if ranges is None:
+            return set()
+        min_col, min_row, max_col, max_row = bounds
+        formulas = set()
+        matches = []
+        for other, addresses in ranges.items():
+            other_min_col, other_min_row, other_max_col, other_max_row = other
+            if other_max_col < min_col or other_min_col > max_col \
+                    or other_max_row < min_row or other_min_row > max_row:
+                continue
+            matches.append(other)
+            formulas.update(addresses)
+        for other in matches:
+            ranges.pop(other)
+        if not ranges:
+            self._ranges.pop(sheet)
+        return formulas
+
+    def pop_cell(self, cell):
+        """Return formulas first reached by one newly tainted cell."""
+        sheet, row, column = cell
+        folded = sheet.casefold()
+        formulas = set(self._pop_point(folded, row, column))
+        formulas.update(self._pop_ranges_in(
+            folded, (column, row, column, row)))
+        return formulas
+
+    def pop_range(self, item):
+        """Return formulas first reached by one newly tainted range."""
+        sheet, bounds = item
+        folded = sheet.casefold()
+        closed = _closed_bounds(bounds)
+        formulas = self._pop_points_in(folded, closed)
+        formulas.update(self._pop_ranges_in(folded, closed))
+        return formulas
+
+
 def _dirty_closure(wb, dirty, *, dependency_cells=(),
                    dependency_ranges=(), activation_ranges=(), retained=None,
                    force_recalculation=False):
@@ -676,43 +770,55 @@ def _dirty_closure(wb, dirty, *, dependency_cells=(),
     formulas = _dependency_model(wb, retained=retained)
     sketch = dependency_sketch(formulas)
     outputs = _formula_outputs(formulas)
-    for address in sketch.volatile:
-        key = _address_key(address)
-        if key is not None:
-            tainted.add(key)
+    addresses = set(sketch.references) | set(sketch.unresolved) \
+        | set(sketch.volatile) | set(sketch.contextual)
+    keys = {address: _address_key(address) for address in addresses}
+    dependency_index = _DependencyIndex(sketch)
     tainted_ranges = set()
+    pending = deque()
+    enqueued_cells = set()
 
-    def expand_outputs():
-        before = len(tainted_ranges)
-        for key in tainted:
-            output = outputs.get(key)
-            if output is not None:
-                tainted_ranges.add(output)
-        return len(tainted_ranges) != before
+    def enqueue_cell(key):
+        if key is None:
+            return
+        tainted.add(key)
+        if key not in enqueued_cells:
+            enqueued_cells.add(key)
+            pending.append(("cell", key))
 
+    def enqueue_range(item):
+        if item not in tainted_ranges:
+            tainted_ranges.add(item)
+            pending.append(("range", item))
+
+    def taint_formula(address):
+        enqueue_cell(keys.get(address))
+
+    for key in tuple(tainted):
+        enqueue_cell(key)
+    for address in sketch.volatile:
+        taint_formula(address)
     # An unresolved formula may read any edited cell. Taint it rather than
     # guessing that its dynamic/structured/external reference is unrelated.
     for address in sketch.unresolved:
-        key = _address_key(address)
-        if key is not None:
-            tainted.add(key)
-    changed = True
-    while changed:
-        changed = expand_outputs()
-        for address, references in sketch.references.items():
-            key = _address_key(address)
-            if key is None or key in tainted:
-                continue
-            direct_hit = any(
-                _bounds_hit(sheet, bounds, tainted)
-                or _ranges_hit(sheet, bounds, tainted_ranges)
-                for sheet, bounds, _raw in references)
-            context_hit = address in sketch.contextual and any(
-                _ranges_hit(sheet, bounds, context_ranges)
-                for sheet, bounds, _raw in references)
-            if direct_hit or context_hit:
-                tainted.add(key)
-                changed = True
+        taint_formula(address)
+    for address in sketch.contextual:
+        references = sketch.references.get(address, ())
+        if any(_ranges_hit(sheet, bounds, context_ranges)
+               for sheet, bounds, _raw in references):
+            taint_formula(address)
+
+    while pending:
+        kind, item = pending.popleft()
+        if kind == "cell":
+            output = outputs.get(item)
+            if output is not None:
+                enqueue_range(output)
+            dependents = dependency_index.pop_cell(item)
+        else:
+            dependents = dependency_index.pop_range(item)
+        for address in dependents:
+            taint_formula(address)
     return tainted, tainted_ranges
 
 

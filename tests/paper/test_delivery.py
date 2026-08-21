@@ -753,6 +753,53 @@ def test_non_contextual_formula_allows_row_display_change(tmp_path):
     wb.validate()
 
 
+def test_dirty_closure_processes_high_fanout_once(monkeypatch):
+    from openpyxl import Workbook
+    import openpyxl.preserve.pivots as pivots
+
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = 1
+    formula_count = 5000
+    for row in range(1, formula_count + 1):
+        ws.cell(row, 2, "=$A$1")
+
+    calls = 0
+    original = pivots._DependencyIndex.pop_cell
+
+    def counted_pop_cell(self, cell):
+        nonlocal calls
+        calls += 1
+        return original(self, cell)
+
+    monkeypatch.setattr(
+        pivots._DependencyIndex, "pop_cell", counted_pop_cell)
+    tainted, tainted_ranges = pivots._dirty_closure(
+        wb, {ws: {(1, 1)}})
+
+    assert len(tainted) == formula_count + 1
+    assert tainted_ranges == set()
+    assert calls == formula_count + 1
+
+
+def test_dirty_closure_follows_reverse_order_chain():
+    from openpyxl import Workbook
+    from openpyxl.preserve.pivots import _dirty_closure
+
+    wb = Workbook()
+    ws = wb.active
+    formula_count = 2000
+    for row in range(1, formula_count + 1):
+        ws.cell(row, 1, "=A{0}".format(row + 1))
+    ws.cell(formula_count + 1, 1, 1)
+
+    tainted, tainted_ranges = _dirty_closure(
+        wb, {ws: {(formula_count + 1, 1)}})
+
+    assert len(tainted) == formula_count + 1
+    assert tainted_ranges == set()
+
+
 def test_oracle_recalc_requests_formula_backed_pivot_refresh(
         tmp_path, monkeypatch):
     from openpyxl import Workbook, oracle
