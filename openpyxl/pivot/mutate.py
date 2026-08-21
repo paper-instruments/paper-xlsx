@@ -283,6 +283,8 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
             staged.allocation.cache_id if staged is not None else int(
                 _node_for(handle, graph).cache_id),
             workbook,
+            cache_relationship_id=allocation.pivot_cache_relationship_id,
+            records_relationship_id=allocation.records_relationship_id,
         )
         _write_output_cells(worksheet, plan.output.cells)
         _clear_obsolete(worksheet, old_cells, plan)
@@ -651,6 +653,13 @@ def _allocation_from_handle(workbook, worksheet, handle):
             kind="invalid-pivot-graph",
             anchor=handle._identity.pivot_part,
         )
+    if (not node.cache_relationship_id or not cache.records_relationship_id
+            or not cache.records_part):
+        raise RelationshipPolicyError(
+            "cannot resolve the pivot's internal cache relationships",
+            kind="invalid-pivot-graph",
+            anchor=handle._identity.pivot_part,
+        )
     return PivotAllocation(
         pivot_part=node.identity.pivot_part,
         cache_part=node.cache_definition_part,
@@ -658,6 +667,8 @@ def _allocation_from_handle(workbook, worksheet, handle):
         cache_id=int(node.cache_id),
         worksheet_part=node.identity.worksheet_part,
         workbook_part=graph.workbook_part,
+        pivot_cache_relationship_id=node.cache_relationship_id,
+        records_relationship_id=cache.records_relationship_id,
     )
 
 

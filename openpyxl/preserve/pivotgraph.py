@@ -39,6 +39,8 @@ class PivotAllocation:
     cache_id: int
     worksheet_part: str
     workbook_part: str
+    pivot_cache_relationship_id: str = "rId1"
+    records_relationship_id: str = "rId1"
 
     @property
     def pivot_rels_part(self):
@@ -142,7 +144,7 @@ def _plan_add(context, operation):
         content_type=RecordList.mime_type,
         relate_from=allocation.cache_part,
         rel_type=RecordList.rel_type,
-        rel_id="rId1",
+        rel_id=allocation.records_relationship_id,
     )
     part_plan.add_part(
         allocation.cache_part,
@@ -162,7 +164,7 @@ def _plan_add(context, operation):
     )
     part_plan.rel_appends.setdefault(
         allocation.pivot_rels_part, []).append((
-            "rId1",
+            allocation.pivot_cache_relationship_id,
             CacheDefinition.rel_type,
             _relative_target(allocation.pivot_part, allocation.cache_part),
             None,

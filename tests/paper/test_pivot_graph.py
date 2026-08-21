@@ -167,7 +167,8 @@ def _records_xml(rows):
 
 def _pivot_xml(name, cache_id, location="A3:B6", rows=(), columns=(),
                pages=(), values=(), tag=None, ext_uri=None,
-               compact=None, outline=None, data_on_rows=None):
+               compact=None, outline=None, data_on_rows=None,
+               cache_relationship_id="rId1"):
     row_xml = ""
     if rows:
         row_xml = '<rowFields count="%s">%s</rowFields>' % (
@@ -222,14 +223,15 @@ def _pivot_xml(name, cache_id, location="A3:B6", rows=(), columns=(),
         )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<pivotTableDefinition xmlns="%s" name="%s" cacheId="%s"'
-        ' dataCaption="Values"%s%s>'
+        '<pivotTableDefinition xmlns="%s" xmlns:r="%s" name="%s" cacheId="%s"'
+        ' dataCaption="Values" r:id="%s"%s%s>'
         '<location ref="%s" firstHeaderRow="1" firstDataRow="1"'
         ' firstDataCol="1"/>'
         '<pivotFields count="%s">%s</pivotFields>'
         '%s%s%s%s%s</pivotTableDefinition>'
-        % (_NS, name, cache_id, tag_attr, layout_attr, location, field_count,
-           fields, row_xml, col_xml, page_xml, data_xml, ext)
+        % (_NS, _RNS, name, cache_id, cache_relationship_id, tag_attr,
+           layout_attr, location, field_count, fields, row_xml, col_xml,
+           page_xml, data_xml, ext)
     )
 
 
@@ -253,6 +255,7 @@ def _basic_package(
         cache_rid="rIdCache1",
         pivot_rid="rIdPivot1",
         records_rid="rId1",
+        pivot_cache_rid="rId1",
         source=None,
         extra_pivots=(),
         extra_caches=(),
@@ -434,12 +437,13 @@ def _basic_package(
                 pivot_name, cache_id, location=location, rows=rows,
                 columns=columns, pages=pages, values=values, tag=tag,
                 ext_uri=ext_uri, compact=compact, outline=outline,
-                data_on_rows=data_on_rows),
+                data_on_rows=data_on_rows,
+                cache_relationship_id=pivot_cache_rid),
         ))
         pivot_rels = []
         if include_pivot_cache_rel:
             pivot_rels.append((
-                "rId1",
+                pivot_cache_rid,
                 "http://schemas.openxmlformats.org/officeDocument/2006/"
                 "relationships/pivotCacheDefinition",
                 cache_target if not cache_target.startswith("..")
@@ -473,7 +477,7 @@ def _basic_package(
     declared = len(records) if record_count is None else record_count
     cache_payload = _cache_xml(
         source, fields, record_count=declared,
-        records_rid=None if dangling_records else records_rid,
+        records_rid=records_rid,
         grouping=grouping, calculated=calculated, ext_uri=cache_ext_uri,
         prefixed=prefixed_cache,
     )

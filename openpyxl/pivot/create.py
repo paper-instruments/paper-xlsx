@@ -129,7 +129,13 @@ def create_pivot(worksheet, name, source, destination, rows, values,
     formats_before = tuple(workbook._number_formats)
     styles_before = tuple(workbook._cell_styles)
     try:
-        payloads = build_pivot_payloads(plan, allocation.cache_id, workbook)
+        payloads = build_pivot_payloads(
+            plan,
+            allocation.cache_id,
+            workbook,
+            cache_relationship_id=allocation.pivot_cache_relationship_id,
+            records_relationship_id=allocation.records_relationship_id,
+        )
         _checkpoint("built", workbook)
         _write_output_cells(worksheet, plan.output.cells)
         _checkpoint("cells", workbook)

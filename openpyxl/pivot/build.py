@@ -89,8 +89,10 @@ class PivotPayloads:
         }
 
 
-def build_pivot_payloads(plan, cache_id, workbook=None):
-    """Serialize one Paper-owned pivot and its dedicated cache."""
+def build_pivot_payloads(
+        plan, cache_id, workbook=None, *, cache_relationship_id=_CACHE_REL_ID,
+        records_relationship_id=_RECORDS_REL_ID):
+    """Serialize a Paper-owned pivot with its retained relationship IDs."""
     cache_id = int(cache_id)
     fields = _cache_fields(plan)
     records = _record_list(plan)
@@ -105,9 +107,11 @@ def build_pivot_payloads(plan, cache_id, workbook=None):
         recordCount=len(records.r),
         cacheSource=_cache_source(plan.spec.source),
         cacheFields=fields,
-        id=_RECORDS_REL_ID,
+        id=records_relationship_id,
     )
-    table = _table_definition(plan, cache_id, workbook)
+    table = _table_definition(
+        plan, cache_id, workbook,
+        cache_relationship_id=cache_relationship_id)
     _assert_consistent(plan, cache, records, table, cache_id)
     return PivotPayloads(
         cache_definition=_serialize_root(cache),
@@ -217,7 +221,9 @@ def _record_list(plan):
     return RecordList(r=records)
 
 
-def _table_definition(plan, cache_id, workbook=None):
+def _table_definition(
+        plan, cache_id, workbook=None,
+        cache_relationship_id=_CACHE_REL_ID):
     spec = plan.spec
     lookups = [
         {item: index for index, item in enumerate(shared)}
@@ -364,7 +370,7 @@ def _table_definition(plan, cache_id, workbook=None):
             showColStripes=False,
             showLastColumn=True,
         ),
-        id=_CACHE_REL_ID,
+        id=cache_relationship_id,
     )
 
 
