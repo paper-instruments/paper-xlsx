@@ -693,7 +693,8 @@ def test_volatile_formula_in_pivot_source_requires_refresh(
     assert caught.value.kind == "stale-pivot-cache"
 
 
-@pytest.mark.parametrize("mutation", ["cell-format", "hidden-row"])
+@pytest.mark.parametrize(
+    "mutation", ["cell-format", "hidden-row", "cross-column-filter"])
 def test_non_value_formula_precedent_requires_pivot_refresh(
         tmp_path, mutation):
     from openpyxl import Workbook
@@ -706,6 +707,9 @@ def test_non_value_formula_precedent_requires_pivot_refresh(
                 else "=SUBTOTAL(109,D1:D2)")
     ws["D1"] = -1
     ws["D2"] = 20
+    if mutation == "cross-column-filter":
+        ws["C1"] = "Filter"
+        ws["C2"] = "drop"
     created.save(source)
 
     wb = load_workbook(source, preserve=True)
@@ -715,8 +719,11 @@ def test_non_value_formula_precedent_requires_pivot_refresh(
             "1": b'<worksheetSource ref="A1" sheet="Data"/>'})
     if mutation == "cell-format":
         wb["Data"]["D1"].number_format = "[Red]0"
-    else:
+    elif mutation == "hidden-row":
         wb["Data"].row_dimensions[2].hidden = True
+    else:
+        wb["Data"].auto_filter.ref = "C1:C2"
+        wb["Data"].auto_filter.add_filter_column(0, ["keep"])
 
     assert not any(wb._paper_ledger.value_overwrites.values())
     with pytest.raises(UnsupportedStructureError) as caught:

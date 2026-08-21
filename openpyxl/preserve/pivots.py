@@ -598,7 +598,7 @@ def _changed_column_ranges(before, after):
 
 
 def _changed_filter_ranges(before, after):
-    """Return old/new AutoFilter ranges, conservatively whole-sheet."""
+    """Return row bands covered by old/new AutoFilter ranges."""
     ranges = set()
     for payload in (before, after):
         if payload is None:
@@ -610,7 +610,13 @@ def _changed_filter_ranges(before, after):
         bounds = _bounds(ref)
         if bounds is None:
             return {(1, 1, MAX_COLUMN, MAX_ROW)}
-        ranges.add(bounds)
+        _min_col, min_row, _max_col, max_row = bounds
+        if min_row is None or max_row is None:
+            return {(1, 1, MAX_COLUMN, MAX_ROW)}
+        # Filtering hides complete worksheet rows, so formulas in columns
+        # outside the filter rectangle can still observe the visibility
+        # change through SUBTOTAL or AGGREGATE.
+        ranges.add((1, min_row, MAX_COLUMN, max_row))
     return ranges or {(1, 1, MAX_COLUMN, MAX_ROW)}
 
 
