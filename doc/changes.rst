@@ -1,6 +1,12 @@
 Unreleased
 ==========
 
+* Allow guarded structural edits past provably disjoint array formulas,
+  what-if data tables, comment-only VML, manual page breaks, and known x14
+  ranges. Dynamic-reference refusals now ignore formulas that are provably
+  unrelated to the shifted sheet, and ``INDEX`` uses ordinary reference
+  rewriting.
+
 
 paper-xlsx 0.2.0 (2026-08-14)
 ================================
