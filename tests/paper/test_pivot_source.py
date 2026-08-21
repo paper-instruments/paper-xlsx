@@ -77,6 +77,114 @@ def test_table_and_range_snapshots_match_for_identical_cells():
     assert table.fields == ranged.fields == ("Region", "Amount")
 
 
+@pytest.mark.parametrize("attribute", ["totalsRowCount", "totalsRowShown"])
+def test_table_totals_row_is_excluded_but_table_identity_is_retained(
+        attribute, tmp_path):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    rows = [
+        ("Region", "Amount"),
+        ("East", 10),
+        ("West", 20),
+        ("Total", 30),
+    ]
+    for row in rows:
+        ws.append(row)
+    table = Table(displayName="SalesData", ref="A1:B4")
+    setattr(table, attribute, 1 if attribute == "totalsRowCount" else True)
+    ws.add_table(table)
+    path = tmp_path / (attribute + ".xlsx")
+    wb.save(path)
+
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+
+    snapshot = snapshot_from_workbook(wb, PivotSource.table("SalesData"))
+
+    assert snapshot.source == PivotSource.table("SalesData")
+    assert snapshot.bounds == ("Data", 1, 1, 2, 4)
+    assert [record.values[0].value for record in snapshot.records] == [
+        "East", "West"]
+    assert [record.values[1].value for record in snapshot.records] == [10, 20]
+
+
+def test_table_column_metadata_must_match_visible_headers():
+    from openpyxl.worksheet.table import TableColumn
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(("Region", "Amount"))
+    ws.append(("East", 10))
+    table = Table(displayName="SalesData", ref="A1:B2")
+    table.tableColumns = [
+        TableColumn(id=1, name="Region"),
+        TableColumn(id=2, name="Revenue"),
+    ]
+    ws.add_table(table)
+
+    with pytest.raises(BoundaryViolationError) as exc:
+        snapshot_from_workbook(wb, PivotSource.table("SalesData"))
+    assert exc.value.kind == "unsupported-pivot-source"
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("headerRowCount", 0),
+        ("headerRowCount", 2),
+        ("totalsRowCount", 2),
+        ("tableType", "queryTable"),
+        ("connectionId", 1),
+    ],
+)
+def test_unsupported_table_source_metadata_refuses(attribute, value):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(("Region", "Amount"))
+    ws.append(("East", 10))
+    ws.append(("West", 20))
+    table = Table(displayName="SalesData", ref="A1:B3")
+    setattr(table, attribute, value)
+    ws.add_table(table)
+
+    with pytest.raises(BoundaryViolationError) as exc:
+        snapshot_from_workbook(wb, PivotSource.table("SalesData"))
+    assert exc.value.kind == "unsupported-pivot-source"
+
+
+def test_source_intersecting_merged_cells_refuses():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(("Region", "Amount"))
+    ws.append(("East", 10))
+    ws.append(("West", 20))
+    ws.merge_cells("A2:A3")
+
+    with pytest.raises(BoundaryViolationError) as exc:
+        snapshot_from_workbook(wb, PivotSource.range("Data", "A1:B3"))
+    assert exc.value.kind == "unsupported-pivot-source"
+    assert exc.value.anchor == "Data!A2:A3"
+
+
+@pytest.mark.parametrize("source", [
+    PivotSource.range("Data", "A:D"),
+    "'Data'!A:D",
+    PivotSource.range("Data", "1:4"),
+])
+def test_open_axis_source_refuses_with_typed_error(source):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+
+    with pytest.raises(BoundaryViolationError) as exc:
+        snapshot_from_workbook(wb, source)
+    assert exc.value.kind == "unsupported-pivot-source"
+
+
 def test_hidden_rows_remain_in_the_snapshot():
     wb = Workbook()
     ws = wb.active

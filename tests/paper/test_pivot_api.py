@@ -75,6 +75,13 @@ def test_source_and_axis_types_are_immutable_and_deterministic():
         field.field = "Product"
 
 
+def test_axis_items_use_typed_duplicate_identity():
+    field = PivotAxisField("Flag", items=[1, True])
+    assert field.items == (1, True)
+    with pytest.raises(ValueError):
+        PivotAxisField("Amount", items=[1, 1.0])
+
+
 def test_to_dict_schema_and_deterministic_ordering(tmp_path):
     wb = _load_preserved(tmp_path, _basic_package())
     pivot = wb["Summary"].pivots["SalesByRegion"]

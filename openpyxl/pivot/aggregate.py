@@ -324,7 +324,13 @@ def _sum(values):
 
 
 def _extreme(values, chooser):
-    if values and isinstance(values[0], TypedValue):
+    typed = [isinstance(item, TypedValue) for item in values]
+    if any(typed) and not all(typed):
+        raise BoundaryViolationError(
+            "min/max cannot mix numbers and dates",
+            kind="invalid-pivot-source",
+        )
+    if values and all(typed):
         kinds = {item.kind for item in values}
         if kinds != {values[0].kind}:
             raise BoundaryViolationError(
@@ -334,11 +340,6 @@ def _extreme(values, chooser):
         chosen = chooser(values, key=lambda item: item.value)
         return chosen.value
     numbers = [float(item) for item in values]
-    if any(isinstance(item, TypedValue) for item in values):
-        raise BoundaryViolationError(
-            "min/max cannot mix numbers and dates",
-            kind="invalid-pivot-source",
-        )
     chosen = chooser(numbers)
     if chosen.is_integer():
         return int(chosen)

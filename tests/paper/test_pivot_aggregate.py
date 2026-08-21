@@ -1,6 +1,8 @@
 """Deterministic pivot aggregation."""
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from openpyxl.errors import BoundaryViolationError
@@ -90,6 +92,24 @@ def test_sum_refuses_text_or_boolean_measures():
         aggregate_snapshot(snapshot, _spec(
             source=PivotSource.range("Data", "A1:B2"),
             values=(PivotMeasure("Flag", aggregate="sum"),),
+        ))
+    assert exc.value.kind == "invalid-pivot-source"
+
+
+@pytest.mark.parametrize("aggregate", ["min", "max"])
+@pytest.mark.parametrize("values", [
+    [date(2024, 1, 1), 1],
+    [1, date(2024, 1, 1)],
+])
+def test_min_max_refuse_mixed_dates_and_numbers(aggregate, values):
+    snapshot = snapshot_from_matrix(
+        ["Region", "Amount"],
+        [["East", value] for value in values],
+    )
+    with pytest.raises(BoundaryViolationError) as exc:
+        aggregate_snapshot(snapshot, _spec(
+            source=PivotSource.range("Data", "A1:B3"),
+            values=(PivotMeasure("Amount", aggregate=aggregate),),
         ))
     assert exc.value.kind == "invalid-pivot-source"
 
