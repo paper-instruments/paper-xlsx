@@ -6,6 +6,9 @@ Unreleased
   ranges. Dynamic-reference refusals now ignore formulas that are provably
   unrelated to the shifted sheet, and ``INDEX`` uses ordinary reference
   rewriting.
+* Report absolute, relative, and ULP-scale evidence for finite numeric oracle
+  divergences, with a separate caller-supplied tolerance classification that
+  leaves strict certification unchanged.
 
 
 paper-xlsx 0.2.0 (2026-08-14)

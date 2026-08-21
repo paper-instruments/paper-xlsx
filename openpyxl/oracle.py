@@ -618,7 +618,7 @@ class CertificationResult:
                  artifact_sha256=None):
         self.status = status
         self.checked = checked
-        self.divergences = divergences          # [{"address", "cached", "computed"}]
+        self.divergences = divergences          # strict mismatches plus evidence
         self.volatile_excluded = volatile_excluded
         self.unverifiable = unverifiable        # formula cells without a cache
         # excluded-with-reason: DIVERGED keeps meaning
@@ -646,9 +646,138 @@ class CertificationResult:
             "artifact_sha256": self.artifact_sha256,
         }
 
+    def classify_tolerance(self, *, abs_tol=None, rel_tol=None):
+        """Classify recorded strict divergences under a numeric tolerance.
+
+        Strict matches are not re-evaluated, so this cannot impose a policy
+        narrower than Paper's strict comparator. The classification does not
+        alter :attr:`status` or establish complete coverage. Formula errors,
+        nonnumeric mismatches, and non-finite values always remain outside.
+        """
+        if abs_tol is None and rel_tol is None:
+            raise ValueError("abs_tol or rel_tol must be provided")
+        absolute = _validate_tolerance("abs_tol", abs_tol)
+        relative = _validate_tolerance("rel_tol", rel_tol)
+
+        within = []
+        outside = []
+        for divergence in self.divergences:
+            absolute_delta = divergence.get("absolute_delta")
+            relative_delta = divergence.get("relative_delta")
+            if absolute_delta is None or relative_delta is None:
+                outside.append(divergence)
+                continue
+            if ((absolute is not None and absolute_delta <= absolute)
+                    or (relative is not None
+                        and relative_delta <= relative)):
+                within.append(divergence)
+            else:
+                outside.append(divergence)
+        coverage_complete = (
+            self.checked > 0
+            and not self.volatile_excluded
+            and not self.external_excluded
+            and not self.unsupported_excluded
+            and not self.input_excluded
+            and not self.unverifiable
+        )
+        return NumericalToleranceResult(
+            self.status, coverage_complete, absolute, relative,
+            within, outside)
+
     def __repr__(self):
         return "CertificationResult({0}, checked={1}, diverged={2})".format(
             self.status, self.checked, len(self.divergences))
+
+
+class NumericalToleranceResult:
+
+    SCHEMA = "oracle_numerical_tolerance"
+    VERSION = 1
+
+    def __init__(self, strict_status, coverage_complete, absolute_tolerance,
+                 relative_tolerance, within_tolerance, outside_tolerance):
+        self.strict_status = strict_status
+        self.coverage_complete = coverage_complete
+        self.absolute_tolerance = absolute_tolerance
+        self.relative_tolerance = relative_tolerance
+        self.within_tolerance = within_tolerance
+        self.outside_tolerance = outside_tolerance
+        self.all_divergences_within_tolerance = (
+            None if not within_tolerance and not outside_tolerance
+            else not outside_tolerance)
+
+    def to_dict(self):
+        return {
+            "schema": self.SCHEMA,
+            "version": self.VERSION,
+            "strict_status": self.strict_status,
+            "coverage_complete": self.coverage_complete,
+            "absolute_tolerance": self.absolute_tolerance,
+            "relative_tolerance": self.relative_tolerance,
+            "within_tolerance": list(self.within_tolerance),
+            "outside_tolerance": list(self.outside_tolerance),
+            "all_divergences_within_tolerance":
+                self.all_divergences_within_tolerance,
+        }
+
+    def __repr__(self):
+        return ("NumericalToleranceResult(within_tolerance={0}, "
+                "outside={1})".format(
+                    len(self.within_tolerance),
+                    len(self.outside_tolerance)))
+
+
+def _validate_tolerance(name, value):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("{0} must be a finite non-negative number".format(
+            name))
+    value = float(value)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("{0} must be a finite non-negative number".format(
+            name))
+    return value
+
+
+def _numeric_divergence_evidence(cached, cached_type,
+                                 computed, computed_type):
+    from decimal import Decimal
+
+    if (cached_type != "n" or computed_type != "n"
+            or isinstance(cached, bool) or isinstance(computed, bool)
+            or not isinstance(cached, (int, float))
+            or not isinstance(computed, (int, float))):
+        return None
+    try:
+        cached_float = float(cached)
+        computed_float = float(computed)
+    except OverflowError:
+        return None
+    if not (math.isfinite(cached_float) and math.isfinite(computed_float)):
+        return None
+
+    def _decimal(value):
+        return Decimal(value) if isinstance(value, int) \
+            else Decimal.from_float(value)
+
+    cached_decimal = _decimal(cached)
+    computed_decimal = _decimal(computed)
+    delta = abs(cached_decimal - computed_decimal)
+    magnitude = max(abs(cached_decimal), abs(computed_decimal))
+    absolute_delta = float(delta)
+    if not math.isfinite(absolute_delta):
+        return None
+    relative_delta = float(delta / magnitude) if magnitude else 0.0
+    ulp = max(_finite_double_ulp(cached_float),
+              _finite_double_ulp(computed_float))
+
+    return {
+        "absolute_delta": absolute_delta,
+        "relative_delta": relative_delta,
+        "ulp_delta": float(delta / Decimal.from_float(ulp)),
+    }
 
 
 def _values_match(cached, computed, epoch=None):
@@ -910,8 +1039,13 @@ def _certify_impl(data, timeout, recalculated=None, input_seeds=None):
         elif not _formula_results_match(
                 cached, cached_type, computed, computed_type,
                 epoch=wb_formulas.epoch):
-            divergences.append({"address": address, "cached": cached,
-                                "computed": computed})
+            divergence = {"address": address, "cached": cached,
+                          "computed": computed}
+            evidence = _numeric_divergence_evidence(
+                cached, cached_type, computed, computed_type)
+            if evidence is not None:
+                divergence.update(evidence)
+            divergences.append(divergence)
 
     complete_coverage = (
         checked > 0

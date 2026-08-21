@@ -1,5 +1,6 @@
 import io
 import datetime
+import math
 import re
 from types import SimpleNamespace
 import zipfile
@@ -77,6 +78,135 @@ def test_numeric_comparison_accepts_rounding_noise_not_material_difference():
                                     1_000_000_000_100.0)
 
 
+def test_numeric_divergence_reports_evidence_without_weakening_status():
+    computed = 1.0
+    for _ in range(oracle.NUMERIC_ULPS + 1):
+        computed = math.nextafter(computed, math.inf)
+    source = _package_with_caches({"A1": "=1"},
+                                  {"A1": (None, 1.0)})
+    recalculated = _package_with_caches({"A1": "=1"},
+                                        {"A1": (None, computed)})
+
+    result, _ = oracle._certify_impl(
+        source, 1, recalculated=recalculated)
+
+    assert result.status == "DIVERGED"
+    divergence = result.divergences[0]
+    absolute_delta = computed - 1.0
+    assert divergence["absolute_delta"] == absolute_delta
+    assert divergence["relative_delta"] == absolute_delta / computed
+    assert divergence["ulp_delta"] == oracle.NUMERIC_ULPS + 1
+
+    strict_output = result.to_dict()
+    classification = result.classify_tolerance(abs_tol=absolute_delta)
+    assert classification.within_tolerance == result.divergences
+    assert classification.outside_tolerance == []
+    assert classification.all_divergences_within_tolerance
+    assert classification.coverage_complete
+    assert classification.strict_status == "DIVERGED"
+    assert result.status == "DIVERGED"
+    assert result.to_dict() == strict_output
+
+
+def test_material_numeric_divergence_remains_outside_tolerance():
+    source = _package_with_caches({"A1": "=2"},
+                                  {"A1": (None, 1.0)})
+    recalculated = _package_with_caches({"A1": "=2"},
+                                        {"A1": (None, 2.0)})
+    result, _ = oracle._certify_impl(
+        source, 1, recalculated=recalculated)
+
+    classification = result.classify_tolerance(abs_tol=0.01, rel_tol=0.01)
+
+    assert classification.within_tolerance == []
+    assert classification.outside_tolerance == result.divergences
+    assert not classification.all_divergences_within_tolerance
+    assert classification.to_dict()["strict_status"] == "DIVERGED"
+
+
+def test_zero_relative_edge_has_deterministic_numeric_evidence():
+    computed = oracle._MIN_SUBNORMAL_DOUBLE * (oracle.NUMERIC_ULPS + 1)
+    source = _package_with_caches({"A1": "=0"},
+                                  {"A1": (None, 0.0)})
+    recalculated = _package_with_caches({"A1": "=0"},
+                                        {"A1": (None, computed)})
+
+    result, _ = oracle._certify_impl(
+        source, 1, recalculated=recalculated)
+
+    divergence = result.divergences[0]
+    assert divergence["absolute_delta"] == computed
+    assert divergence["relative_delta"] == 1.0
+    assert divergence["ulp_delta"] == oracle.NUMERIC_ULPS + 1
+    classification = result.classify_tolerance(rel_tol=1.0)
+    assert classification.absolute_tolerance is None
+    assert classification.relative_tolerance == 1.0
+    assert classification.within_tolerance == result.divergences
+    assert classification.outside_tolerance == []
+
+
+def test_ulp_scale_preserves_large_integer_difference():
+    evidence = oracle._numeric_divergence_evidence(
+        2 ** 53 + 1, "n", float(2 ** 53), "n")
+
+    assert evidence["absolute_delta"] == 1.0
+    assert evidence["ulp_delta"] == 0.5
+
+
+def test_nonnumeric_mismatch_has_no_numeric_tolerance_evidence():
+    source = _package_with_caches({"A1": "=TRUE()"},
+                                  {"A1": ("b", 1)})
+    recalculated = _package_with_caches({"A1": "=TRUE()"},
+                                        {"A1": ("b", 0)})
+
+    result, _ = oracle._certify_impl(
+        source, 1, recalculated=recalculated)
+
+    divergence = result.divergences[0]
+    assert "absolute_delta" not in divergence
+    assert "relative_delta" not in divergence
+    assert "ulp_distance" not in divergence
+    classification = result.classify_tolerance(abs_tol=1e100, rel_tol=1.0)
+    assert classification.within_tolerance == []
+    assert classification.outside_tolerance == result.divergences
+
+
+def test_no_tolerance_policy_leaves_certification_schema_unchanged():
+    result = oracle.CertificationResult(
+        "DIVERGED", 1,
+        [{"address": "Sheet!A1", "cached": 1.0, "computed": 2.0,
+          "absolute_delta": 1.0, "relative_delta": 0.5,
+          "ulp_delta": 4503599627370496.0}],
+        [], [])
+
+    strict_output = result.to_dict()
+
+    assert "within_tolerance" not in strict_output
+    assert "outside_tolerance" not in strict_output
+    with pytest.raises(ValueError):
+        result.classify_tolerance()
+    assert result.to_dict() == strict_output
+
+
+@pytest.mark.parametrize(
+    "result, coverage_complete",
+    [
+        (oracle.CertificationResult(
+            "CERTIFIED", 1, [], [], []), True),
+        (oracle.CertificationResult(
+            "BASELINE_UNVERIFIABLE", 0, [], [], ["Sheet!A1"]), False),
+    ],
+)
+def test_tolerance_does_not_claim_success_without_strict_divergences(
+        result, coverage_complete):
+    classification = result.classify_tolerance(abs_tol=0, rel_tol=0)
+
+    assert classification.all_divergences_within_tolerance is None
+    assert classification.coverage_complete is coverage_complete
+    assert classification.within_tolerance == []
+    assert classification.outside_tolerance == []
+
+
 def test_error_scan_distinguishes_text_from_excel_error_type():
     workbook = Workbook()
     workbook.active["A1"] = "#N/A"
@@ -104,6 +234,9 @@ def test_matching_formula_error_never_certifies():
         "computed": "#DIV/0!",
         "reason": "formula-error",
     }]
+    classification = result.classify_tolerance(abs_tol=1e100, rel_tol=1.0)
+    assert classification.within_tolerance == []
+    assert classification.outside_tolerance == result.divergences
 
 
 def test_excluded_formula_prevents_complete_certification():

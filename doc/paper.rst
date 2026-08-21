@@ -154,7 +154,17 @@ not implement a partial formula engine.
 
 ``oracle.certify(source)``
     Compare source caches with recalculated values and report ``CERTIFIED``,
-    ``DIVERGED``, or ``BASELINE_UNVERIFIABLE`` with exclusions.
+    ``DIVERGED``, or ``BASELINE_UNVERIFIABLE`` with exclusions. Finite numeric
+    divergences include absolute, relative, and binary64 ULP-scale deltas.
+    Call
+    ``result.classify_tolerance(abs_tol=..., rel_tol=...)`` to classify recorded
+    strict divergences under an explicit caller policy. Either threshold may
+    admit a numeric divergence. Formula errors, nonnumeric mismatches, and
+    non-finite values remain outside. The result reports certification coverage
+    separately and makes no aggregate claim when there are no strict
+    divergences. It cannot apply a policy narrower than Paper's strict
+    comparator because strict matches are not retained. The strict
+    certification status does not change.
 
 ``oracle.evaluate(source, set=..., read=...)``
     Evaluate an explicit source package and scenario. Evaluation status, like
