@@ -74,6 +74,8 @@ def layout_result(spec, result, destination, limits=None):
 
     header_rows = _header_row_count(col_depth, measure_count, values_on_columns)
     label_cols = _label_column_count(spec.layout, row_depth)
+    if not values_on_columns and row_depth:
+        label_cols += 1
     if values_on_columns:
         value_cols = max(1, len(body_col_keys)) * measure_count
         body_rows = len(body_row_keys)
@@ -195,22 +197,31 @@ def _write_headers(cells, spec, origin_row, origin_col, header_rows,
     else:
         _put(cells, origin_row, origin_col, None, ROLE_BLANK)
 
+    measure_count = len(captions) if values_on_columns else 1
+    for col_index, col_key in enumerate(column_keys):
+        for depth, item in enumerate(col_key):
+            field = spec.columns[depth].field
+            for measure_index in range(measure_count):
+                column = (
+                    origin_col + label_cols + col_index * measure_count
+                    + measure_index
+                )
+                _put(cells, origin_row + depth, column, display_item(item),
+                     ROLE_COLUMN_LABEL, field=field)
+
     if values_on_columns:
-        measure_count = len(captions)
-        header_row = origin_row + header_rows - 1
-        for col_index, col_key in enumerate(column_keys):
-            for measure_index, caption in enumerate(captions):
-                column = origin_col + label_cols + col_index * measure_count + measure_index
-                label = caption
-                if spec.columns and col_key:
-                    label = display_item(col_key[0]) if measure_count == 1 \
-                        else caption
-                _put(cells, header_row, column, label, ROLE_HEADER)
-                if spec.columns and measure_count > 1:
-                    _put(cells, origin_row, column, display_item(col_key[0]),
-                         ROLE_COLUMN_LABEL)
+        if header_rows > len(spec.columns):
+            header_row = origin_row + header_rows - 1
+            for col_index, _col_key in enumerate(column_keys):
+                for measure_index, caption in enumerate(captions):
+                    column = (
+                        origin_col + label_cols + col_index * measure_count
+                        + measure_index
+                    )
+                    _put(cells, header_row, column, caption, ROLE_HEADER)
     else:
-        _put(cells, origin_row, origin_col + label_cols, "Values", ROLE_HEADER)
+        _put(cells, origin_row, origin_col + label_cols - 1,
+             "Values", ROLE_HEADER)
 
 
 def _write_body(cells, spec, result, start_row, origin_col, label_cols,
@@ -272,10 +283,14 @@ def _write_row_grand_total(cells, spec, result, start_row, origin_col,
                 result.grand_total, captions, True, ROLE_GRAND_TOTAL)
     else:
         start_col = origin_col + label_cols
-        for measure_index, measure in enumerate(result.grand_total):
+        for measure_index, (caption, measure) in enumerate(
+                zip(captions, result.grand_total)):
             row = start_row + measure_index
             _put(cells, row, origin_col, "Grand Total" if measure_index == 0
                  else None, ROLE_GRAND_TOTAL)
+            if spec.rows:
+                _put(cells, row, origin_col + label_cols - 1, caption,
+                     ROLE_HEADER)
             if spec.columns:
                 for col_index, col_key in enumerate(column_keys):
                     group = result.column_totals.get(col_key, result.grand_total)

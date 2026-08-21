@@ -57,6 +57,16 @@ def _grid(plan):
     }
 
 
+def _matrix(plan):
+    min_col, min_row, max_col, max_row = range_boundaries(plan.output.ref)
+    grid = _grid(plan)
+    return [
+        [grid.get((row, column))
+         for column in range(min_col, max_col + 1)]
+        for row in range(min_row, max_row + 1)
+    ]
+
+
 def test_tabular_one_row_field_one_measure():
     plan = _plan()
     grid = _grid(plan)
@@ -103,6 +113,88 @@ def test_multiple_measures_and_values_axis_orientations():
     assert "Count" in _grid(rows).values()
 
 
+def test_values_on_rows_preserve_dimension_labels_and_measure_captions():
+    snapshot = snapshot_from_matrix(
+        ["Region", "Product", "Amount"],
+        [["East", "A", 10], ["East", "B", 4], ["West", "A", 7]],
+        source=PivotSource.range("Data", "A1:C4"),
+    )
+    spec = PivotSpec(
+        name="SalesByRegion",
+        source=PivotSource.range("Data", "A1:C4"),
+        destination="E3",
+        rows=(PivotAxisField("Region"),),
+        columns=(PivotAxisField("Product"),),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Sum"),
+            PivotMeasure("Amount", aggregate="count", caption="Count"),
+        ),
+        layout="tabular",
+        values_axis="rows",
+        row_grand_totals=True,
+        column_grand_totals=False,
+    )
+
+    plan = plan_pivot(spec, snapshot)
+
+    assert plan.output.ref == "E3:H9"
+    assert plan.output.row_count == 7
+    assert plan.output.column_count == 4
+    assert plan.output.first_data_row == 2
+    assert plan.output.first_data_col == 2
+    assert _matrix(plan) == [
+        ["Region", "Values", "A", "B"],
+        ["East", "Sum", 10, 4],
+        [None, "Count", 1, 1],
+        ["West", "Sum", 7, None],
+        [None, "Count", 1, None],
+        ["Grand Total", "Sum", 17, 4],
+        [None, "Count", 2, 1],
+    ]
+
+
+def test_nested_column_fields_materialize_every_header_level():
+    snapshot = snapshot_from_matrix(
+        ["Region", "Year", "Quarter", "Amount", "Units"],
+        [
+            ["East", 2024, "Q1", 10, 1],
+            ["East", 2024, "Q2", 4, 2],
+            ["West", 2025, "Q1", 7, 3],
+        ],
+        source=PivotSource.range("Data", "A1:E4"),
+    )
+    spec = PivotSpec(
+        name="SalesByPeriod",
+        source=PivotSource.range("Data", "A1:E4"),
+        destination="B4",
+        rows=(PivotAxisField("Region"),),
+        columns=(PivotAxisField("Year"), PivotAxisField("Quarter")),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Revenue"),
+            PivotMeasure("Units", aggregate="sum", caption="Units"),
+        ),
+        layout="tabular",
+        values_axis="columns",
+        row_grand_totals=False,
+        column_grand_totals=False,
+    )
+
+    plan = plan_pivot(spec, snapshot)
+
+    assert plan.output.ref == "B4:H8"
+    assert plan.output.row_count == 5
+    assert plan.output.column_count == 7
+    assert plan.output.first_data_row == 4
+    assert plan.output.first_data_col == 1
+    assert _matrix(plan) == [
+        ["Region", 2024, 2024, 2024, 2024, 2025, 2025],
+        [None, "Q1", "Q1", "Q2", "Q2", "Q1", "Q1"],
+        [None, "Revenue", "Units", "Revenue", "Units", "Revenue", "Units"],
+        ["East", 10, 1, 4, 2, None, None],
+        ["West", None, None, None, None, 7, 3],
+    ]
+
+
 def test_subtotals_on_values_axis_rows_stay_inside_ref():
     plan = _plan(
         data=[["East", "A", 10], ["East", "B", 4], ["West", "A", 7]],
@@ -128,14 +220,14 @@ def test_subtotals_on_values_axis_rows_stay_inside_ref():
     east_total_row = min(
         cell.row for cell in plan.output.cells
         if cell.value == "East Total")
-    assert grid[(east_total_row, 7)] == 14
-    assert grid[(east_total_row + 1, 7)] == 2
+    assert grid[(east_total_row, 8)] == 14
+    assert grid[(east_total_row + 1, 8)] == 2
     grand_row = min(
         cell.row for cell in plan.output.cells
         if cell.value == "Grand Total")
     assert grand_row == max(subtotal_rows) + 1
-    assert grid[(grand_row, 7)] == 21
-    assert grid[(grand_row + 1, 7)] == 3
+    assert grid[(grand_row, 8)] == 21
+    assert grid[(grand_row + 1, 8)] == 3
 
 
 def test_compact_outline_and_tabular_label_columns():
