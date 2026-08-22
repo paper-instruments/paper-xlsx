@@ -141,7 +141,7 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
                       "invalid-output-location"):
             for name in (
                 "can_headless_refresh", "can_rebuild_cache",
-                "can_edit_layout", "can_repoint_source",
+                "can_edit_layout", "can_repoint_source", "can_rename",
             ):
                 reasons.append(_reason(
                     name, mapped, **dict(item.context)))
@@ -149,19 +149,19 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
     if cache is not None and cache.has_grouping:
         _disable(flags, reasons, (
             "can_headless_refresh", "can_rebuild_cache", "can_edit_layout",
-            "can_repoint_source",
+            "can_repoint_source", "can_rename",
         ), "unsupported-grouping", part=cache.definition_part)
     if cache is not None and cache.has_calculated:
         _disable(flags, reasons, (
             "can_headless_refresh", "can_rebuild_cache", "can_edit_layout",
-            "can_repoint_source",
+            "can_repoint_source", "can_rename",
         ), "unsupported-calculated", part=cache.definition_part)
 
     disallowed = _disallowed_extensions(extensions)
     if disallowed:
         _disable(flags, reasons, (
             "can_headless_refresh", "can_rebuild_cache", "can_edit_layout",
-            "can_repoint_source", "can_delete",
+            "can_repoint_source", "can_rename", "can_delete",
         ), "unsupported-extension",
             part=node.identity.pivot_part,
             uri=disallowed[0].uri)
@@ -169,7 +169,7 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
     if not source_supported:
         _disable(flags, reasons, (
             "can_headless_refresh", "can_rebuild_cache", "can_edit_layout",
-            "can_repoint_source",
+            "can_repoint_source", "can_rename",
         ), "unsupported-pivot-source",
             part=None if cache is None else cache.definition_part)
 
@@ -185,9 +185,10 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
         _drop_reasons(reasons, "can_edit_layout")
 
     name_unique = _name_is_unique(node, graph)
-    if name_unique and node.identity.name:
+    if semantic_ok and name_unique and node.identity.name:
         flags["can_rename"] = True
-    else:
+        _drop_reasons(reasons, "can_rename")
+    elif not name_unique or not node.identity.name:
         reasons.append(_reason(
             "can_rename",
             "ambiguous-pivot" if node.identity.name else "missing-name",
@@ -423,11 +424,20 @@ def _ensure_false_capabilities_explained(flags, reasons):
 
 def _output_owned(workbook, node, projection):
     """Prove Paper-managed output against cache records, not live source."""
+    return _reconstruct_owned_output(workbook, node, projection) is not None
+
+
+def _reconstruct_owned_output(workbook, node, projection):
+    """Return materialized owned output cells, or None if unproved.
+
+    Blank layout slots are not owned. Extra values there must not be
+    treated as pivot output merely because they sit inside ``location.ref``.
+    """
     if projection.spec is None or not node.output_range:
-        return False
+        return None
     package = getattr(workbook, "_paper_source", None)
     if not package or not node.cache_definition_part or not node.cache_records_part:
-        return False
+        return None
     try:
         from openpyxl.pivot.plan import plan_pivot
 
@@ -435,23 +445,27 @@ def _output_owned(workbook, node, projection):
         spec = _spec_without_explicit_items(projection.spec)
         plan = plan_pivot(spec, snapshot)
     except Exception:
-        return False
+        return None
     if plan.output.ref != node.output_range:
-        return False
+        return None
     worksheet = None
     for item in workbook.worksheets:
         if item.title == node.sheet_title:
             worksheet = item
             break
     if worksheet is None:
-        return False
+        return None
     cells = getattr(worksheet, "_cells", {})
+    owned = []
     for cell in plan.output.cells:
+        if cell.value is None:
+            continue
         existing = cells.get((cell.row, cell.column))
         actual = None if existing is None else existing.value
         if actual != cell.value:
-            return False
-    return True
+            return None
+        owned.append((cell.row, cell.column, cell.value, cell.role))
+    return tuple(owned)
 
 
 def _snapshot_from_cache_package(package, node, projection):
