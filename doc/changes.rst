@@ -25,6 +25,10 @@ Changes
   inspection under preserve mode. Qualification reports graph validity and
   per-operation capabilities. Foreign pivots receive at most
   ``can_refresh_on_open``. Public mutation is still withheld.
+* Add a pure PivotTable planner for typed source snapshots, the six v1
+  aggregates, and compact/outline/tabular layout. The planner does not mutate
+  workbooks or package bytes. Layout coordinates and blank captions remain
+  provisional until Excel transcripts exist.
 
 Bugfixes
 --------
