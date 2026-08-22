@@ -29,6 +29,8 @@ class PartPlan:
         self.ct_removals = []    # part_names
         self.rel_appends = {}    # rels_part -> [(rid, type, target, mode)]
         self.rel_removals = {}   # rels_part -> [target suffix]
+        self.replaced = {}       # existing name -> payload (private)
+        self.pivot_cache_registry = ()
         self._rid_base = {}      # rels_part -> first reserved number
         self._rid_reserved = {}  # rels_part -> count reserved
 
@@ -55,7 +57,7 @@ class PartPlan:
         ``rel_id`` when given). ``relate_from`` names the part whose rels
         must point at the new part (its rels part is created if absent —
         the saver resolves ids at apply time via ``resolve_rel_ids``)."""
-        if name in self.existing or name in self.added:
+        if name in self.existing or name in self.added or name in self.replaced:
             raise RelationshipPolicyError(
                 "part {0!r} already exists in the package; the lifecycle "
                 "planner never overwrites existing parts. Nothing was "
@@ -70,6 +72,27 @@ class PartPlan:
                      None)
             self.rel_appends.setdefault(rels_part, []).append(entry)
         return rel_id
+
+    def replace_part(self, name, payload):
+        """Replace one existing part's payload. Refuses missing or added names.
+
+        This is the private existing-part replacement. ``add_part()``
+        collision refusal is unchanged.
+        """
+        if name in self.added:
+            raise RelationshipPolicyError(
+                "part {0!r} is already planned as an addition; replace_part "
+                "only updates existing package members. Nothing was "
+                "written.".format(name))
+        if name not in self.existing:
+            raise TargetNotFoundError(
+                "part {0!r} does not exist in the package; nothing to "
+                "replace.".format(name))
+        if name in self.dropped:
+            raise RelationshipPolicyError(
+                "part {0!r} is already planned for removal. Nothing was "
+                "written.".format(name))
+        self.replaced[name] = payload
 
     def remove_part(self, name, referencing_rels=()):
         """Plan a part's removal: dropped from the copy loop, its
@@ -89,7 +112,8 @@ class PartPlan:
             self.rel_removals.setdefault(rels_part, []).append(suffix)
 
     def __bool__(self):
-        return bool(self.added or self.dropped or self.ct_overrides
+        return bool(self.added or self.dropped or self.replaced
+                    or self.ct_overrides
                     or self.ct_removals or self.rel_appends
                     or self.rel_removals)
 

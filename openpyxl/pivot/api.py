@@ -3,9 +3,9 @@
 """Preserve-mode inspection of loaded PivotTables.
 
 ``Worksheet.pivots`` is a semantic overlay over the relationship-resolved
-package graph. It does not mutate ``Worksheet._pivots``, deserialize foreign
-parts through inherited serializers, or enumerate source records. Public
-mutation methods are withheld until later stacked PRs.
+package graph plus staged Paper-owned creates. It does not mutate
+``Worksheet._pivots`` or deserialize foreign parts through inherited
+serializers. ``create()`` is limited to the PR 4 spine.
 """
 
 from __future__ import annotations
@@ -112,6 +112,10 @@ def _session_for(workbook):
             projection=projection,
             qualification=qualification,
         )
+    from openpyxl.pivot.create import iter_staged_states
+
+    for state in iter_staged_states(workbook):
+        states[state.identity] = state
     session = _PivotSession(1, graph, states)
     setattr(workbook, _SESSION_ATTR, session)
     return session
@@ -189,6 +193,34 @@ class PivotTableCollection:
             "no pivot named %r on %r" % (name, self._worksheet.title),
             kind="pivot-not-found",
             options=[handle.name for handle in self._handles if handle.name],
+        )
+
+    def create(self, name, source, destination, rows, values,
+               columns=None, filters=None, layout="tabular",
+               values_axis="columns", row_grand_totals=True,
+               column_grand_totals=True, subtotals=False, style=None):
+        """Create one Paper-owned pivot on this worksheet.
+
+        PR 4 accepts a literal table or range source, one row field, one
+        ``sum`` measure, and tabular layout. Other breadth refuses.
+        """
+        from openpyxl.pivot.create import create_pivot
+
+        return create_pivot(
+            self._worksheet,
+            name=name,
+            source=source,
+            destination=destination,
+            rows=rows,
+            values=values,
+            columns=columns,
+            filters=filters,
+            layout=layout,
+            values_axis=values_axis,
+            row_grand_totals=row_grand_totals,
+            column_grand_totals=column_grand_totals,
+            subtotals=subtotals,
+            style=style,
         )
 
 

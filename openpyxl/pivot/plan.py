@@ -103,6 +103,9 @@ def plan_pivot(spec, snapshot, limits=DEFAULT_LIMITS):
 
 
 def _estimate_or_refuse(spec, snapshot, limits):
+    from openpyxl.pivot.aggregate import _validate_spec_fields
+
+    _validate_spec_fields(spec, snapshot.field_index)
     row_card = 1
     for item in spec.rows:
         row_card *= max(1, len(snapshot.shared_items[

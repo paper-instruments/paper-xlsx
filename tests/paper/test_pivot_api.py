@@ -213,9 +213,12 @@ def test_direct_low_level_pivot_list_is_not_the_paper_collection(tmp_path):
     paper = ws.pivots
     assert paper is not ws._pivots
     assert [pivot.name for pivot in paper] == ["SalesByRegion"]
+    assert hasattr(paper, "create")
     assert not hasattr(paper["SalesByRegion"], "create")
     assert not hasattr(paper["SalesByRegion"], "update")
-    assert not hasattr(paper, "create")
+    assert not hasattr(paper, "update")
+    assert not hasattr(paper, "refresh")
+    assert not hasattr(paper, "delete")
 
 
 def test_noop_save_after_inspection_is_byte_identical(fixture_copy, tmp_path):

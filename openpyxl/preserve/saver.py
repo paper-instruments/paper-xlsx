@@ -356,8 +356,10 @@ def _validate_preserve_model(workbook, led, allow_formula_loss):
             "the edited cells.")
 
     led.check_style_registry(workbook)
+    from openpyxl.pivot.create import validate_create_freshness
     from .pivots import validate_source_freshness
 
+    validate_create_freshness(workbook, led)
     pivot_impacts = validate_source_freshness(workbook, led)
     force_calcpr = led.formulas_changed \
         or _dirty_feeds_formulas(workbook, led) \
@@ -619,6 +621,10 @@ def _plan_requested_parts(context, parts):
 
         plan_refresh(
             context.archive, ledger.pivot_refresh_requests, parts)
+    if getattr(ledger, "pivot_operations", None):
+        from .pivotgraph import plan_creates
+
+        plan_creates(context)
     if not ledger.shifts:
         return
     from .chartpatch import plan_chart_updates
@@ -1130,6 +1136,9 @@ def _plan_workbook_parts(context, added, loaded, force_calcpr):
          context.workbook, ledger, context.archive, context.names,
          context.workbook_part, added.sheet_entries, force_calcpr,
          context.part_plan)
+    from .pivotgraph import apply_workbook_cache_registry
+
+    workbook_xml = apply_workbook_cache_registry(context, workbook_xml)
     workbook_rels, extra_rels, content_types = \
         _compose_package_registries(
             context.archive, context.names, context.workbook_rels_part,
@@ -1155,7 +1164,10 @@ def _archive_builder(context, added, loaded, workbook_parts):
                 name = info.filename
                 if name in context.part_plan.dropped:
                     continue
-                if name in workbook_parts.extra_rels:
+                if name in context.part_plan.replaced:
+                    zipio.write_entry(
+                        zout, name, context.part_plan.replaced[name])
+                elif name in workbook_parts.extra_rels:
                     zipio.write_entry(
                         zout, name, workbook_parts.extra_rels[name])
                 elif name in loaded.parts:
@@ -1207,7 +1219,8 @@ def _make_preserve_plan(context, added, loaded, workbook_parts,
                         expected_identity, target_is_source):
     changed_parts = set(loaded.parts) \
         | set(loaded.sheet_rels_updates) \
-        | set(workbook_parts.extra_rels)
+        | set(workbook_parts.extra_rels) \
+        | set(context.part_plan.replaced)
     for part_name, replacement in (
             (context.workbook_part, workbook_parts.workbook_xml),
             (context.workbook_rels_part, workbook_parts.workbook_rels),
