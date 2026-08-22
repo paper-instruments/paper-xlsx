@@ -234,13 +234,28 @@ touching siblings. Layout-only shared-cache edits are not in v1.
 Foreign Excel-authored pivots stay inspectable and byte-preserved;
 v1 grants them at most ``can_refresh_on_open`` through
 ``Workbook.set_pivot_refresh_on_load`` until ``PivotTable.adopt()``
-converts a qualified dedicated-cache pivot. ``qualify_adoption()`` is
-the read-only eligibility analysis; it does not mutate the workbook and
-does not invoke LibreOffice. ``eligible=True`` and a successful
+converts a qualified pivot. ``qualify_adoption()`` is the read-only
+eligibility analysis; it does not mutate the workbook and does not
+invoke LibreOffice. Its ``requires_calculation`` and
+``calculation_engine`` fields disclose any remaining qualified oracle
+requirement, and every later operation is still fully revalidated.
+``adopt()`` is required before managed mutation of a foreign pivot. It
+replaces the selected pivot graph from the current source: dedicated
+caches are rewritten in place, and shared caches receive a new
+dedicated cache with only the selected pivot-to-cache relationship
+retargeted. Unselected siblings and the original shared cache stay
+byte-identical. Stale selected output is refreshed during adoption;
+unselected sibling caches stay stale until their own adopt/refresh or
+an explicit refresh-on-open request. ``eligible=True`` and a successful
 ``adopt()`` remain withheld until desktop Excel evidence proves the
-managed serializer and provenance channel. Shared-cache isolation is
-not in this layer; ``adopt()`` refuses those pivots. Do not treat
-foreign inspection as a license to edit any PivotTable.
+managed serializer, provenance marker, and foreign-equivalence
+transcripts. This is not "edit any existing PivotTable" and not full
+Excel PivotTable parity. PivotCharts, slicers, timelines, grouping,
+calculated fields/items, Data Model/OLAP, external sources, unknown
+extensions, and ``.xlsm``/VBA-bearing workbooks remain preserved or
+refused. Formulas, defined names, ``GETPIVOTDATA``, and ordinary charts
+can constrain later move, rename, layout, and delete. Refresh-on-open
+remains available when the caller does not want conversion.
 
 Pivot creation accepts worksheet tables and sheet-qualified ranges. Inspection
 also resolves supported existing pivots whose source is a static defined name.
@@ -283,6 +298,14 @@ those transcripts are not yet committed.
     pivot.refresh()
     wb.save("sales-out.xlsx")
 
+    wb = load_workbook("sales-out.xlsx", preserve=True)
+    foreign = wb["Summary"].pivots["ByRegion"]
+    report = foreign.qualify_adoption()
+    if report.eligible:
+        foreign = foreign.adopt()
+        foreign.update(layout="outline")
+
 Direct mutation of inherited ``Worksheet._pivots`` or low-level cache objects
 is not the safe Paper API. Classic worksheet pivots are not Data Model
-support.
+support. ``qualify_adoption()`` currently reports ineligible until the
+Excel evidence fields in the release matrix are filled.

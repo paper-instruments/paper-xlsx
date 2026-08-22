@@ -35,11 +35,15 @@ Changes
   ``PivotAdoptionQualification`` for targeted foreign-pivot eligibility.
   Ordinary inspection stays metadata-bounded. No foreign fixture is eligible
   until the managed Excel evidence gate is filled.
-* Add ``PivotTable.adopt()`` for qualified dedicated-cache foreign pivots.
-  Adoption rebuilds the selected cache and output in place, stages a
-  Paper-managed overlay immediately, and emits one ``pivot_adopted``
-  receipt. Shared-cache isolation is not implemented in this layer.
-  Eligibility remains gated on managed Excel evidence.
+* Add ``PivotTable.adopt()`` for qualified foreign pivots. Dedicated
+  caches are replaced in place. Shared caches allocate a dedicated
+  closure and retarget only the selected pivot-to-cache edge, leaving
+  unselected siblings and the original cache byte-identical until every
+  remaining reference is adopted. Adoption rebuilds selected output from
+  the current source, stages a Paper-managed overlay immediately, and
+  emits one ``pivot_adopted`` receipt. ``eligible=True`` remains gated
+  on desktop Excel evidence; the runner and release matrix do not claim
+  that evidence yet.
 
 Bugfixes
 --------
