@@ -118,6 +118,10 @@ def layout_result(spec, result, destination, limits=None):
         _write_row_grand_total(
             cells, spec, result, origin_row + header_rows + body_rows,
             origin_col, label_cols, body_col_keys, captions, values_on_columns)
+    if spec.column_grand_totals and spec.columns:
+        _write_column_grand_total(
+            cells, spec, result, origin_row, origin_col, header_rows,
+            label_cols, value_cols, body_row_keys, captions, values_on_columns)
 
     ref = "%s:%s" % (
         _coord(origin_col, origin_row),
@@ -219,6 +223,11 @@ def _write_body(cells, spec, result, start_row, origin_col, label_cols,
                 cells, spec, cursor, origin_col, prefix, ROLE_SUBTOTAL,
                 suffix=" Total")
             totals = result.row_subtotals.get(prefix, ())
+            if isinstance(totals, dict):
+                flat = []
+                for col_key in column_keys:
+                    flat.extend(totals.get(col_key, ()))
+                totals = flat
             _write_value_row(
                 cells, cursor, origin_col + label_cols, column_keys,
                 totals, captions, values_on_columns, ROLE_SUBTOTAL)
@@ -263,10 +272,70 @@ def _write_row_grand_total(cells, spec, result, start_row, origin_col,
                 cells, start_row, origin_col + label_cols, column_keys,
                 result.grand_total, captions, True, ROLE_GRAND_TOTAL)
     else:
+        start_col = origin_col + label_cols
         for measure_index, measure in enumerate(result.grand_total):
-            _put(cells, start_row + measure_index, origin_col + label_cols,
-                 measure.value, ROLE_GRAND_TOTAL,
-                 number_format=measure.number_format, field=measure.field)
+            row = start_row + measure_index
+            _put(cells, row, origin_col, "Grand Total" if measure_index == 0
+                 else None, ROLE_GRAND_TOTAL)
+            if spec.columns:
+                for col_index, col_key in enumerate(column_keys):
+                    group = result.column_totals.get(col_key, result.grand_total)
+                    item = group[measure_index] if measure_index < len(group) else measure
+                    _put(cells, row, start_col + col_index, item.value,
+                         ROLE_GRAND_TOTAL, number_format=item.number_format,
+                         field=item.field)
+            else:
+                _put(cells, row, start_col, measure.value, ROLE_GRAND_TOTAL,
+                     number_format=measure.number_format, field=measure.field)
+
+
+def _write_column_grand_total(cells, spec, result, origin_row, origin_col,
+                              header_rows, label_cols, value_cols, row_keys,
+                              captions, values_on_columns):
+    start_col = origin_col + label_cols + value_cols
+    header_row = origin_row + header_rows - 1
+    measure_count = len(captions) if values_on_columns else 1
+    for measure_index, caption in enumerate(captions if values_on_columns else ("Grand Total",)):
+        _put(cells, header_row, start_col + measure_index,
+             "Grand Total" if measure_index == 0 or not values_on_columns else caption,
+             ROLE_HEADER)
+    cursor = origin_row + header_rows
+    body_keys = [
+        key for key in row_keys
+        if not (isinstance(key, tuple) and key and key[0] == "__subtotal__")
+    ]
+    if spec.subtotals and len(spec.rows) > 1:
+        body_keys = list(row_keys)
+    for row_key in body_keys:
+        is_sub = isinstance(row_key, tuple) and row_key and row_key[0] == "__subtotal__"
+        lookup_key = row_key[1] if is_sub else row_key
+        if is_sub:
+            by_col = result.row_subtotals.get(lookup_key)
+            totals = by_col.get(None, result.grand_total) if isinstance(by_col, dict) \
+                else (by_col or result.grand_total)
+        else:
+            totals = result.row_totals.get(lookup_key, result.grand_total)
+        if values_on_columns:
+            _write_value_row(
+                cells, cursor, start_col, (), totals, captions, True,
+                ROLE_SUBTOTAL if is_sub else ROLE_GRAND_TOTAL)
+            cursor += 1
+        else:
+            for measure_index, measure in enumerate(totals):
+                _put(cells, cursor + measure_index, start_col, measure.value,
+                     ROLE_GRAND_TOTAL, number_format=measure.number_format,
+                     field=measure.field)
+            cursor += len(totals)
+    if spec.row_grand_totals:
+        if values_on_columns:
+            _write_value_row(
+                cells, cursor, start_col, (), result.grand_total, captions,
+                True, ROLE_GRAND_TOTAL)
+        else:
+            for measure_index, measure in enumerate(result.grand_total):
+                _put(cells, cursor + measure_index, start_col, measure.value,
+                     ROLE_GRAND_TOTAL, number_format=measure.number_format,
+                     field=measure.field)
 
 
 def _write_label_row(cells, spec, row, origin_col, key, role, suffix=""):

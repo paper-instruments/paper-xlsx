@@ -110,12 +110,12 @@ def project_pivot(node, cache, source=None, workbook=None):
     shared_values = details.get("shared_items") or ()
 
     rows = _project_axis(
-        node.row_fields, field_names, shared_counts, details.get("row_items"),
-        node.identity.pivot_part, "rows", reasons)
+        node.row_fields, field_names, shared_counts, details.get("row_items_by_field"),
+        shared_values, node.identity.pivot_part, "rows", reasons)
     columns = _project_axis(
         node.column_fields, field_names, shared_counts,
-        details.get("column_items"), node.identity.pivot_part, "columns",
-        reasons)
+        details.get("column_items_by_field"), shared_values,
+        node.identity.pivot_part, "columns", reasons)
     filters = _project_filters(
         details.get("page_fields") or _page_fields_from_node(node),
         field_names, shared_counts, shared_values,
@@ -261,11 +261,10 @@ def _destination_from_ref(ref):
 
 
 def _project_axis(indexes, field_names, shared_counts, item_indexes,
-                  part, axis, reasons):
+                  shared_values, part, axis, reasons):
     if not indexes:
         return ()
     fields = []
-    visible_position = 0
     for index in indexes:
         if index == -2:
             continue
@@ -273,24 +272,29 @@ def _project_axis(indexes, field_names, shared_counts, item_indexes,
         if name is None:
             return None
         items = None
-        chosen = None if item_indexes is None else item_indexes[visible_position] \
-            if visible_position < len(item_indexes) else None
-        visible_position += 1
+        chosen = None if item_indexes is None else item_indexes.get(index)
+        catalog = shared_values[index] if index < len(shared_values) else ()
         if chosen:
-            values = []
-            count = shared_counts[index] if index < len(shared_counts) else 0
-            for item_index in chosen:
-                if item_index < 0 or (count and item_index >= count):
-                    reasons.append(_reason(
-                        "invalid-item-index",
-                        part=part,
-                        axis=axis,
-                        field=name,
-                        index=str(item_index),
-                    ))
-                    return None
-                values.append(item_index)
-            items = tuple(values) if values else None
+            if list(chosen) == list(range(len(catalog))):
+                items = None
+            else:
+                values = []
+                count = shared_counts[index] if index < len(shared_counts) else 0
+                for item_index in chosen:
+                    if item_index < 0 or (count and item_index >= count):
+                        reasons.append(_reason(
+                            "invalid-item-index",
+                            part=part,
+                            axis=axis,
+                            field=name,
+                            index=str(item_index),
+                        ))
+                        return None
+                    if item_index < len(catalog):
+                        values.append(catalog[item_index])
+                    else:
+                        values.append(item_index)
+                items = tuple(values) if values else None
         fields.append(PivotAxisField(name, items=items))
     return tuple(fields)
 
@@ -400,6 +404,8 @@ def _load_details(node, cache, source):
         "shared_items": (),
         "row_items": None,
         "column_items": None,
+        "row_items_by_field": {},
+        "column_items_by_field": {},
         "page_includes": {},
     }
     if not source or not node.identity.pivot_part:
@@ -461,6 +467,8 @@ def _enrich_from_pivot(root, details):
     fields = _children(container, "pivotField") if container is not None else []
     row_indexes = []
     column_indexes = []
+    row_items_by_field = {}
+    column_items_by_field = {}
     page_includes = {}
     subtotals = False
     for field_index, field in enumerate(fields):
@@ -468,10 +476,12 @@ def _enrich_from_pivot(root, details):
         items = tuple(_item_indexes(field))
         if axis == "axisRow":
             row_indexes.append(items)
+            row_items_by_field[field_index] = items
             if _bool_attr(field, "defaultSubtotal", default=True):
                 subtotals = True
         elif axis == "axisCol":
             column_indexes.append(items)
+            column_items_by_field[field_index] = items
         elif axis == "axisPage":
             page_includes[field_index] = tuple(
                 _visible_item_indexes(field))
@@ -479,6 +489,8 @@ def _enrich_from_pivot(root, details):
         details["row_items"] = tuple(row_indexes)
     if column_indexes:
         details["column_items"] = tuple(column_indexes)
+    details["row_items_by_field"] = row_items_by_field
+    details["column_items_by_field"] = column_items_by_field
     details["page_includes"] = page_includes
     details["subtotals"] = subtotals
 

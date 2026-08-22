@@ -192,8 +192,16 @@ def _shared_flags(items):
         flags["minValue"] = float(min(numbers))
         flags["maxValue"] = float(max(numbers))
     if dates:
-        flags["minDate"] = min(dates)
-        flags["maxDate"] = max(dates)
+        normalized = []
+        for value in dates:
+            if isinstance(value, datetime):
+                normalized.append(value)
+            elif isinstance(value, date):
+                normalized.append(datetime(value.year, value.month, value.day))
+            else:
+                normalized.append(value)
+        flags["minDate"] = min(normalized)
+        flags["maxDate"] = max(normalized)
     return flags
 
 
@@ -224,17 +232,20 @@ def _table_definition(plan, cache_id, workbook=None):
     values_field = _needs_values_field(spec)
 
     pivot_fields = []
+    item_lookups = {}
     for name in plan.fields:
         index = plan.field_indexes[name]
         shared = plan.shared_items[index]
         if name in row_names:
             axis = spec.rows[row_names.index(name)]
-            pivot_fields.append(_axis_pivot_field(
-                name, "axisRow", shared, axis, spec, flags))
+            field, item_lookups[name] = _axis_pivot_field(
+                name, "axisRow", shared, axis, spec, flags)
+            pivot_fields.append(field)
         elif name in col_names:
             axis = spec.columns[col_names.index(name)]
-            pivot_fields.append(_axis_pivot_field(
-                name, "axisCol", shared, axis, spec, flags))
+            field, item_lookups[name] = _axis_pivot_field(
+                name, "axisCol", shared, axis, spec, flags)
+            pivot_fields.append(field)
         elif name in filter_names:
             item = spec.filters[filter_names.index(name)]
             pivot_fields.append(_filter_pivot_field(
@@ -258,7 +269,7 @@ def _table_definition(plan, cache_id, workbook=None):
         col_fields.append(RowColField(x=_VALUES_FIELD))
 
     row_items = _item_tuples(
-        row_keys, row_names, plan, lookups, spec.values if values_on_rows
+        row_keys, row_names, item_lookups, spec.values if values_on_rows
         and values_field else None)
     if spec.row_grand_totals:
         if values_on_rows and values_field:
@@ -271,7 +282,7 @@ def _table_definition(plan, cache_id, workbook=None):
     col_keys = list(plan.aggregate.column_keys)
     if spec.columns:
         col_items = _item_tuples(
-            col_keys, col_names, plan, lookups,
+            col_keys, col_names, item_lookups,
             spec.values if (not values_on_rows and values_field) else None)
         if spec.column_grand_totals:
             if not values_on_rows and values_field:
@@ -392,18 +403,20 @@ def _needs_values_field(spec):
 
 
 def _axis_pivot_field(name, axis, shared, axis_field, spec, flags):
-    items = _field_items(shared, axis_field.items)
-    return PivotField(
+    items, item_lookup = _field_items(shared, axis_field.items)
+    field = PivotField(
         name=name,
         axis=axis,
         compact=flags["field_compact"],
         outline=flags["field_outline"],
         subtotalTop=spec.layout != "tabular",
-        defaultSubtotal=bool(spec.subtotals and axis == "axisRow"
-                             and len(spec.rows) > 1),
+        defaultSubtotal=bool(
+            spec.subtotals and axis == "axisRow" and len(spec.rows) > 1
+            and spec.rows[-1].field != name),
         showAll=False,
         items=items,
     )
+    return field, item_lookup
 
 
 def _filter_pivot_field(name, shared, item, flags):
@@ -434,7 +447,7 @@ def _field_items(shared, explicit):
         order = [lookup[typed_value(value)] for value in explicit]
     items = [FieldItem(x=position) for position in order]
     items.append(FieldItem(t="default"))
-    return items
+    return items, {shared[position]: index for index, position in enumerate(order)}
 
 
 def _selected_items(item, shared):
@@ -454,15 +467,15 @@ def _visible_row_keys(plan):
     return keys
 
 
-def _item_tuples(keys, field_names, plan, lookups, measures):
+def _item_tuples(keys, field_names, item_lookups, measures):
     items = []
     for key in keys:
         if isinstance(key, tuple) and key and key[0] == "__subtotal__":
             prefix = key[1]
-            indexes = _key_indexes(prefix, field_names, plan, lookups)
+            indexes = _key_indexes(prefix, field_names, item_lookups)
             items.append(RowColItem(t="default", x=indexes))
             continue
-        indexes = _key_indexes(key, field_names, plan, lookups)
+        indexes = _key_indexes(key, field_names, item_lookups)
         if measures is None:
             items.append(RowColItem(x=indexes))
         else:
@@ -472,15 +485,14 @@ def _item_tuples(keys, field_names, plan, lookups, measures):
     return items
 
 
-def _key_indexes(key, field_names, plan, lookups):
+def _key_indexes(key, field_names, item_lookups):
     if not field_names:
         return ()
     indexes = []
     for offset, name in enumerate(field_names):
         if offset >= len(key):
             break
-        field_index = plan.field_indexes[name]
-        indexes.append(Index(v=lookups[field_index][key[offset]]))
+        indexes.append(Index(v=item_lookups[name][key[offset]]))
     return tuple(indexes)
 
 

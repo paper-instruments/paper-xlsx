@@ -184,7 +184,8 @@ def test_array_formula_destination_is_atomic(fixture_copy):
     _assert_untouched(wb, before, src)
 
 
-def test_formula_source_is_atomic(fixture_copy):
+def test_formula_source_without_oracle_is_atomic(fixture_copy, monkeypatch):
+    monkeypatch.setattr("openpyxl.oracle.find_soffice", lambda: None)
     src = fixture_copy(_TABLE)
     wb, before = _load(src)
     wb["Data"]["B2"] = "=1+19"
