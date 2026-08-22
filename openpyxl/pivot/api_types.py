@@ -307,3 +307,54 @@ class PivotSpec:
         if self.style is not None:
             payload["style"] = self.style
         return payload
+
+
+ADOPTION_TO_DICT_SCHEMA = "pivot_adoption_qualification"
+ADOPTION_TO_DICT_VERSION = 1
+ADOPTION_STRATEGIES = ("dedicated-replacement", "shared-isolation")
+
+
+@dataclass(frozen=True)
+class PivotAdoptionQualification:
+    """Read-only eligibility of one foreign pivot for explicit adoption.
+
+    This type does not grant mutation. ``eligible=True`` means no known
+    structural blocker remains; it is not a promise that operation-time
+    calculation or later ``adopt()`` will succeed. The schema is independent
+    of ``PivotTable.to_dict()``.
+    """
+
+    eligible: bool
+    strategy: str | None = None
+    requires_calculation: bool = False
+    calculation_engine: str | None = None
+    operation_constraints: tuple = ()
+    reasons: tuple = ()
+
+    def __post_init__(self):
+        if self.strategy is not None and self.strategy not in ADOPTION_STRATEGIES:
+            raise ValueError(
+                "PivotAdoptionQualification.strategy must be "
+                "'dedicated-replacement', 'shared-isolation', or None")
+        if self.calculation_engine is not None \
+                and self.calculation_engine != "libreoffice":
+            raise ValueError(
+                "PivotAdoptionQualification.calculation_engine must be "
+                "'libreoffice' or None")
+        object.__setattr__(
+            self, "operation_constraints", tuple(self.operation_constraints))
+        object.__setattr__(self, "reasons", tuple(self.reasons))
+
+    def to_dict(self):
+        return {
+            "schema": ADOPTION_TO_DICT_SCHEMA,
+            "version": ADOPTION_TO_DICT_VERSION,
+            "eligible": self.eligible,
+            "strategy": self.strategy,
+            "requires_calculation": self.requires_calculation,
+            "calculation_engine": self.calculation_engine,
+            "operation_constraints": [
+                item.to_dict() for item in self.operation_constraints
+            ],
+            "reasons": [item.to_dict() for item in self.reasons],
+        }

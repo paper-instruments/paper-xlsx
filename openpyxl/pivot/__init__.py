@@ -9,6 +9,7 @@ and are not re-exported here.
 
 from openpyxl.pivot.api import PivotTable
 from openpyxl.pivot.api_types import (
+    PivotAdoptionQualification,
     PivotAxisField,
     PivotCapabilities,
     PivotItemFilter,
@@ -18,6 +19,7 @@ from openpyxl.pivot.api_types import (
 )
 
 __all__ = (
+    "PivotAdoptionQualification",
     "PivotAxisField",
     "PivotCapabilities",
     "PivotItemFilter",

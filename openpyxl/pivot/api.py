@@ -318,6 +318,18 @@ class PivotTable:
     def qualification_reasons(self):
         return self._state().qualification.reasons
 
+    def qualify_adoption(self):
+        """Return read-only adoption eligibility for this pivot.
+
+        Ordinary ``Worksheet.pivots`` inspection stays metadata-bounded.
+        This method reconstructs persisted-cache ownership and scans the
+        selected pivot's dependency closure. It does not mutate the
+        workbook and does not invoke LibreOffice.
+        """
+        from openpyxl.pivot.adopt_qualify import qualify_adoption
+
+        return qualify_adoption(self)
+
     @property
     def refresh_on_open_scope(self):
         return self._state().qualification.refresh_on_open_scope

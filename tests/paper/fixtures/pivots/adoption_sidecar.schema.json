@@ -1,0 +1,26 @@
+{
+  "schema": "paper-xlsx-pivot-adoption-sidecar",
+  "version": 1,
+  "note": "Excel-authored binaries are required before any sidecar may claim eligible=true.",
+  "required": [
+    "producer",
+    "producer_version",
+    "authoring_steps",
+    "excel_authored",
+    "expected_pivot_graph",
+    "expected_pivot_to_dict",
+    "expected_adoption_qualification",
+    "expected_old_output_role_map",
+    "expected_dependencies"
+  ],
+  "expected_adoption_qualification": {
+    "schema": "pivot_adoption_qualification",
+    "version": 1,
+    "eligible": false,
+    "strategy": "dedicated-replacement | shared-isolation | null",
+    "requires_calculation": false,
+    "calculation_engine": "libreoffice | null",
+    "operation_constraints": [],
+    "reasons": []
+  }
+}

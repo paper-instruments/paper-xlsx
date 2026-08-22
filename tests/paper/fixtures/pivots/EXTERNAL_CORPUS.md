@@ -31,6 +31,10 @@ external-corpus gap, not a license to fabricate Excel provenance.
 | `excel_template_pivot.xltx` | Template targeted-pivot API refusal | pending human/Excel authoring |
 | `excel_strict_basic.xlsx` | OOXML Strict targeted-pivot API refusal | pending human/Excel authoring |
 
+Adoption qualification adds a second pending corpus in
+`ADOPTION_CORPUS.md`. Those binaries are also Excel-authored or they are
+absent. Synthetic packages used by PR 9 tests are not listed here.
+
 When a binary is added, commit its sidecar and `MANIFEST.sha256` in the same
 change. Sidecars must include producer, exact version, authoring steps,
 `expected_pivot_graph`, `expected_pivot_to_dict`,

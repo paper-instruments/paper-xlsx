@@ -31,6 +31,11 @@ Changes
   without publishing LibreOffice workbook bytes. Foreign pivots remain
   inspectable and may only request refresh-on-open when qualified. Shared
   caches disable managed refresh, layout/update, move, repoint, and delete.
+* Add read-only ``PivotTable.qualify_adoption()`` and
+  ``PivotAdoptionQualification`` for targeted foreign-pivot eligibility.
+  Ordinary inspection stays metadata-bounded. No foreign fixture is eligible
+  until the managed Excel evidence gate is filled. ``adopt()`` is not
+  present.
 
 Bugfixes
 --------

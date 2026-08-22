@@ -547,6 +547,25 @@ def test_graph_resolves_custom_filenames_and_relative_targets():
     assert graph.caches_by_part["xl/custom/cache-a.xml"].valid
 
 
+def test_adoption_qualification_resolves_custom_part_names(tmp_path):
+    payload = _basic_package(
+        cache_part="xl/custom/cache-a.xml",
+        records_part="xl/custom/records-a.xml",
+        pivot_part="xl/custom/report.xml",
+        cache_target="/xl/custom/cache-a.xml",
+        pivot_target="../custom/report.xml",
+    )
+    path = _write_package(tmp_path, "custom.xlsx", payload)
+    wb = load_workbook(path, preserve=True)
+    result = wb["Summary"].pivots["SalesByRegion"].qualify_adoption()
+    assert result.strategy == "dedicated-replacement"
+    assert result.eligible is False
+    assert any(
+        item.code == "foreign-managed-equivalence-unproved"
+        for item in result.reasons
+    )
+
+
 def test_graph_indexes_duplicate_names_by_sheet_identity():
     payload = _basic_package(
         extra_pivots=(
