@@ -642,11 +642,11 @@ class RowColItem(Serialisable):
 
     tagname = "i"
 
-    t = Set(values=(['data', 'default', 'sum', 'countA', 'avg', 'max', 'min',
-                     'product', 'count', 'stdDev', 'stdDevP', 'var', 'varP', 'grand',
-                     'blank']))
-    r = Integer()
-    i = Integer()
+    t = NoneSet(values=(['data', 'default', 'sum', 'countA', 'avg', 'max', 'min',
+                         'product', 'count', 'stdDev', 'stdDevP', 'var', 'varP',
+                         'grand', 'blank']))
+    r = Integer(allow_none=True)
+    i = Integer(allow_none=True)
     x = Sequence(expected_type=Index, attribute="v")
 
     __elements__ = ('x',)
@@ -692,9 +692,9 @@ class FieldItem(Serialisable):
     tagname = "item"
 
     n = String(allow_none=True)
-    t = Set(values=(['data', 'default', 'sum', 'countA', 'avg', 'max', 'min',
-                     'product', 'count', 'stdDev', 'stdDevP', 'var', 'varP', 'grand',
-                     'blank']))
+    t = NoneSet(values=(['data', 'default', 'sum', 'countA', 'avg', 'max', 'min',
+                         'product', 'count', 'stdDev', 'stdDevP', 'var', 'varP',
+                         'grand', 'blank']))
     h = Bool(allow_none=True)
     s = Bool(allow_none=True)
     sd = Bool(allow_none=True)

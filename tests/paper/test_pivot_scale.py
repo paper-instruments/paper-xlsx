@@ -146,7 +146,7 @@ def test_readme_pivot_example_is_runnable(tmp_path):
     handle = reopened["Summary"].pivots["ByRegion"]
     assert handle.origin == "paper"
     assert handle.capabilities.can_edit_layout is True
-    assert reopened["Summary"]["B2"].value == 99
+    assert reopened["Summary"]["B3"].value == 99
 
 
 def test_excel_runner_is_opt_in_and_not_a_runtime_dependency(monkeypatch):

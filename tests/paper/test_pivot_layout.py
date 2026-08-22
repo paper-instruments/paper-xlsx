@@ -71,22 +71,23 @@ def test_tabular_one_row_field_one_measure():
     plan = _plan()
     grid = _grid(plan)
     assert plan.output.destination == "E3"
-    assert plan.output.ref == "E3:F6"
-    assert plan.output.first_header_row == 1
+    assert plan.output.ref == "E3:F7"
+    assert plan.output.first_header_row == 2
     assert plan.output.first_data_row == 2
     assert plan.output.first_data_col == 1
-    assert grid[(3, 5)] == "Region"
-    assert grid[(3, 6)] == "Sum"
-    assert grid[(4, 5)] == "East"
-    assert grid[(4, 6)] == 10
-    assert grid[(5, 5)] == "West"
-    assert grid[(5, 6)] == 7
-    assert grid[(6, 5)] == "Grand Total"
-    assert grid[(6, 6)] == 17
+    assert grid[(3, 5)] == "Sum"
+    assert grid[(4, 5)] == "Region"
+    assert grid[(4, 6)] == "Total"
+    assert grid[(5, 5)] == "East"
+    assert grid[(5, 6)] == 10
+    assert grid[(6, 5)] == "West"
+    assert grid[(6, 6)] == 7
+    assert grid[(7, 5)] == "Grand Total"
+    assert grid[(7, 6)] == 17
     roles = {(cell.row, cell.column): cell.role for cell in plan.output.cells}
-    assert roles[(3, 6)] == ROLE_HEADER
-    assert roles[(4, 6)] == ROLE_VALUE
-    assert roles[(6, 6)] == ROLE_GRAND_TOTAL
+    assert roles[(4, 6)] == ROLE_HEADER
+    assert roles[(5, 6)] == ROLE_VALUE
+    assert roles[(7, 6)] == ROLE_GRAND_TOTAL
 
 
 def test_multiple_measures_and_values_axis_orientations():
@@ -95,10 +96,10 @@ def test_multiple_measures_and_values_axis_orientations():
         PivotMeasure("Amount", aggregate="count", caption="Count"),
     ))
     assert columns.output.column_count == 3
-    assert _grid(columns)[(3, 6)] == "Sum"
-    assert _grid(columns)[(3, 7)] == "Count"
-    assert _grid(columns)[(4, 6)] == 10
-    assert _grid(columns)[(4, 7)] == 1
+    assert _grid(columns)[(4, 6)] == "Sum"
+    assert _grid(columns)[(4, 7)] == "Count"
+    assert _grid(columns)[(5, 6)] == 10
+    assert _grid(columns)[(5, 7)] == 1
 
     rows = _plan(
         values=(
@@ -137,19 +138,20 @@ def test_values_on_rows_preserve_dimension_labels_and_measure_captions():
 
     plan = plan_pivot(spec, snapshot)
 
-    assert plan.output.ref == "E3:H9"
-    assert plan.output.row_count == 7
+    assert plan.output.ref == "E3:H10"
+    assert plan.output.row_count == 8
     assert plan.output.column_count == 4
     assert plan.output.first_data_row == 2
     assert plan.output.first_data_col == 2
     assert _matrix(plan) == [
+        [None, None, "Product", None],
         ["Region", "Values", "A", "B"],
         ["East", "Sum", 10, 4],
         [None, "Count", 1, 1],
         ["West", "Sum", 7, None],
         [None, "Count", 1, None],
-        ["Grand Total", "Sum", 17, 4],
-        [None, "Count", 2, 1],
+        ["Total Sum", None, 17, 4],
+        ["Total Count", None, 2, 1],
     ]
 
 
@@ -181,15 +183,16 @@ def test_nested_column_fields_materialize_every_header_level():
 
     plan = plan_pivot(spec, snapshot)
 
-    assert plan.output.ref == "B4:H8"
-    assert plan.output.row_count == 5
+    assert plan.output.ref == "B4:H9"
+    assert plan.output.row_count == 6
     assert plan.output.column_count == 7
     assert plan.output.first_data_row == 4
     assert plan.output.first_data_col == 1
     assert _matrix(plan) == [
-        ["Region", 2024, 2024, 2024, 2024, 2025, 2025],
-        [None, "Q1", "Q1", "Q2", "Q2", "Q1", "Q1"],
-        [None, "Revenue", "Units", "Revenue", "Units", "Revenue", "Units"],
+        [None, "Year", "Quarter", "Values", None, None, None],
+        [None, 2024, None, None, None, 2025, None],
+        [None, "Q1", None, "Q2", None, "Q1", None],
+        ["Region", "Revenue", "Units", "Revenue", "Units", "Revenue", "Units"],
         ["East", 10, 1, 4, 2, None, None],
         ["West", None, None, None, None, 7, 3],
     ]
@@ -224,7 +227,7 @@ def test_subtotals_on_values_axis_rows_stay_inside_ref():
     assert grid[(east_total_row + 1, 8)] == 2
     grand_row = min(
         cell.row for cell in plan.output.cells
-        if cell.value == "Grand Total")
+        if cell.value == "Total Sum")
     assert grand_row == max(subtotal_rows) + 1
     assert grid[(grand_row, 8)] == 21
     assert grid[(grand_row + 1, 8)] == 3
@@ -250,6 +253,33 @@ def test_compact_outline_and_tabular_label_columns():
     assert compact.output.first_data_col == 1
     assert outline.output.first_data_col == 2
     assert "layout-coordinates-provisional" in tabular.warnings
+
+
+def test_outline_subtotals_match_excel_top_of_group_geometry():
+    plan = _plan(
+        data=[
+            ["East", "A", 10],
+            ["East", "B", 4],
+            ["West", "A", 7],
+            ["West", "B", 6],
+        ],
+        rows=(PivotAxisField("Region"), PivotAxisField("Product")),
+        layout="outline",
+        subtotals=True,
+    )
+    assert plan.output.ref == "E3:G10"
+    assert plan.output.first_header_row == 1
+    assert plan.output.first_data_row == 1
+    assert _matrix(plan) == [
+        ["Region", "Product", "Sum"],
+        ["East", None, 14],
+        [None, "A", 10],
+        [None, "B", 4],
+        ["West", None, 13],
+        [None, "A", 7],
+        [None, "B", 6],
+        ["Grand Total", None, 27],
+    ]
 
 
 def test_output_beyond_sheet_edge_refuses():

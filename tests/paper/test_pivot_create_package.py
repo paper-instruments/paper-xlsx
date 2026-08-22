@@ -8,9 +8,11 @@ import pytest
 from openpyxl import load_workbook
 from openpyxl.errors import UnsupportedStructureError
 from openpyxl.pivot.cache import CacheDefinition
+from openpyxl.pivot.fields import Number
 from openpyxl.pivot.qualify import PAPER_TAG
 from openpyxl.pivot.record import RecordList
 from openpyxl.pivot.table import TableDefinition
+from openpyxl.xml.constants import SHEET_MAIN_NS
 from openpyxl.xml.functions import fromstring
 
 from .support.harness import assert_part_budget, save_and_reopen
@@ -48,25 +50,27 @@ def _create_by_region(ws, source="RegionTable", destination="E3", name="ByRegion
 def _output_grid(ws):
     return {
         (row, column): ws.cell(row, column).value
-        for row in range(3, 9)
+        for row in range(3, 10)
         for column in range(5, 7)
     }
 
 
 def _expected_grid():
     return {
-        (3, 5): "Region",
-        (3, 6): "Sum of Amount",
-        (4, 5): "North",
-        (4, 6): 20,
-        (5, 5): "South",
-        (5, 6): 30,
-        (6, 5): "East",
-        (6, 6): 40,
-        (7, 5): "West",
-        (7, 6): 50,
-        (8, 5): "Grand Total",
-        (8, 6): 140,
+        (3, 5): "Sum of Amount",
+        (3, 6): None,
+        (4, 5): "Region",
+        (4, 6): "Total",
+        (5, 5): "North",
+        (5, 6): 20,
+        (6, 5): "South",
+        (6, 6): 30,
+        (7, 5): "East",
+        (7, 6): 40,
+        (8, 5): "West",
+        (8, 6): 50,
+        (9, 5): "Grand Total",
+        (9, 6): 140,
     }
 
 
@@ -77,7 +81,7 @@ def test_create_from_table_saves_and_reopens(fixture_copy):
     assert handle.name == "ByRegion"
     assert handle.origin == "paper"
     assert handle.valid is True
-    assert handle.output_range == "E3:F8"
+    assert handle.output_range == "E3:F9"
     assert handle.capabilities.can_delete is True
     assert _output_grid(wb["Data"]) == _expected_grid()
 
@@ -129,19 +133,44 @@ def test_created_parts_parse_and_indexes_match(fixture_copy):
     assert len(cache.cacheFields) == 2
     assert cache.cacheFields[0].name == "Region"
     assert cache.cacheFields[0].sharedItems.count == 4
+    assert cache.cacheFields[1].sharedItems.count == 0
+    assert len(cache.cacheFields[1].sharedItems._fields) == 0
+    cache_root = fromstring(
+        parts["xl/pivotCache/pivotCacheDefinition1.xml"])
+    cache_fields = cache_root.find("{%s}cacheFields" % SHEET_MAIN_NS)
+    region_items = cache_fields[0].find("{%s}sharedItems" % SHEET_MAIN_NS)
+    amount_items = cache_fields[1].find("{%s}sharedItems" % SHEET_MAIN_NS)
+    assert "containsString" not in region_items.attrib
+    assert "containsNonDate" not in region_items.attrib
+    assert amount_items.attrib["containsString"] == "0"
+    assert amount_items.attrib["containsSemiMixedTypes"] == "0"
+    assert amount_items.attrib["containsNumber"] == "1"
     assert len(records.r) == 4
+    assert [record._fields[1].v for record in records.r] == [
+        20, 30, 40, 50]
+    assert all(isinstance(record._fields[1], Number) for record in records.r)
     assert table.name == "ByRegion"
-    assert table.cacheId == 0
+    assert table.cacheId == 1
+    assert table.id is None
     assert table.tag == PAPER_TAG
-    assert table.location.ref == "E3:F8"
-    assert table.location.firstHeaderRow == 1
+    assert table.location.ref == "E3:F9"
+    assert table.location.firstHeaderRow == 2
     assert table.location.firstDataRow == 2
     assert table.location.firstDataCol == 1
     assert len(table.pivotFields) == 2
+    table_root = fromstring(parts["xl/pivotTables/pivotTable1.xml"])
+    pivot_fields = table_root.find("{%s}pivotFields" % SHEET_MAIN_NS)
+    assert "defaultSubtotal" not in pivot_fields[0].attrib
     assert len(table.rowFields) == 1
     assert table.rowFields[0].x == 0
     assert len(table.rowItems) == 5
+    row_items = table_root.find("{%s}rowItems" % SHEET_MAIN_NS)
+    assert row_items[0].attrib == {}
+    assert row_items[0][0].attrib == {}
+    assert row_items[1][0].attrib == {"v": "1"}
     assert len(table.dataFields) == 1
+    assert table.dataFields[0].baseField == 0
+    assert table.dataFields[0].baseItem == 0
     assert table.dataFields[0].fld == 1
     assert table.dataFields[0].subtotal == "sum"
 
@@ -155,7 +184,7 @@ def test_relationships_and_content_types(fixture_copy):
     with zipfile.ZipFile(dest) as archive:
         workbook = archive.read("xl/workbook.xml")
         assert b"<pivotCaches" in workbook
-        assert b'cacheId="0"' in workbook
+        assert b'cacheId="1"' in workbook
         types = archive.read("[Content_Types].xml")
         assert b"pivotTable+xml" in types
         assert b"pivotCacheDefinition+xml" in types
@@ -182,7 +211,7 @@ def test_receipt_reports_pivot_created(fixture_copy):
     assert len(created) == 1
     assert created[0]["name"] == "ByRegion"
     assert created[0]["sheet"] == "Data"
-    assert created[0]["output_range"] == "E3:F8"
+    assert created[0]["output_range"] == "E3:F9"
     assert set(created[0]["parts"]) == _EXPECTED_ADDED
 
 
@@ -266,7 +295,7 @@ def test_create_skips_gapped_and_custom_part_names(tmp_path):
     assert "xl/pivotCache/pivotCacheDefinition1.xml" in names
     table = TableDefinition.from_tree(fromstring(
         part_payloads(dest)["xl/pivotTables/pivotTable1.xml"]))
-    assert table.cacheId == 0
+    assert table.cacheId == 2
     assert table.tag == PAPER_TAG
 
 

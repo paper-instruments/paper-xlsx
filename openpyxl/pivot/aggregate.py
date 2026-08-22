@@ -379,10 +379,14 @@ def _default_caption(measure):
 
 
 def display_item(value):
-    """Provisional visible caption. Blank is None, not English '(blank)'."""
+    """Return the visible caption Excel uses for a cached dimension item."""
     if value is None or (isinstance(value, TypedValue)
                          and value.kind == KIND_BLANK):
-        return None
+        return "(blank)"
     if isinstance(value, TypedValue):
+        if value.kind == KIND_BOOLEAN:
+            return "TRUE" if value.value else "FALSE"
         return value.value
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
     return value

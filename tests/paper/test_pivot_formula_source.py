@@ -58,7 +58,7 @@ def test_formula_source_uses_calculated_values(tmp_path, monkeypatch):
         name="ByRegion", source="Sales", destination="A1",
         rows=["Region"], values=["Amount"])
     wb = save_and_reopen(wb, str(tmp_path / "out.xlsx"), preserve=True)
-    assert wb["Summary"]["B2"].value == 11
+    assert wb["Summary"]["B3"].value == 11
 
 
 def test_formula_source_includes_unsaved_edits(tmp_path, monkeypatch):

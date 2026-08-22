@@ -367,9 +367,12 @@ def _project_values(data_fields, field_names, part, reasons, workbook=None):
         show_data_as = item.get("show_data_as") or "normal"
         base_field = item.get("base_field")
         base_item = item.get("base_item")
-        if show_data_as != "normal" \
-                or base_field not in (None, "-1") \
-                or base_item not in (None, "1048832"):
+        base_pair = (base_field, base_item)
+        supported_base = (
+            base_field in (None, "-1")
+            and base_item in (None, "1048832")
+        ) or base_pair == ("0", "0")
+        if show_data_as != "normal" or not supported_base:
             reasons.append(_reason(
                 "unsupported-data-field-semantics",
                 part=part,
@@ -477,13 +480,13 @@ def _enrich_from_pivot(root, details):
     if root is None:
         return
     compact = _bool_attr(root, "compact", default=True)
-    outline = _bool_attr(root, "outline", default=True)
+    grid_drop_zones = _bool_attr(root, "gridDropZones", default=False)
     if compact:
         details["layout"] = "compact"
-    elif outline:
-        details["layout"] = "outline"
-    else:
+    elif grid_drop_zones:
         details["layout"] = "tabular"
+    else:
+        details["layout"] = "outline"
     if _bool_attr(root, "dataOnRows", default=False):
         details["values_axis"] = "rows"
     details["row_grand_totals"] = _bool_attr(
@@ -519,13 +522,19 @@ def _enrich_from_pivot(root, details):
     column_items_by_field = {}
     page_includes = {}
     subtotals = False
+    row_axis_fields = [
+        index for index, field in enumerate(fields)
+        if _attr(field, "axis") == "axisRow"
+    ]
+    outer_row_fields = set(row_axis_fields[:-1])
     for field_index, field in enumerate(fields):
         axis = _attr(field, "axis")
         items = tuple(_item_indexes(field))
         if axis == "axisRow":
             row_indexes.append(items)
             row_items_by_field[field_index] = items
-            if _bool_attr(field, "defaultSubtotal", default=True):
+            if field_index in outer_row_fields and _bool_attr(
+                    field, "defaultSubtotal", default=True):
                 subtotals = True
         elif axis == "axisCol":
             column_indexes.append(items)

@@ -133,7 +133,6 @@ def create_pivot(worksheet, name, source, destination, rows, values,
             plan,
             allocation.cache_id,
             workbook,
-            cache_relationship_id=allocation.pivot_cache_relationship_id,
             records_relationship_id=allocation.records_relationship_id,
         )
         _checkpoint("built", workbook)

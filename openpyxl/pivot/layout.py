@@ -71,9 +71,12 @@ def layout_result(spec, result, destination, limits=None):
     body_row_keys = list(result.row_keys)
     body_col_keys = list(result.column_keys)
     if spec.subtotals and row_depth > 1:
-        body_row_keys = _with_subtotal_rows(body_row_keys, result.row_subtotals)
+        body_row_keys = _with_subtotal_rows(
+            body_row_keys, result.row_subtotals,
+            totals_first=spec.layout in ("compact", "outline"))
 
-    header_rows = _header_row_count(col_depth, measure_count, values_on_columns)
+    header_rows = _header_row_count(
+        spec, col_depth, measure_count, values_on_columns)
     label_cols = _label_column_count(spec.layout, row_depth)
     if not values_on_columns and row_depth:
         label_cols += 1
@@ -147,8 +150,8 @@ def layout_result(spec, result, destination, limits=None):
     return PivotOutput(
         cells=ordered,
         ref=ref,
-        first_header_row=1,
-        first_data_row=header_rows + 1,
+        first_header_row=_first_header_row(spec, values_on_columns),
+        first_data_row=header_rows,
         first_data_col=label_cols,
         row_count=total_rows,
         column_count=total_cols,
@@ -178,11 +181,19 @@ def _coord(column, row):
     return "%s%s" % (get_column_letter(column), row)
 
 
-def _header_row_count(col_depth, measure_count, values_on_columns):
+def _header_row_count(spec, col_depth, measure_count, values_on_columns):
+    if values_on_columns and spec.layout == "tabular":
+        return max(2, col_depth + (2 if measure_count > 1 else 1))
     if not values_on_columns:
-        return max(1, col_depth)
+        return max(1, col_depth + 1 if col_depth else 1)
     extra = 1 if measure_count > 1 or col_depth == 0 else 0
     return max(1, col_depth + extra)
+
+
+def _first_header_row(spec, values_on_columns):
+    if values_on_columns and spec.layout == "tabular" and not spec.columns:
+        return 2
+    return 1
 
 
 def _label_column_count(layout, row_depth):
@@ -193,10 +204,20 @@ def _label_column_count(layout, row_depth):
     return row_depth
 
 
-def _with_subtotal_rows(row_keys, subtotals):
+def _with_subtotal_rows(row_keys, subtotals, totals_first=False):
     if not subtotals:
         return list(row_keys)
     ordered = []
+    if totals_first:
+        previous = None
+        for key in row_keys:
+            for depth in range(1, len(key)):
+                prefix = key[:depth]
+                if previous is None or previous[:depth] != prefix:
+                    ordered.append(("__subtotal__", prefix))
+            ordered.append(key)
+            previous = key
+        return ordered
     for index, key in enumerate(row_keys):
         ordered.append(key)
         for depth in range(len(key) - 1, 0, -1):
@@ -209,14 +230,23 @@ def _with_subtotal_rows(row_keys, subtotals):
 
 def _write_headers(cells, spec, origin_row, origin_col, header_rows,
                    label_cols, column_keys, captions, values_on_columns):
+    if values_on_columns and spec.layout == "tabular":
+        _write_expanded_headers(
+            cells, spec, origin_row, origin_col, header_rows, label_cols,
+            column_keys, captions)
+        return
+    if not values_on_columns and spec.columns:
+        _write_values_on_rows_headers(
+            cells, spec, origin_row, origin_col, header_rows, label_cols,
+            column_keys)
+        return
     if spec.rows and spec.layout != "compact":
         for index, field in enumerate(spec.rows):
             _put(cells, origin_row, origin_col + index, field.field,
                  ROLE_HEADER, field=field.field)
     elif spec.rows:
-        _put(cells, origin_row, origin_col,
-             spec.rows[-1].field if spec.layout == "compact" else spec.rows[0].field,
-             ROLE_HEADER, field=spec.rows[0].field)
+        _put(cells, origin_row, origin_col, "Row Labels", ROLE_HEADER,
+             field=spec.rows[0].field)
     else:
         _put(cells, origin_row, origin_col, None, ROLE_BLANK)
 
@@ -245,18 +275,115 @@ def _write_headers(cells, spec, origin_row, origin_col, header_rows,
     else:
         _put(cells, origin_row, origin_col + label_cols - 1,
              "Values", ROLE_HEADER)
+        if not spec.columns:
+            _put(cells, origin_row, origin_col + label_cols,
+                 "Total", ROLE_HEADER)
+
+
+def _write_expanded_headers(cells, spec, origin_row, origin_col,
+                            header_rows, label_cols, column_keys, captions):
+    bottom_row = origin_row + header_rows - 1
+    if spec.rows:
+        for index, field in enumerate(spec.rows):
+            _put(cells, bottom_row, origin_col + index, field.field,
+                 ROLE_HEADER, field=field.field)
+    else:
+        _put(cells, bottom_row, origin_col, None, ROLE_BLANK)
+
+    if len(captions) == 1:
+        _put(cells, origin_row, origin_col, captions[0], ROLE_HEADER)
+    elif not spec.columns:
+        _put(cells, origin_row, origin_col, "Values", ROLE_HEADER)
+
+    value_start = origin_col + label_cols
+    if spec.columns:
+        for depth, field in enumerate(spec.columns):
+            _put(cells, origin_row, value_start + depth, field.field,
+                 ROLE_COLUMN_LABEL, field=field.field)
+        if len(captions) > 1:
+            _put(cells, origin_row, value_start + len(spec.columns),
+                 "Values", ROLE_HEADER)
+        measure_count = len(captions)
+        previous_key = None
+        for col_index, col_key in enumerate(column_keys):
+            for depth, item in enumerate(col_key):
+                field = spec.columns[depth].field
+                repeated = previous_key is not None \
+                    and previous_key[:depth + 1] == col_key[:depth + 1]
+                for measure_index in range(measure_count):
+                    column = (
+                        value_start + col_index * measure_count
+                        + measure_index
+                    )
+                    value = display_item(item) \
+                        if measure_index == 0 and not repeated else None
+                    _put(cells, origin_row + depth + 1, column, value,
+                         ROLE_COLUMN_LABEL if value is not None else ROLE_BLANK,
+                         field=field)
+            previous_key = col_key
+        if len(captions) > 1:
+            for col_index, _col_key in enumerate(column_keys):
+                for measure_index, caption in enumerate(captions):
+                    column = (
+                        value_start + col_index * measure_count
+                        + measure_index
+                    )
+                    _put(cells, bottom_row, column, caption, ROLE_HEADER)
+        return
+
+    if len(captions) == 1:
+        _put(cells, bottom_row, value_start, "Total", ROLE_HEADER)
+    else:
+        for measure_index, caption in enumerate(captions):
+            _put(cells, bottom_row, value_start + measure_index,
+                 caption, ROLE_HEADER)
+
+
+def _write_values_on_rows_headers(cells, spec, origin_row, origin_col,
+                                   header_rows, label_cols, column_keys):
+    bottom_row = origin_row + header_rows - 1
+    if spec.rows:
+        for index, field in enumerate(spec.rows):
+            _put(cells, bottom_row, origin_col + index, field.field,
+                 ROLE_HEADER, field=field.field)
+    else:
+        _put(cells, bottom_row, origin_col, None, ROLE_BLANK)
+    _put(cells, bottom_row, origin_col + label_cols - 1,
+         "Values", ROLE_HEADER)
+
+    value_start = origin_col + label_cols
+    for depth, field in enumerate(spec.columns):
+        _put(cells, origin_row, value_start + depth, field.field,
+             ROLE_COLUMN_LABEL, field=field.field)
+
+    previous_key = None
+    for col_index, col_key in enumerate(column_keys):
+        for depth, item in enumerate(col_key):
+            repeated = previous_key is not None \
+                and previous_key[:depth + 1] == col_key[:depth + 1]
+            value = None if repeated else display_item(item)
+            _put(cells, origin_row + depth + 1,
+                 value_start + col_index, value,
+                 ROLE_COLUMN_LABEL if value is not None else ROLE_BLANK,
+                 field=spec.columns[depth].field)
+        previous_key = col_key
+    if spec.column_grand_totals:
+        _put(cells, bottom_row, value_start + len(column_keys),
+             "Grand Total", ROLE_HEADER)
 
 
 def _write_body(cells, spec, result, start_row, origin_col, label_cols,
                 row_keys, column_keys, captions, values_on_columns):
     cursor = start_row
+    previous_key = None
     for row_key in row_keys:
         is_sub = isinstance(row_key, tuple) and row_key and row_key[0] == "__subtotal__"
         if is_sub:
             prefix = row_key[1]
             _write_label_row(
                 cells, spec, cursor, origin_col, prefix, ROLE_SUBTOTAL,
-                suffix=" Total")
+                suffix="" if spec.layout in ("compact", "outline")
+                else " Total")
             totals = result.row_subtotals.get(prefix, ())
             if isinstance(totals, dict):
                 measure_values = [
@@ -264,12 +391,16 @@ def _write_body(cells, spec, result, start_row, origin_col, label_cols,
             else:
                 measure_values = [totals]
             role = ROLE_SUBTOTAL
+            if spec.layout == "outline":
+                previous_key = prefix
         else:
             _write_label_row(
-                cells, spec, cursor, origin_col, row_key, ROLE_ROW_LABEL)
+                cells, spec, cursor, origin_col, row_key, ROLE_ROW_LABEL,
+                previous=previous_key)
             measure_values = [
                 result.cells.get((row_key, col_key), ()) for col_key in column_keys]
             role = ROLE_VALUE
+            previous_key = row_key
         if values_on_columns:
             _write_value_row(
                 cells, cursor, origin_col + label_cols, column_keys,
@@ -309,11 +440,11 @@ def _write_row_grand_total(cells, spec, result, start_row, origin_col,
         for measure_index, (caption, measure) in enumerate(
                 zip(captions, result.grand_total)):
             row = start_row + measure_index
-            _put(cells, row, origin_col, "Grand Total" if measure_index == 0
-                 else None, ROLE_GRAND_TOTAL)
+            _put(cells, row, origin_col, "Total %s" % caption,
+                 ROLE_GRAND_TOTAL)
             if spec.rows:
-                _put(cells, row, origin_col + label_cols - 1, caption,
-                     ROLE_HEADER)
+                _put(cells, row, origin_col + label_cols - 1, None,
+                     ROLE_BLANK)
             if spec.columns:
                 for col_index, col_key in enumerate(column_keys):
                     group = result.column_totals.get(col_key, result.grand_total)
@@ -332,10 +463,18 @@ def _write_column_grand_total(cells, spec, result, origin_row, origin_col,
     start_col = origin_col + label_cols + value_cols
     header_row = origin_row + header_rows - 1
     measure_count = len(captions) if values_on_columns else 1
-    for measure_index, caption in enumerate(captions if values_on_columns else ("Grand Total",)):
-        _put(cells, header_row, start_col + measure_index,
-             "Grand Total" if measure_index == 0 or not values_on_columns else caption,
-             ROLE_HEADER)
+    if values_on_columns and measure_count > 1:
+        for measure_index, caption in enumerate(captions):
+            _put(cells, header_row - 1, start_col + measure_index,
+                 "Total %s" % caption, ROLE_HEADER)
+            _put(cells, header_row, start_col + measure_index, None,
+                 ROLE_BLANK)
+    else:
+        for measure_index, caption in enumerate(
+                captions if values_on_columns else ("Grand Total",)):
+            _put(cells, header_row, start_col + measure_index,
+                 "Grand Total" if measure_index == 0
+                 or not values_on_columns else caption, ROLE_HEADER)
     cursor = origin_row + header_rows
     body_keys = [
         key for key in row_keys
@@ -375,7 +514,8 @@ def _write_column_grand_total(cells, spec, result, origin_row, origin_col,
                      field=measure.field)
 
 
-def _write_label_row(cells, spec, row, origin_col, key, role, suffix=""):
+def _write_label_row(cells, spec, row, origin_col, key, role, suffix="",
+                     previous=None):
     if not spec.rows:
         _put(cells, row, origin_col, None, ROLE_BLANK)
         return
@@ -389,6 +529,9 @@ def _write_label_row(cells, spec, row, origin_col, key, role, suffix=""):
     for index, field in enumerate(spec.rows):
         if index < len(values):
             label = display_item(values[index])
+            if previous is not None and index < len(previous) \
+                    and previous[:index + 1] == values[:index + 1]:
+                label = None
             if suffix and index == len(values) - 1:
                 label = "%s%s" % (label, suffix) if label is not None \
                     else suffix.strip()

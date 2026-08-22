@@ -80,13 +80,13 @@ def test_unsaved_create_delete_refuses_to_erase_later_blank_slot(tmp_path):
         columns=["Region"],
         values=["Amount"],
     )
-    assert worksheet["B4"].value is None
-    worksheet["B4"] = "keep me"
+    assert worksheet["B5"].value is None
+    worksheet["B5"] = "keep me"
 
     with pytest.raises(BoundaryViolationError) as exc:
         pivot.delete()
     assert exc.value.kind == "pivot-output-collision"
-    assert worksheet["B4"].value == "keep me"
+    assert worksheet["B5"].value == "keep me"
 
 
 def test_create_then_delete_restores_custom_format_registry(tmp_path):
@@ -136,7 +136,7 @@ def test_refresh_then_rename_keeps_cache_and_output_in_sync(fixture_copy, tmp_pa
         "cache_rebuilt": True,
     }]
     reopened = load_workbook(str(tmp_path / "renamed.xlsx"), preserve=True)
-    assert reopened["Data"]["F4"].value == 99
+    assert reopened["Data"]["F5"].value == 99
     assert reopened["Data"].pivots["RegionalSales"].capabilities.can_refresh_on_open
 
 
@@ -165,8 +165,8 @@ def test_repoint_move_rename_composition_keeps_one_coherent_graph(tmp_path):
     reopened = workbook["Summary"].pivots["NorthOnly"]
     assert reopened.source.name == "Other"
     assert reopened.destination == "D4"
-    assert workbook["Summary"]["D5"].value == "North"
-    assert workbook["Summary"]["E5"].value == 41
+    assert workbook["Summary"]["D6"].value == "North"
+    assert workbook["Summary"]["E6"].value == 41
     assert reopened.capabilities.can_headless_refresh is True
 
 
@@ -211,7 +211,7 @@ def test_refresh_rebuilds_cache_when_aggregate_is_unchanged(tmp_path):
     workbook.save(refreshed)
 
     assert part_payloads(refreshed)[_CACHE] != before
-    assert load_workbook(refreshed, preserve=True)["Summary"]["B2"].value == 50
+    assert load_workbook(refreshed, preserve=True)["Summary"]["B3"].value == 50
 
 
 def test_custom_measure_format_survives_reopen_and_refresh(tmp_path):
@@ -318,8 +318,8 @@ def test_date_and_manual_item_order_reopen_with_lifecycle_capabilities(tmp_path)
     assert by_date.capabilities.can_delete is True
     assert by_region.capabilities.can_headless_refresh is True
     assert by_region.capabilities.can_delete is True
-    assert workbook["Summary"]["E2"].value == "West"
-    assert workbook["Summary"]["E3"].value == "East"
+    assert workbook["Summary"]["E3"].value == "West"
+    assert workbook["Summary"]["E4"].value == "East"
 
 
 def test_direct_edit_to_reopened_report_filter_cell_refuses_save(tmp_path):

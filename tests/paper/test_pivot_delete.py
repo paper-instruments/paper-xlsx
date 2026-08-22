@@ -36,8 +36,8 @@ def test_delete_leaves_unmaterialized_cells_inside_output_range(tmp_path):
         rows=[], columns=["Region"], values=["Amount"])
     wb = save_and_reopen(wb, str(tmp_path / "created.xlsx"), preserve=True)
     summary = wb["Summary"]
-    assert summary["A1"].value is None
-    summary["A1"] = "keep"
+    assert summary["A2"].value is None
+    summary["A2"] = "keep"
     summary.pivots["ByRegion"].delete()
-    assert summary["A1"].value == "keep"
+    assert summary["A2"].value == "keep"
     assert list(summary.pivots) == []

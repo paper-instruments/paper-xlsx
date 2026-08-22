@@ -61,11 +61,8 @@ def _create_pivot(source, destination):
 
 def _renumber_relationships(source, destination):
     _rewrite_package(source, destination, {
-        _PIVOT_PART: ((b'r:id="rId1"', b'r:id="rId7"'),),
         _PIVOT_RELS: (
             (b'Id="rId1"', b'Id="rId7"'),
-            (b'<Relationship Id="rId7"',
-             _PIVOT_DECOY + b'<Relationship Id="rId7"'),
         ),
         _CACHE_PART: ((b'r:id="rId1"', b'r:id="rId8"'),),
         _CACHE_RELS: (
@@ -98,7 +95,7 @@ def _assert_relationship_closure(path):
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         pivot_root = fromstring(archive.read(_PIVOT_PART))
         cache_root = fromstring(archive.read(_CACHE_PART))
-        assert pivot_root.attrib[_REL_ID] == "rId7"
+        assert _REL_ID not in pivot_root.attrib
         assert cache_root.attrib[_REL_ID] == "rId8"
         pivot_rels = fromstring(archive.read(_PIVOT_RELS))
         cache_rels = fromstring(archive.read(_CACHE_RELS))
@@ -111,7 +108,6 @@ def _assert_relationship_closure(path):
             for node in cache_rels
         }
         assert pivot_links["rId7"][0] == _CACHE_REL_TYPE.decode()
-        assert pivot_links["rId2"][1].endswith("missing-cache.xml")
         assert cache_links["rId8"][0] == _RECORDS_REL_TYPE.decode()
         assert cache_links["rId2"][1] == "missing-records.xml"
 
@@ -148,6 +144,13 @@ def _duplicate_relationship(payload, relationship_id):
     return payload[:end] + relationship + payload[end:]
 
 
+def _remove_relationship(payload, relationship_id):
+    marker = b'<Relationship Id="' + relationship_id + b'"'
+    start = payload.index(marker)
+    end = payload.index(b"/>", start) + 2
+    return payload[:start] + payload[end:]
+
+
 @pytest.mark.parametrize(
     "hop, defect, reason",
     (
@@ -164,12 +167,18 @@ def test_malformed_internal_relationship_disables_mutation(
     rels_part = _PIVOT_RELS if hop == "pivot" else _CACHE_RELS
     relationship_id = b"rId7" if hop == "pivot" else b"rId8"
     if defect == "missing":
-        replacements = {
-            rels_part: ((
-                b'Id="' + relationship_id + b'"',
-                b'Id="rId99"',
-            ),),
-        }
+        if hop == "pivot":
+            with zipfile.ZipFile(renumbered_pivot) as archive:
+                original = archive.read(rels_part)
+            missing = _remove_relationship(original, relationship_id)
+            replacements = {rels_part: ((original, missing),)}
+        else:
+            replacements = {
+                rels_part: ((
+                    b'Id="' + relationship_id + b'"',
+                    b'Id="rId99"',
+                ),),
+            }
     elif defect == "type":
         current = _CACHE_REL_TYPE if hop == "pivot" else _RECORDS_REL_TYPE
         wrong = _RECORDS_REL_TYPE if hop == "pivot" else _CACHE_REL_TYPE

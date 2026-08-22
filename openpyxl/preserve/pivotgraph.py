@@ -287,7 +287,9 @@ def _next_numbered(prefix, reserved):
 
 
 def _next_cache_id(used):
-    cache_id = 0
+    # Excel allocates positive cache IDs. Although the schema type is an
+    # unsigned integer, Excel repairs a newly authored cache with ID zero.
+    cache_id = 1
     while cache_id in used:
         cache_id += 1
     return cache_id

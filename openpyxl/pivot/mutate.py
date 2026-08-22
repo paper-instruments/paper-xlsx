@@ -180,6 +180,12 @@ def delete_pivot(handle):
             _drop_in_session_create(worksheet, ledger, staged)
         else:
             _clear_cells(worksheet, old_cells)
+            clear_coordinates = {
+                (row, column) for row, column, _value, _role in old_cells
+            }
+            if staged is not None:
+                clear_coordinates.update(staged.clear_coordinates)
+            clear_coordinates = tuple(sorted(clear_coordinates))
             allocation = staged.allocation if staged is not None else _allocation_from_handle(
                 workbook, worksheet, handle)
             operation = PivotCreateOperation(
@@ -194,13 +200,13 @@ def delete_pivot(handle):
                 output_range=state.projection.output_range,
                 output_cells=(),
                 owned_coordinates=(),
-                clear_coordinates=tuple((row, column) for row, column, _v, _r in old_cells),
+                clear_coordinates=clear_coordinates,
                 replace_existing=True,
                 relationship_id=handle._identity.relationship_id,
                 validate_source_identity=False,
                 published_cell_payloads=_capture_cell_payloads(
                     worksheet,
-                    ((row, column) for row, column, _v, _r in old_cells),
+                    clear_coordinates,
                 ),
             )
             ops = dict(ledger.pivot_operations)
@@ -283,7 +289,6 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
             staged.allocation.cache_id if staged is not None else int(
                 _node_for(handle, graph).cache_id),
             workbook,
-            cache_relationship_id=allocation.pivot_cache_relationship_id,
             records_relationship_id=allocation.records_relationship_id,
         )
         _write_output_cells(worksheet, plan.output.cells)

@@ -534,8 +534,18 @@ def _resolve_internal_relationship(
                 rid=rel.relationship_id, link=link),)
         return rel, ()
     if allow_implicit and len(typed) > 1:
+        relationship_ids = [rel.relationship_id for rel in typed]
+        if len(set(relationship_ids)) != len(relationship_ids):
+            return None, (_reason(
+                "duplicate-relationship-id", part=owner_part, link=link),)
         return None, (_reason(
             "ambiguous-internal-relationship", part=owner_part, link=link),)
+    if allow_implicit and required:
+        if rels:
+            return None, (_reason(
+                "relationship-type-mismatch", part=owner_part, link=link),)
+        return None, (_reason(
+            "missing-internal-relationship", part=owner_part, link=link),)
     if required:
         return None, (_reason(
             "missing-relationship-id", part=owner_part, link=link),)

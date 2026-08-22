@@ -6,7 +6,7 @@ from datetime import date
 import pytest
 
 from openpyxl.errors import BoundaryViolationError
-from openpyxl.pivot.aggregate import aggregate_snapshot
+from openpyxl.pivot.aggregate import aggregate_snapshot, display_item
 from openpyxl.pivot.api_types import (
     PivotAxisField,
     PivotItemFilter,
@@ -14,7 +14,7 @@ from openpyxl.pivot.api_types import (
     PivotSource,
     PivotSpec,
 )
-from openpyxl.pivot.source import PivotLimits, snapshot_from_matrix
+from openpyxl.pivot.source import PivotLimits, snapshot_from_matrix, typed_value
 
 
 def _spec(**overrides):
@@ -162,3 +162,9 @@ def test_cardinality_limit_refuses_before_output_allocation():
         aggregate_snapshot(
             snapshot, _spec(), limits=PivotLimits(aggregate_states=0))
     assert exc.value.kind == "pivot-cardinality-too-large"
+
+
+def test_dimension_captions_match_excel_for_boolean_and_blank_items():
+    assert display_item(typed_value(True)) == "TRUE"
+    assert display_item(typed_value(False)) == "FALSE"
+    assert display_item(typed_value(None)) == "(blank)"

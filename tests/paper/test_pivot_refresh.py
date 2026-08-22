@@ -54,7 +54,7 @@ def test_literal_source_edit_then_refresh(fixture_copy, tmp_path):
     wb = save_and_reopen(wb, saved, preserve=True)
     reopened = wb["Data"].pivots["ByRegion"]
     assert reopened.output_range == refreshed.output_range
-    assert wb["Data"]["F4"].value == 99 + 0  # North row uses B2
+    assert wb["Data"]["F5"].value == 99 + 0  # North row uses B2
 
 
 def test_source_edit_without_refresh_refuses_atomically(fixture_copy, tmp_path):
@@ -145,7 +145,7 @@ def test_move_same_sheet_and_overlap(fixture_copy, tmp_path):
     handle = _create_by_region(wb["Data"], destination="E3")
     moved = handle.move("G3")
     assert moved.destination == "G3"
-    wb["Data"]["K3"] = "blocked"
+    wb["Data"]["K4"] = "blocked"
     with pytest.raises(BoundaryViolationError) as blocked:
         moved.move("J3")
     assert blocked.value.kind == "pivot-output-collision"
@@ -176,8 +176,8 @@ def test_repoint_dedicated_source(tmp_path):
         rows=["Region"], values=["Amount"])
     handle.repoint_source("Other")
     wb = save_and_reopen(wb, str(tmp_path / "repointed.xlsx"), preserve=True)
-    assert wb["Summary"]["A2"].value == "North"
-    assert wb["Summary"]["B2"].value == 4
+    assert wb["Summary"]["A3"].value == "North"
+    assert wb["Summary"]["B3"].value == 4
     assert wb["Data"]["A2"].value == "East"
 
 
