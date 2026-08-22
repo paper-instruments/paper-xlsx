@@ -151,7 +151,7 @@ def test_created_parts_parse_and_indexes_match(fixture_copy):
     assert all(isinstance(record._fields[1], Number) for record in records.r)
     assert table.name == "ByRegion"
     assert table.cacheId == 1
-    assert table.id is None
+    assert table.id == "rId1"
     assert table.tag == PAPER_TAG
     assert table.location.ref == "E3:F9"
     assert table.location.firstHeaderRow == 2

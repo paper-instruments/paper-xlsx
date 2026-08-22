@@ -112,13 +112,32 @@ def plan_creates(context):
     for operation in operations.values():
         if getattr(operation, "noop", False):
             continue
-        if operation.kind == "create":
+        strategy = getattr(operation, "publication_strategy", None)
+        if operation.kind == "create" and not getattr(
+                operation, "replace_existing", False):
             registry.extend(_plan_add(context, operation))
-        elif operation.kind in ("refresh", "repoint", "move", "update", "rename"):
-            _plan_replace(context, operation)
-        elif operation.kind == "delete":
+        elif operation.kind == "delete" or strategy == "remove":
             _plan_remove(context, operation)
             removals.append(int(operation.allocation.cache_id))
+        elif strategy == "shared-isolation":
+            raise UnsupportedStructureError(
+                "shared-cache isolation is not implemented in this layer. "
+                "Nothing was written.",
+                kind="pivot-cache-shared",
+                anchor=operation.allocation.pivot_part,
+            )
+        elif operation.kind in (
+                "create", "refresh", "repoint", "move", "update", "rename",
+                "adopt") or strategy in (
+                "dedicated-replacement", "managed-replacement"):
+            _plan_replace(context, operation)
+        else:
+            raise UnsupportedStructureError(
+                "unknown pivot publication kind %r. Nothing was written."
+                % operation.kind,
+                kind="unsupported-pivot-operation",
+                anchor=operation.allocation.pivot_part,
+            )
     context.part_plan.pivot_cache_registry = tuple(registry)
     context.part_plan.pivot_cache_removals = tuple(removals)
 

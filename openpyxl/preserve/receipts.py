@@ -227,6 +227,7 @@ def _pivot_operation_effects(operation, sheet):
         item = dict(base)
         item["kind"] = {
             "create": "pivot_created",
+            "adopt": "pivot_adopted",
             "refresh": "pivot_refreshed",
             "repoint": "pivot_repointed",
             "move": "pivot_moved",
@@ -241,6 +242,23 @@ def _pivot_operation_effects(operation, sheet):
         if effect == "rename":
             item["cache_rebuilt"] = bool(
                 getattr(operation, "cache_rebuild", False))
+        if effect == "adopt":
+            persisted = getattr(operation, "persisted_cache_identity", None)
+            current = operation.source_identity
+            item["strategy"] = getattr(
+                operation, "publication_strategy", None)
+            item["current_source_identity"] = current
+            item["persisted_cache_snapshot_identity"] = persisted
+            item["source_changed_since_cached_snapshot"] = bool(
+                persisted and current and persisted != current)
+            item["output_recomputed"] = True
+            item["original_pivot_part"] = operation.allocation.pivot_part
+            item["original_cache_id"] = getattr(
+                operation, "original_cache_id", None)
+            item["managed_cache_id"] = operation.allocation.cache_id
+        if effect == "delete":
+            item["origin_before"] = getattr(
+                operation, "origin_before", "paper")
         result.append(item)
     return result
 

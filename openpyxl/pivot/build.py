@@ -90,7 +90,8 @@ class PivotPayloads:
 
 def build_pivot_payloads(
         plan, cache_id, workbook=None, *,
-        records_relationship_id=_RECORDS_REL_ID):
+        records_relationship_id=_RECORDS_REL_ID,
+        pivot_cache_relationship_id=_RECORDS_REL_ID):
     """Serialize a Paper-owned pivot with its retained relationship IDs."""
     cache_id = int(cache_id)
     indexed_fields = _indexed_field_names(plan.spec)
@@ -109,7 +110,10 @@ def build_pivot_payloads(
         cacheFields=fields,
         id=records_relationship_id,
     )
-    table = _table_definition(plan, cache_id, workbook)
+    table = _table_definition(
+        plan, cache_id, workbook,
+        pivot_cache_relationship_id=pivot_cache_relationship_id,
+    )
     _assert_consistent(plan, cache, records, table, cache_id)
     return PivotPayloads(
         cache_definition=_serialize_root(cache),
@@ -247,7 +251,8 @@ def _record_list(plan, indexed_fields):
     return RecordList(r=records)
 
 
-def _table_definition(plan, cache_id, workbook=None):
+def _table_definition(plan, cache_id, workbook=None,
+                     pivot_cache_relationship_id=_RECORDS_REL_ID):
     spec = plan.spec
     lookups = [
         {item: index for index, item in enumerate(shared)}
@@ -358,6 +363,7 @@ def _table_definition(plan, cache_id, workbook=None):
         cacheId=cache_id,
         dataOnRows=values_on_rows,
         dataCaption="Values",
+        id=pivot_cache_relationship_id,
         tag=PAPER_TAG,
         createdVersion=_CREATED_VERSION,
         updatedVersion=_CREATED_VERSION,

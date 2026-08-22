@@ -72,8 +72,7 @@ def test_adoption_qualification_export_and_schema(tmp_path):
     assert payload["schema"] == ADOPTION_TO_DICT_SCHEMA
     assert payload["version"] == ADOPTION_TO_DICT_VERSION
     assert payload["eligible"] is False
-    assert "adopt" not in PivotTable.__dict__ or not callable(
-        getattr(PivotTable, "adopt", None))
+    assert callable(getattr(PivotTable, "adopt", None))
 
 
 def test_managed_pivot_is_already_managed(fixture_copy):
@@ -119,6 +118,52 @@ def test_complete_dedicated_is_gated_until_excel_evidence(
     assert qualified.requires_calculation is False
     assert qualified.calculation_engine is None
     assert open(path, "rb").read() == before
+
+
+def test_paper_filter_field_is_classified_for_adoption(
+        tmp_path, monkeypatch):
+    from openpyxl import Workbook
+    from openpyxl.pivot.api_types import PivotItemFilter
+    from openpyxl.worksheet.table import Table
+
+    monkeypatch.setattr(
+        "openpyxl.pivot.adopt_qualify.excel_equivalence_proved",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "openpyxl.pivot.adopt_inventory.excel_equivalence_proved",
+        lambda: True,
+    )
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws["A1"] = "Region"
+    ws["B1"] = "Status"
+    ws["C1"] = "Amount"
+    ws["A2"] = "East"
+    ws["B2"] = "Open"
+    ws["C2"] = 10
+    ws.add_table(Table(displayName="SalesData", ref="A1:C2"))
+    wb.create_sheet("Summary")
+    path = str(tmp_path / "filter-src.xlsx")
+    wb.save(path)
+    wb = load_workbook(path, preserve=True)
+    wb["Summary"].pivots.create(
+        name="Filtered",
+        source="SalesData",
+        destination="E5",
+        rows=["Region"],
+        filters=[PivotItemFilter("Status")],
+        values=["Amount"],
+    )
+    dest = str(tmp_path / "filter-created.xlsx")
+    save_and_reopen(wb, dest, preserve=True)
+    _strip_paper_tag(dest)
+    wb = load_workbook(dest, preserve=True)
+    result = wb["Summary"].pivots["Filtered"].qualify_adoption()
+    assert "foreign-core-semantics-unclassified" not in _codes(result)
+    assert result.strategy == "dedicated-replacement"
+    assert result.eligible is True
 
 
 def test_shared_cache_selects_isolation_strategy(tmp_path):

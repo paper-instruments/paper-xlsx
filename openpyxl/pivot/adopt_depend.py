@@ -175,24 +175,11 @@ def _scan_slicer_parts(package, node, cache):
     return hits
 
 
-def _workbook_consumer_constraints(workbook, node, projection, ownership):
+def scan_consumer_constraints(workbook, name, sheet, footprint):
+    """Find GETPIVOTDATA/formula/name consumers. Not used during enumeration."""
     constraints = []
-    name = node.identity.name or ""
-    sheet = node.sheet_title
-    footprint = set()
-    if ownership is not None:
-        footprint.update(ownership.body_coordinates)
-        footprint.update(ownership.filter_coordinates)
-    elif node.output_range:
-        try:
-            min_col, min_row, max_col, max_row = range_boundaries(
-                node.output_range)
-        except (TypeError, ValueError):
-            min_col = min_row = max_col = max_row = None
-        if min_col is not None:
-            for row in range(min_row, max_row + 1):
-                for column in range(min_col, max_col + 1):
-                    footprint.add((row, column))
+    footprint = set(footprint or ())
+    name = name or ""
     for worksheet in workbook.worksheets:
         for cell in getattr(worksheet, "_cells", {}).values():
             formula = _formula_text(cell)
@@ -249,6 +236,26 @@ def _workbook_consumer_constraints(workbook, node, projection, ownership):
                 kind="defined-name", name=item_name,
             ))
     return constraints
+
+
+def _workbook_consumer_constraints(workbook, node, projection, ownership):
+    name = node.identity.name or ""
+    sheet = node.sheet_title
+    footprint = set()
+    if ownership is not None:
+        footprint.update(ownership.body_coordinates)
+        footprint.update(ownership.filter_coordinates)
+    elif node.output_range:
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(
+                node.output_range)
+        except (TypeError, ValueError):
+            min_col = min_row = max_col = max_row = None
+        if min_col is not None:
+            for row in range(min_row, max_row + 1):
+                for column in range(min_col, max_col + 1):
+                    footprint.add((row, column))
+    return scan_consumer_constraints(workbook, name, sheet, footprint)
 
 
 def _formula_text(cell):

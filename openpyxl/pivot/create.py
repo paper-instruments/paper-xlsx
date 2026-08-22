@@ -69,6 +69,12 @@ class PivotCreateOperation:
     worksheet: object = None
     semantic_effects: tuple = ()
     baseline_spec: object = None
+    origin_before: str = "paper"
+    publication_strategy: str | None = None
+    final_action: str | None = None
+    original_payload_hashes: tuple = ()
+    original_cache_id: object = None
+    persisted_cache_identity: str | None = None
 
 
 def create_pivot(worksheet, name, source, destination, rows, values,
@@ -138,6 +144,7 @@ def create_pivot(worksheet, name, source, destination, rows, values,
             allocation.cache_id,
             workbook,
             records_relationship_id=allocation.records_relationship_id,
+            pivot_cache_relationship_id=allocation.pivot_cache_relationship_id,
         )
         _checkpoint("built", workbook)
         _write_output_cells(worksheet, plan.output.cells)
@@ -194,7 +201,10 @@ def create_pivot(worksheet, name, source, destination, rows, values,
 
 def validate_create_freshness(workbook, ledger):
     """Validate staged pivot sources and their exact worksheet payloads."""
+    from openpyxl.pivot.adopt import validate_adoption_graph
+
     _validate_managed_output_mutations(workbook, ledger)
+    validate_adoption_graph(workbook, ledger)
     for operation in getattr(ledger, "pivot_operations", {}).values():
         if getattr(operation, "noop", False):
             continue
