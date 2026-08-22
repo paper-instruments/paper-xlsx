@@ -1,12 +1,13 @@
 {
   "schema": "paper-xlsx-pivot-release-matrix",
-  "version": 1,
+  "version": 2,
   "mutation_claims": ["xlsx-transitional", "xlsm-qualified"],
   "excel": {
     "windows_build": null,
     "macos_build": null,
     "marker_survives": null,
-    "note": "Human-run Excel transcripts are required before release; CI does not install Excel."
+    "foreign_adoption_proved": false,
+    "note": "Human-run Excel transcripts are required before release; CI does not install Excel. Foreign adoption stays ineligible until those transcripts and marker survival are committed."
   },
   "libreoffice": {
     "version": null,
@@ -14,6 +15,42 @@
     "semantic_refresh": "qualified-simple-subset-only"
   },
   "operations": [
-    "create", "inspect", "refresh", "repoint", "move", "update", "rename", "delete"
-  ]
+    "create",
+    "inspect",
+    "refresh",
+    "repoint",
+    "move",
+    "update",
+    "rename",
+    "delete",
+    "qualify_adoption",
+    "adopt"
+  ],
+  "adoption": {
+    "strategies": ["dedicated-replacement", "shared-isolation"],
+    "eligible_without_excel_evidence": false,
+    "excel_authored_fixtures": "pending",
+    "xlsm": "refused",
+    "shared_isolation": "implemented-gated",
+    "unsupported": [
+      "pivot-chart",
+      "slicer",
+      "timeline",
+      "grouping",
+      "calculated-fields",
+      "data-model",
+      "olap",
+      "external-source",
+      "unknown-extension",
+      "xlsm-vba"
+    ],
+    "claims": [
+      "adopt required before managed mutation of a foreign pivot",
+      "qualify_adoption is read-only and does not invoke LibreOffice",
+      "selected parts are replaced; unrelated content stays preserved",
+      "shared caches isolate when safe; siblings stay byte-identical until adopted",
+      "not edit-any-existing-PivotTable",
+      "not full Excel PivotTable parity"
+    ]
+  }
 }
