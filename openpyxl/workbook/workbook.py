@@ -753,6 +753,9 @@ class Workbook:
         """
         if hasattr(self, '_archive'):
             self._archive.close()
+        if getattr(self, "_paper_pivot_session", None) is not None:
+            from openpyxl.pivot.api import close_pivot_overlay
+            close_pivot_overlay(self)
 
 
     def _duplicate_name(self, name):

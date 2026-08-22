@@ -33,8 +33,11 @@ external-corpus gap, not a license to fabricate Excel provenance.
 
 When a binary is added, commit its sidecar and `MANIFEST.sha256` in the same
 change. Sidecars must include producer, exact version, authoring steps,
-`expected_pivot_graph`, expected visible values, and independent verification
-status.
+`expected_pivot_graph`, `expected_pivot_to_dict`,
+`expected_pivot_qualification`, expected visible values, and independent
+verification status. Qualification sidecars must record origin, validity, and
+every operation capability. Foreign Excel/LibreOffice pivots may have at most
+`can_refresh_on_open=true` in v1.
 
 ## Required LibreOffice-authored file
 

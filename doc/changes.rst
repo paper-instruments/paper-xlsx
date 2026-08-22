@@ -21,6 +21,10 @@ Changes
   targeting now consumes that graph. Foreign pivot parts are not deserialized
   for inventory. Real Excel-authored pivot fixtures remain an external corpus
   until honestly supplied.
+* Add immutable public PivotTable types and targeted ``Worksheet.pivots``
+  inspection under preserve mode. Qualification reports graph validity and
+  per-operation capabilities. Foreign pivots receive at most
+  ``can_refresh_on_open``. Public mutation is still withheld.
 
 Bugfixes
 --------
