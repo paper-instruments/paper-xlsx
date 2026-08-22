@@ -3,8 +3,9 @@
 """Convert one qualified foreign pivot into the Paper-managed lifecycle.
 
 ``adopt()`` re-runs qualification against current state, builds the complete
-replacement plan, then mutates cells and the ledger. Shared-cache isolation
-is a later PR; this module refuses that strategy.
+replacement plan, then mutates cells and the ledger. Dedicated caches are
+replaced in place. Shared caches allocate a new dedicated closure and
+retarget only the selected pivot-to-cache edge.
 """
 
 from __future__ import annotations
@@ -42,7 +43,10 @@ from openpyxl.pivot.qualify import (
     QualificationReason,
     _snapshot_from_cache_package,
 )
-from openpyxl.preserve.pivotgraph import PivotAllocation
+from openpyxl.preserve.pivotgraph import (
+    PivotAllocation,
+    allocate_isolated_cache,
+)
 
 
 @dataclass(frozen=True)
@@ -85,7 +89,7 @@ _REASON_KINDS = {
 
 
 def adopt_pivot(handle):
-    """Stage dedicated-cache adoption or return the current managed handle."""
+    """Stage dedicated replacement or shared-cache isolation."""
     from openpyxl.pivot.api import (
         PivotTable,
         invalidate_pivot_overlay,
@@ -109,10 +113,10 @@ def adopt_pivot(handle):
     public = analysis.public
     if not public.eligible:
         raise _refusal_for(public.reasons)
-    if public.strategy != "dedicated-replacement":
+    if public.strategy not in ("dedicated-replacement", "shared-isolation"):
         raise RelationshipPolicyError(
-            "this pivot shares its cache; dedicated adoption cannot isolate "
-            "siblings. Nothing was changed.",
+            "this pivot cannot be adopted with a known publication "
+            "strategy. Nothing was changed.",
             kind="pivot-cache-shared",
             options=list(analysis.cache_dependents),
             anchor=handle._identity.pivot_part,
@@ -155,18 +159,8 @@ def adopt_pivot(handle):
     )
     _checkpoint("validated", workbook)
 
-    allocation = PivotAllocation(
-        pivot_part=node.identity.pivot_part,
-        cache_part=node.cache_definition_part,
-        records_part=node.cache_records_part,
-        cache_id=int(node.cache_id),
-        worksheet_part=node.identity.worksheet_part,
-        workbook_part=graph.workbook_part,
-        pivot_cache_relationship_id=node.cache_relationship_id or "rId1",
-        records_relationship_id=(
-            cache.records_relationship_id if cache is not None
-            and cache.records_relationship_id else "rId1"),
-    )
+    allocation, isolation = _allocation_for_strategy(
+        public.strategy, workbook, ledger, graph, node, cache)
     payloads = build_pivot_payloads(
         plan,
         allocation.cache_id,
@@ -176,7 +170,7 @@ def adopt_pivot(handle):
     )
     adoption_plan = ForeignPivotAdoptionPlan(
         original=handle._identity,
-        strategy="dedicated-replacement",
+        strategy=public.strategy,
         spec=spec,
         source_identity=current_identity,
         persisted_cache_identity=persisted_identity,
@@ -244,11 +238,12 @@ def adopt_pivot(handle):
             semantic_effects=("adopt",),
             baseline_spec=spec,
             origin_before="foreign",
-            publication_strategy="dedicated-replacement",
+            publication_strategy=public.strategy,
             final_action="adopt",
             original_payload_hashes=adoption_plan.payload_hashes,
             original_cache_id=int(node.cache_id),
             persisted_cache_identity=persisted_identity,
+            **isolation,
         )
         staged = dict(ledger.pivot_operations)
         staged[operation.session_id] = operation
@@ -285,9 +280,10 @@ def validate_adoption_graph(workbook, ledger):
         if not hashes:
             continue
         allocation = operation.allocation
+        original_cache = getattr(operation, "original_cache_part", None)
         mapping = {
             "pivot": allocation.pivot_part,
-            "cache": allocation.cache_part,
+            "cache": original_cache or allocation.cache_part,
         }
         try:
             with zipfile.ZipFile(io.BytesIO(package)) as archive:
@@ -303,6 +299,16 @@ def validate_adoption_graph(workbook, ledger):
                             kind="stale-pivot",
                             anchor=part,
                         )
+                for part, expected in getattr(
+                        operation, "sibling_payload_hashes", ()) or ():
+                    actual = hashlib.sha256(archive.read(part)).hexdigest()
+                    if actual != expected:
+                        raise UnsupportedStructureError(
+                            "a shared-cache sibling changed after adoption "
+                            "was staged. Nothing was written.",
+                            kind="stale-pivot",
+                            anchor=part,
+                        )
         except KeyError as exc:
             raise UnsupportedStructureError(
                 "the original pivot graph changed after adoption "
@@ -310,6 +316,138 @@ def validate_adoption_graph(workbook, ledger):
                 kind="stale-pivot",
                 anchor=allocation.pivot_part,
             ) from exc
+        if getattr(operation, "publication_strategy", None) != "shared-isolation":
+            continue
+        graph = load_workbook_pivot_graph(workbook)
+        planned = set(getattr(operation, "sibling_parts", ()) or ())
+        current = {
+            node.identity.pivot_part
+            for node in graph.pivots
+            if node.cache_definition_part == (
+                original_cache or allocation.cache_part)
+            and node.identity.pivot_part != allocation.pivot_part
+        }
+        if planned != current:
+            raise UnsupportedStructureError(
+                "the shared-cache sibling set changed after adoption "
+                "was staged. Nothing was written.",
+                kind="stale-pivot",
+                anchor=original_cache or allocation.pivot_part,
+            )
+        from openpyxl.pivot.adopt_depend import _ALLOWED_SELECTED_RELS
+
+        watched = {allocation.pivot_part}
+        if original_cache:
+            watched.add(original_cache)
+        records = getattr(operation, "original_records_part", None)
+        if records:
+            watched.add(records)
+        for part in watched:
+            for rel in graph.incoming_relationships.get(part, ()):
+                if rel.rel_type not in _ALLOWED_SELECTED_RELS:
+                    raise RelationshipPolicyError(
+                        "an unexpected relationship now references the "
+                        "selected pivot graph. Nothing was written.",
+                        kind="invalid-pivot-graph",
+                        anchor=part,
+                    )
+
+
+def _allocation_for_strategy(strategy, workbook, ledger, graph, node, cache):
+    """Bind either the existing dedicated closure or a new isolated cache."""
+    if cache is None or not node.cache_definition_part:
+        raise RelationshipPolicyError(
+            "cannot adopt a pivot without a resolved cache. "
+            "Nothing was changed.",
+            kind="invalid-pivot-graph",
+            anchor=node.identity.pivot_part,
+        )
+    if strategy == "dedicated-replacement":
+        if (not cache.records_part or not node.cache_relationship_id
+                or not cache.records_relationship_id):
+            raise RelationshipPolicyError(
+                "cannot resolve the pivot's internal cache relationships. "
+                "Nothing was changed.",
+                kind="invalid-pivot-graph",
+                anchor=node.identity.pivot_part,
+            )
+        allocation = PivotAllocation(
+            pivot_part=node.identity.pivot_part,
+            cache_part=node.cache_definition_part,
+            records_part=cache.records_part,
+            cache_id=int(node.cache_id),
+            worksheet_part=node.identity.worksheet_part,
+            workbook_part=graph.workbook_part,
+            pivot_cache_relationship_id=node.cache_relationship_id,
+            records_relationship_id=cache.records_relationship_id,
+        )
+        return allocation, {}
+    if strategy == "shared-isolation":
+        isolated = allocate_isolated_cache(workbook, graph, ledger)
+        allocation = PivotAllocation(
+            pivot_part=node.identity.pivot_part,
+            cache_part=isolated.cache_part,
+            records_part=isolated.records_part,
+            cache_id=isolated.cache_id,
+            worksheet_part=node.identity.worksheet_part,
+            workbook_part=graph.workbook_part,
+            pivot_cache_relationship_id=node.cache_relationship_id,
+            records_relationship_id=isolated.records_relationship_id,
+        )
+        return allocation, _isolation_fields(
+            workbook, ledger, graph, node, cache)
+    raise RelationshipPolicyError(
+        "this pivot cannot be adopted with a known publication "
+        "strategy. Nothing was changed.",
+        kind="pivot-cache-shared",
+        anchor=node.identity.pivot_part,
+    )
+
+
+def _isolation_fields(workbook, ledger, graph, node, cache):
+    """Capture sibling identity/hash bindings for shared-cache isolation."""
+    original_cache = node.cache_definition_part
+    siblings = [
+        other for other in graph.pivots
+        if other.cache_definition_part == original_cache
+        and other.identity.pivot_part != node.identity.pivot_part
+    ]
+    staged = {node.identity.pivot_part}
+    for operation in getattr(ledger, "pivot_operations", {}).values():
+        if getattr(operation, "publication_strategy", None) != "shared-isolation":
+            continue
+        if getattr(operation, "original_cache_part", None) == original_cache:
+            staged.add(operation.allocation.pivot_part)
+    remaining = [
+        sibling for sibling in siblings
+        if sibling.identity.pivot_part not in staged
+    ]
+    hashes = []
+    source = getattr(workbook, "_paper_source", None)
+    if source:
+        with zipfile.ZipFile(io.BytesIO(source)) as archive:
+            for sibling in siblings:
+                part = sibling.identity.pivot_part
+                digest = sibling.payload_sha256 or hashlib.sha256(
+                    archive.read(part)).hexdigest()
+                hashes.append((part, digest))
+    else:
+        hashes = [
+            (sibling.identity.pivot_part, sibling.payload_sha256)
+            for sibling in siblings
+            if sibling.payload_sha256
+        ]
+    return {
+        "original_cache_part": original_cache,
+        "original_records_part": None if cache is None else cache.records_part,
+        "sibling_parts": tuple(
+            sibling.identity.pivot_part for sibling in siblings),
+        "sibling_identities": tuple(
+            (sibling.identity.name, sibling.sheet_title)
+            for sibling in siblings),
+        "sibling_payload_hashes": tuple(hashes),
+        "remove_original_cache": not remaining,
+    }
 
 
 def _refusal_for(reasons):

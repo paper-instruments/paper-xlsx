@@ -9,7 +9,7 @@ serializers. Create, refresh, repoint, move, update, rename, delete, and
 dedicated-cache ``adopt()`` apply to Paper-managed dedicated-cache
 pivots; shared caches disable layout/update and the other
 isolation-sensitive verbs. Foreign pivots stay inspectable until
-``adopt()`` converts a qualified dedicated cache.
+``adopt()`` converts a qualified dedicated or safely isolated cache.
 """
 
 from __future__ import annotations

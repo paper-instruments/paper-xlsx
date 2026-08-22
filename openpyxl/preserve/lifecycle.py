@@ -29,6 +29,7 @@ class PartPlan:
         self.ct_removals = []    # part_names
         self.rel_appends = {}    # rels_part -> [(rid, type, target, mode)]
         self.rel_removals = {}   # rels_part -> [target suffix]
+        self.rel_retargets = {}  # rels_part -> [(rid, new_target)]
         self.replaced = {}       # existing name -> payload (private)
         self.pivot_cache_registry = ()
         self.pivot_cache_removals = ()
@@ -95,6 +96,19 @@ class PartPlan:
                 "written.".format(name))
         self.replaced[name] = payload
 
+    def retarget_rel(self, rels_part, relationship_id, new_target,
+                     expected_type=None, expected_target=None):
+        """Rewrite one existing relationship Target. Id and type stay put."""
+        if not relationship_id or not new_target:
+            raise RelationshipPolicyError(
+                "relationship retarget requires a stable id and target. "
+                "Nothing was written.",
+                kind="invalid-pivot-graph",
+                anchor=rels_part,
+            )
+        self.rel_retargets.setdefault(rels_part, []).append(
+            (relationship_id, new_target, expected_type, expected_target))
+
     def remove_part(self, name, referencing_rels=()):
         """Plan a part's removal: dropped from the copy loop, its
         content-type override removed, and the named relationships cut.
@@ -116,7 +130,7 @@ class PartPlan:
         return bool(self.added or self.dropped or self.replaced
                     or self.ct_overrides
                     or self.ct_removals or self.rel_appends
-                    or self.rel_removals)
+                    or self.rel_removals or self.rel_retargets)
 
     # -- application (called by the saver) --------------------------------
 
@@ -149,6 +163,13 @@ class PartPlan:
                 "part that does not exist ({0!r}).".format(rels_part))
         if removals:
             payload = _rels_remove_exact(rels_part, payload, removals)
+        retargets = self.rel_retargets.get(rels_part, ())
+        if retargets:
+            if payload is None:
+                raise TargetNotFoundError(
+                    "internal: relationship retarget planned against a rels "
+                    "part that does not exist ({0!r}).".format(rels_part))
+            payload = _rels_retarget_exact(rels_part, payload, retargets)
         appends = self.rel_appends.get(rels_part, ())
         if appends:
             if payload is None:
@@ -169,7 +190,8 @@ class PartPlan:
         return payload
 
     def touched_rels_parts(self):
-        return set(self.rel_appends) | set(self.rel_removals)
+        return (set(self.rel_appends) | set(self.rel_removals)
+                | set(self.rel_retargets))
 
 
 def _default_content_type(ct_payload, extension):
@@ -199,6 +221,72 @@ def _rels_remove_exact(rels_part, payload, part_names):
         resolved = _resolve_target(owner, child.attrs.get("Target", ""))
         if resolved in targets:
             edits.append((child.start, child.end, b""))
+    if not edits:
+        return payload
+    return crosspart.apply_edits(payload, edits)
+
+
+def _rels_retarget_exact(rels_part, payload, retargets):
+    """Patch Target on named Relationship rows. Type and Id stay put."""
+    wanted = {}
+    for item in retargets:
+        if len(item) == 2:
+            relationship_id, target = item
+            expected_type = expected_target = None
+        else:
+            relationship_id, target, expected_type, expected_target = item[:4]
+        previous = wanted.get(relationship_id)
+        if previous is not None and previous[0] != target:
+            raise RelationshipPolicyError(
+                "relationship {0!r} on {1!r} has conflicting retargets. "
+                "Nothing was written.".format(relationship_id, rels_part),
+                kind="invalid-pivot-graph",
+                anchor=rels_part,
+            )
+        wanted[relationship_id] = (target, expected_type, expected_target)
+    root = crosspart.scan_small(payload, "Relationships", max_depth=1)
+    owner = _owner_of_rels(rels_part)
+    edits = []
+    found = set()
+    for child in root.children:
+        if child.local() != "Relationship":
+            continue
+        relationship_id = child.attrs.get("Id")
+        if relationship_id not in wanted:
+            continue
+        found.add(relationship_id)
+        target, expected_type, expected_target = wanted[relationship_id]
+        if expected_type and child.attrs.get("Type") != expected_type:
+            raise RelationshipPolicyError(
+                "cannot retarget relationship {0!r} on {1}: type no longer "
+                "matches the isolation plan. Nothing was written.".format(
+                    relationship_id, rels_part),
+                kind="invalid-pivot-graph",
+                anchor=rels_part,
+            )
+        if expected_target:
+            actual = child.attrs.get("Target", "")
+            resolved = _resolve_target(owner, actual)
+            expected = expected_target[1:] if expected_target.startswith("/") \
+                else expected_target
+            if actual != expected_target and resolved != expected \
+                    and _resolve_target(owner, expected_target) != resolved:
+                raise RelationshipPolicyError(
+                    "cannot retarget relationship {0!r} on {1}: target no "
+                    "longer matches the isolation plan. Nothing was "
+                    "written.".format(relationship_id, rels_part),
+                    kind="invalid-pivot-graph",
+                    anchor=rels_part,
+                )
+        edits.append(crosspart._patch_attr(payload, child, "Target", target))
+    missing = sorted(set(wanted) - found)
+    if missing:
+        raise RelationshipPolicyError(
+            "cannot retarget missing relationship {0!r} on {1}. "
+            "Nothing was written.".format(missing[0], rels_part),
+            kind="invalid-pivot-graph",
+            anchor=rels_part,
+        )
     if not edits:
         return payload
     return crosspart.apply_edits(payload, edits)

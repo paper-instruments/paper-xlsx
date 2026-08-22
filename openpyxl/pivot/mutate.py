@@ -821,6 +821,12 @@ def _publication_fields(staged, final_action=None):
             "original_payload_hashes": (),
             "original_cache_id": None,
             "persisted_cache_identity": None,
+            "original_cache_part": None,
+            "original_records_part": None,
+            "sibling_parts": (),
+            "sibling_identities": (),
+            "sibling_payload_hashes": (),
+            "remove_original_cache": False,
         }
     return {
         "origin_before": getattr(staged, "origin_before", "paper"),
@@ -831,6 +837,15 @@ def _publication_fields(staged, final_action=None):
         "original_cache_id": getattr(staged, "original_cache_id", None),
         "persisted_cache_identity": getattr(
             staged, "persisted_cache_identity", None),
+        "original_cache_part": getattr(staged, "original_cache_part", None),
+        "original_records_part": getattr(
+            staged, "original_records_part", None),
+        "sibling_parts": getattr(staged, "sibling_parts", ()),
+        "sibling_identities": getattr(staged, "sibling_identities", ()),
+        "sibling_payload_hashes": getattr(
+            staged, "sibling_payload_hashes", ()),
+        "remove_original_cache": getattr(
+            staged, "remove_original_cache", False),
     }
 
 

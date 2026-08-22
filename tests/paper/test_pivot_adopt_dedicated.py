@@ -531,17 +531,13 @@ def _paper_then_shared_foreign(fixture_copy, tmp_path):
     return load_workbook(sibling, preserve=True), sibling
 
 
-def test_shared_cache_refuses_dedicated_adoption(
+def test_shared_cache_is_not_dedicated_replacement(
         fixture_copy, tmp_path, monkeypatch):
     _enable_evidence(monkeypatch)
     wb, _path = _paper_then_shared_foreign(fixture_copy, tmp_path)
-    before = _fingerprint(wb)
     qualification = wb["Data"].pivots["ByRegion"].qualify_adoption()
     assert qualification.strategy == "shared-isolation"
-    with pytest.raises(RelationshipPolicyError) as exc:
-        wb["Data"].pivots["ByRegion"].adopt()
-    assert exc.value.kind == "pivot-cache-shared"
-    assert _fingerprint(wb) == before
+    assert qualification.eligible is True
 
 
 def test_formula_source_adopt_uses_oracle_and_does_not_publish_lo(
