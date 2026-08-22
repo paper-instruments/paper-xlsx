@@ -43,6 +43,7 @@ from openpyxl.pivot.table import (
     DataField,
     FieldItem,
     Location,
+    PageField,
     PivotField,
     PivotTableStyle,
     RowColField,
@@ -57,6 +58,21 @@ _RECORDS_REL_ID = "rId1"
 _CACHE_REL_ID = "rId1"
 _CREATED_VERSION = 4
 _MIN_REFRESHABLE_VERSION = 3
+_VALUES_FIELD = -2
+_DEFAULT_STYLE = "PivotStyleMedium2"
+_AGGREGATE_XML = {
+    "sum": "sum",
+    "count": "count",
+    "count_numbers": "countNums",
+    "average": "average",
+    "min": "min",
+    "max": "max",
+}
+BUILT_IN_PIVOT_STYLES = frozenset(
+    "PivotStyle%s%d" % (tone, number)
+    for tone in ("Light", "Medium", "Dark")
+    for number in range(1, 29)
+)
 
 
 @dataclass(frozen=True)
@@ -73,7 +89,7 @@ class PivotPayloads:
         }
 
 
-def build_pivot_payloads(plan, cache_id):
+def build_pivot_payloads(plan, cache_id, workbook=None):
     """Serialize one Paper-owned pivot and its dedicated cache."""
     cache_id = int(cache_id)
     fields = _cache_fields(plan)
@@ -91,7 +107,7 @@ def build_pivot_payloads(plan, cache_id):
         cacheFields=fields,
         id=_RECORDS_REL_ID,
     )
-    table = _table_definition(plan, cache_id)
+    table = _table_definition(plan, cache_id, workbook)
     _assert_consistent(plan, cache, records, table, cache_id)
     return PivotPayloads(
         cache_definition=_serialize_root(cache),
@@ -193,75 +209,122 @@ def _record_list(plan):
     return RecordList(r=records)
 
 
-def _table_definition(plan, cache_id):
+def _table_definition(plan, cache_id, workbook=None):
     spec = plan.spec
-    field_indexes = plan.field_indexes
-    row_field = spec.rows[0].field
-    measure = spec.values[0]
-    row_index = field_indexes[row_field]
-    measure_index = field_indexes[measure.field]
-    shared_row = plan.shared_items[row_index]
-    shared_lookup = {item: index for index, item in enumerate(shared_row)}
+    lookups = [
+        {item: index for index, item in enumerate(shared)}
+        for shared in plan.shared_items
+    ]
+    flags = _layout_flags(spec.layout)
+    row_names = [item.field for item in spec.rows]
+    col_names = [item.field for item in spec.columns]
+    filter_names = [item.field for item in spec.filters]
+    measure_fields = {item.field for item in spec.values}
+    values_on_rows = spec.values_axis == "rows"
+    values_field = _needs_values_field(spec)
 
     pivot_fields = []
     for name in plan.fields:
-        if name == row_field:
-            items = [FieldItem(x=position) for position in range(len(shared_row))]
-            items.append(FieldItem(t="default"))
-            pivot_fields.append(PivotField(
-                name=name,
-                axis="axisRow",
-                compact=False,
-                outline=False,
-                subtotalTop=False,
-                defaultSubtotal=False,
-                showAll=False,
-                items=items,
-            ))
-        elif name == measure.field:
-            pivot_fields.append(PivotField(
-                name=name,
-                dataField=True,
-                compact=False,
-                outline=False,
-                defaultSubtotal=False,
-                showAll=False,
-            ))
+        index = plan.field_indexes[name]
+        shared = plan.shared_items[index]
+        if name in row_names:
+            axis = spec.rows[row_names.index(name)]
+            pivot_fields.append(_axis_pivot_field(
+                name, "axisRow", shared, axis, spec, flags))
+        elif name in col_names:
+            axis = spec.columns[col_names.index(name)]
+            pivot_fields.append(_axis_pivot_field(
+                name, "axisCol", shared, axis, spec, flags))
+        elif name in filter_names:
+            item = spec.filters[filter_names.index(name)]
+            pivot_fields.append(_filter_pivot_field(
+                name, shared, item, flags))
         else:
             pivot_fields.append(PivotField(
                 name=name,
-                compact=False,
-                outline=False,
+                dataField=True if name in measure_fields else None,
+                compact=flags["field_compact"],
+                outline=flags["field_outline"],
                 defaultSubtotal=False,
                 showAll=False,
             ))
 
-    row_items = []
-    for key in plan.aggregate.row_keys:
-        item = key[0]
-        row_items.append(RowColItem(x=(Index(v=shared_lookup[item]),)))
+    row_keys = _visible_row_keys(plan)
+    row_fields = [RowColField(x=plan.field_indexes[name]) for name in row_names]
+    col_fields = [RowColField(x=plan.field_indexes[name]) for name in col_names]
+    if values_field and values_on_rows:
+        row_fields.append(RowColField(x=_VALUES_FIELD))
+    if values_field and not values_on_rows:
+        col_fields.append(RowColField(x=_VALUES_FIELD))
+
+    row_items = _item_tuples(
+        row_keys, row_names, plan, lookups, spec.values if values_on_rows
+        and values_field else None)
     if spec.row_grand_totals:
-        row_items.append(RowColItem(t="grand"))
+        if values_on_rows and values_field:
+            for measure_index, _measure in enumerate(spec.values):
+                row_items.append(RowColItem(
+                    t="grand", x=(Index(v=measure_index),)))
+        else:
+            row_items.append(RowColItem(t="grand"))
 
-    caption = measure.caption
-    if caption is None:
-        from openpyxl.pivot.aggregate import _default_caption
-        caption = _default_caption(measure)
+    col_keys = list(plan.aggregate.column_keys)
+    if spec.columns:
+        col_items = _item_tuples(
+            col_keys, col_names, plan, lookups,
+            spec.values if (not values_on_rows and values_field) else None)
+        if spec.column_grand_totals:
+            if not values_on_rows and values_field:
+                for measure_index, _measure in enumerate(spec.values):
+                    col_items.append(RowColItem(
+                        t="grand", x=(Index(v=measure_index),)))
+            else:
+                col_items.append(RowColItem(t="grand"))
+    elif values_field and not values_on_rows:
+        col_items = [
+            RowColItem(x=(Index(v=index),))
+            for index, _measure in enumerate(spec.values)
+        ]
+    else:
+        col_items = [RowColItem(t="default")]
 
+    page_fields = []
+    for item in spec.filters:
+        index = plan.field_indexes[item.field]
+        lookup = lookups[index]
+        selected = _selected_items(item, plan.shared_items[index])
+        if len(selected) == 1:
+            page_item = lookup[selected[0]]
+        else:
+            page_item = -1
+        page_fields.append(PageField(fld=index, item=page_item, hier=-1))
+
+    from openpyxl.pivot.aggregate import _default_caption
+    data_fields = []
+    for measure in spec.values:
+        caption = measure.caption or _default_caption(measure)
+        data_fields.append(DataField(
+            name=caption,
+            fld=plan.field_indexes[measure.field],
+            subtotal=_AGGREGATE_XML[measure.aggregate],
+            numFmtId=_number_format_id(workbook, measure.number_format),
+        ))
+
+    style_name = spec.style or _DEFAULT_STYLE
     return TableDefinition(
         name=spec.name,
         cacheId=cache_id,
-        dataOnRows=False,
+        dataOnRows=values_on_rows,
         dataCaption="Values",
         tag=PAPER_TAG,
         createdVersion=_CREATED_VERSION,
         updatedVersion=_CREATED_VERSION,
         minRefreshableVersion=_MIN_REFRESHABLE_VERSION,
-        compact=False,
-        outline=False,
-        compactData=False,
-        outlineData=False,
-        gridDropZones=True,
+        compact=flags["compact"],
+        outline=flags["outline"],
+        compactData=flags["compactData"],
+        outlineData=flags["outlineData"],
+        gridDropZones=flags["gridDropZones"],
         useAutoFormatting=False,
         itemPrintTitles=False,
         rowGrandTotals=spec.row_grand_totals,
@@ -274,16 +337,14 @@ def _table_definition(plan, cache_id):
             firstDataCol=plan.output.first_data_col,
         ),
         pivotFields=pivot_fields,
-        rowFields=(RowColField(x=row_index),),
-        rowItems=row_items,
-        colItems=(RowColItem(t="default"),),
-        dataFields=(DataField(
-            name=caption,
-            fld=measure_index,
-            subtotal="sum",
-        ),),
+        rowFields=tuple(row_fields),
+        rowItems=tuple(row_items),
+        colFields=tuple(col_fields),
+        colItems=tuple(col_items),
+        pageFields=tuple(page_fields),
+        dataFields=tuple(data_fields),
         pivotTableStyleInfo=PivotTableStyle(
-            name="PivotStyleMedium2",
+            name=style_name,
             showRowHeaders=True,
             showColHeaders=True,
             showRowStripes=False,
@@ -292,6 +353,152 @@ def _table_definition(plan, cache_id):
         ),
         id=_CACHE_REL_ID,
     )
+
+
+def _layout_flags(layout):
+    if layout == "compact":
+        return {
+            "compact": True,
+            "outline": True,
+            "compactData": True,
+            "outlineData": True,
+            "gridDropZones": False,
+            "field_compact": True,
+            "field_outline": True,
+        }
+    if layout == "outline":
+        return {
+            "compact": False,
+            "outline": True,
+            "compactData": False,
+            "outlineData": True,
+            "gridDropZones": False,
+            "field_compact": False,
+            "field_outline": True,
+        }
+    return {
+        "compact": False,
+        "outline": False,
+        "compactData": False,
+        "outlineData": False,
+        "gridDropZones": True,
+        "field_compact": False,
+        "field_outline": False,
+    }
+
+
+def _needs_values_field(spec):
+    return len(spec.values) > 1 or spec.values_axis == "rows"
+
+
+def _axis_pivot_field(name, axis, shared, axis_field, spec, flags):
+    items = _field_items(shared, axis_field.items)
+    return PivotField(
+        name=name,
+        axis=axis,
+        compact=flags["field_compact"],
+        outline=flags["field_outline"],
+        subtotalTop=spec.layout != "tabular",
+        defaultSubtotal=bool(spec.subtotals and axis == "axisRow"
+                             and len(spec.rows) > 1),
+        showAll=False,
+        items=items,
+    )
+
+
+def _filter_pivot_field(name, shared, item, flags):
+    selected = set(_selected_items(item, shared))
+    items = []
+    for position, value in enumerate(shared):
+        hidden = value not in selected
+        items.append(FieldItem(x=position, h=True if hidden else None))
+    items.append(FieldItem(t="default"))
+    return PivotField(
+        name=name,
+        axis="axisPage",
+        compact=flags["field_compact"],
+        outline=flags["field_outline"],
+        defaultSubtotal=False,
+        showAll=False,
+        multipleItemSelectionAllowed=True if len(selected) != 1 else None,
+        items=items,
+    )
+
+
+def _field_items(shared, explicit):
+    if explicit is None:
+        order = list(range(len(shared)))
+    else:
+        from openpyxl.pivot.source import typed_value
+        lookup = {item: index for index, item in enumerate(shared)}
+        order = [lookup[typed_value(value)] for value in explicit]
+    items = [FieldItem(x=position) for position in order]
+    items.append(FieldItem(t="default"))
+    return items
+
+
+def _selected_items(item, shared):
+    from openpyxl.pivot.source import typed_value
+    if item.include is not None:
+        return tuple(typed_value(value) for value in item.include)
+    excluded = {typed_value(value) for value in (item.exclude or ())}
+    return tuple(value for value in shared if value not in excluded)
+
+
+def _visible_row_keys(plan):
+    keys = list(plan.aggregate.row_keys)
+    spec = plan.spec
+    if spec.subtotals and len(spec.rows) > 1:
+        from openpyxl.pivot.layout import _with_subtotal_rows
+        keys = _with_subtotal_rows(keys, plan.aggregate.row_subtotals)
+    return keys
+
+
+def _item_tuples(keys, field_names, plan, lookups, measures):
+    items = []
+    for key in keys:
+        if isinstance(key, tuple) and key and key[0] == "__subtotal__":
+            prefix = key[1]
+            indexes = _key_indexes(prefix, field_names, plan, lookups)
+            items.append(RowColItem(t="default", x=indexes))
+            continue
+        indexes = _key_indexes(key, field_names, plan, lookups)
+        if measures is None:
+            items.append(RowColItem(x=indexes))
+        else:
+            for measure_index, _measure in enumerate(measures):
+                items.append(RowColItem(
+                    x=indexes + (Index(v=measure_index),)))
+    return items
+
+
+def _key_indexes(key, field_names, plan, lookups):
+    if not field_names:
+        return ()
+    indexes = []
+    for offset, name in enumerate(field_names):
+        if offset >= len(key):
+            break
+        field_index = plan.field_indexes[name]
+        indexes.append(Index(v=lookups[field_index][key[offset]]))
+    return tuple(indexes)
+
+
+def _number_format_id(workbook, number_format):
+    if not number_format or workbook is None:
+        return None
+    from openpyxl.styles.numbers import (
+        BUILTIN_FORMATS_MAX_SIZE,
+        builtin_format_id,
+    )
+
+    builtin = builtin_format_id(number_format)
+    if builtin is not None:
+        return builtin
+    formats = workbook._number_formats
+    if number_format not in formats:
+        formats.add(number_format)
+    return formats.index(number_format) + BUILTIN_FORMATS_MAX_SIZE
 
 
 def _assert_consistent(plan, cache, records, table, cache_id):
@@ -321,18 +528,15 @@ def _assert_consistent(plan, cache, records, table, cache_id):
             "pivot field catalog does not match the source snapshot",
             kind="invalid-pivot-source",
         )
-    expected_rows = len(plan.aggregate.row_keys)
-    if plan.spec.row_grand_totals:
-        expected_rows += 1
-    if len(table.rowItems) != expected_rows:
+    if len(table.dataFields) != len(plan.spec.values):
         raise BoundaryViolationError(
-            "pivot rowItems count does not match the layout",
+            "pivot data field count does not match the spec",
             kind="invalid-pivot-source",
         )
-    if len(table.dataFields) != 1:
+    if table.location.ref != plan.output.ref:
         raise BoundaryViolationError(
-            "PR 4 pivot tables carry exactly one data field",
-            kind="unsupported-pivot-feature",
+            "pivot location does not match the layout range",
+            kind="invalid-pivot-source",
         )
 
 

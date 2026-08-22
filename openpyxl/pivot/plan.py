@@ -60,6 +60,11 @@ def plan_pivot(spec, snapshot, limits=DEFAULT_LIMITS):
         raise TypeError("plan_pivot requires a SourceSnapshot")
     _estimate_or_refuse(spec, snapshot, limits)
     result = aggregate_snapshot(snapshot, spec, limits=limits)
+    if result.included_row_count == 0:
+        raise BoundaryViolationError(
+            "filters excluded every source row",
+            kind="invalid-pivot-source",
+        )
     output = layout_result(
         spec, result, spec.destination, limits=limits)
     field_indexes = {

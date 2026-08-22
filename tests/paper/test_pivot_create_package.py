@@ -290,18 +290,27 @@ def test_create_fills_conventional_part_number_gaps(tmp_path):
     assert "xl/pivotCache/pivotCacheDefinition2.xml" in names
 
 
-def test_create_refuses_extra_breadth(fixture_copy):
+def test_create_refuses_unknown_keywords_and_styles(fixture_copy):
     src = fixture_copy(_TABLE)
     wb = load_workbook(src, preserve=True)
     ws = wb["Data"]
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        ws.pivots.create(
+            name="Wide",
+            source="RegionTable",
+            destination="E3",
+            rows=["Region"],
+            values=["Amount"],
+            showDataAs="percent",
+        )
     with pytest.raises(UnsupportedStructureError) as exc:
         ws.pivots.create(
             name="Wide",
             source="RegionTable",
             destination="E3",
             rows=["Region"],
-            columns=["Amount"],
             values=["Amount"],
+            style="CustomPivotTheme",
         )
     assert exc.value.kind == "unsupported-pivot-feature"
 

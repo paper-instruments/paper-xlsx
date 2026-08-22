@@ -119,6 +119,7 @@ def project_pivot(node, cache, source=None, workbook=None):
     filters = _project_filters(
         details.get("page_fields") or _page_fields_from_node(node),
         field_names, shared_counts, shared_values,
+        details.get("page_includes") or {},
         node.identity.pivot_part, reasons)
     values = _project_values(
         node.data_fields, field_names, node.identity.pivot_part, reasons)
@@ -264,13 +265,17 @@ def _project_axis(indexes, field_names, shared_counts, item_indexes,
     if not indexes:
         return ()
     fields = []
-    for position, index in enumerate(indexes):
+    visible_position = 0
+    for index in indexes:
+        if index == -2:
+            continue
         name = _field_name(index, field_names, part, axis, reasons)
         if name is None:
             return None
         items = None
-        chosen = None if item_indexes is None else item_indexes[position] \
-            if position < len(item_indexes) else None
+        chosen = None if item_indexes is None else item_indexes[visible_position] \
+            if visible_position < len(item_indexes) else None
+        visible_position += 1
         if chosen:
             values = []
             count = shared_counts[index] if index < len(shared_counts) else 0
@@ -291,7 +296,7 @@ def _project_axis(indexes, field_names, shared_counts, item_indexes,
 
 
 def _project_filters(page_fields, field_names, shared_counts, shared_values,
-                     part, reasons):
+                     page_includes, part, reasons):
     if not page_fields:
         return ()
     filters = []
@@ -301,6 +306,7 @@ def _project_filters(page_fields, field_names, shared_counts, shared_values,
         if name is None:
             return None
         include = None
+        selected = page_includes.get(field_index)
         if item_index is not None and item_index != -1:
             count = shared_counts[field_index] \
                 if field_index < len(shared_counts) else 0
@@ -321,6 +327,15 @@ def _project_filters(page_fields, field_names, shared_counts, shared_values,
                 include = (item_index,)
             elif value is not None:
                 include = (value,)
+        elif selected:
+            values = []
+            shared = shared_values[field_index] if field_index < len(shared_values) else ()
+            for shared_index in selected:
+                if shared_index < len(shared):
+                    values.append(shared[shared_index])
+                else:
+                    values.append(shared_index)
+            include = tuple(values) if values else None
         filters.append(PivotItemFilter(name, include=include))
     return tuple(filters)
 
@@ -385,6 +400,7 @@ def _load_details(node, cache, source):
         "shared_items": (),
         "row_items": None,
         "column_items": None,
+        "page_includes": {},
     }
     if not source or not node.identity.pivot_part:
         return details
@@ -445,8 +461,9 @@ def _enrich_from_pivot(root, details):
     fields = _children(container, "pivotField") if container is not None else []
     row_indexes = []
     column_indexes = []
+    page_includes = {}
     subtotals = False
-    for field in fields:
+    for field_index, field in enumerate(fields):
         axis = _attr(field, "axis")
         items = tuple(_item_indexes(field))
         if axis == "axisRow":
@@ -455,10 +472,14 @@ def _enrich_from_pivot(root, details):
                 subtotals = True
         elif axis == "axisCol":
             column_indexes.append(items)
+        elif axis == "axisPage":
+            page_includes[field_index] = tuple(
+                _visible_item_indexes(field))
     if row_indexes:
         details["row_items"] = tuple(row_indexes)
     if column_indexes:
         details["column_items"] = tuple(column_indexes)
+    details["page_includes"] = page_includes
     details["subtotals"] = subtotals
 
 
@@ -468,6 +489,24 @@ def _item_indexes(field):
         return ()
     values = []
     for child in _children(items, "item"):
+        raw = _attr(child, "x")
+        if raw is None:
+            continue
+        try:
+            values.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _visible_item_indexes(field):
+    items = _first(field, "items")
+    if items is None:
+        return ()
+    values = []
+    for child in _children(items, "item"):
+        if _bool_attr(child, "h", default=False):
+            continue
         raw = _attr(child, "x")
         if raw is None:
             continue
