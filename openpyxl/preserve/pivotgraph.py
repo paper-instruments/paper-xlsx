@@ -32,6 +32,14 @@ _CACHE_REC_DIR = "xl/pivotCache/pivotCacheRecords"
 
 
 @dataclass(frozen=True)
+class IsolatedCacheAllocation:
+    cache_part: str
+    records_part: str
+    cache_id: int
+    records_relationship_id: str = "rId1"
+
+
+@dataclass(frozen=True)
 class PivotAllocation:
     pivot_part: str
     cache_part: str
@@ -101,6 +109,42 @@ def allocate_create(workbook, worksheet, graph, ledger):
     )
 
 
+def allocate_isolated_cache(workbook, graph, ledger):
+    """Choose a free dedicated cache closure for shared-cache isolation."""
+    source = getattr(workbook, "_paper_source", None)
+    if source is None:
+        raise UnsupportedStructureError(
+            "shared-cache isolation requires a preserve-mode package graph",
+            kind="invalid-pivot-graph",
+        )
+    with zipfile.ZipFile(io.BytesIO(source)) as archive:
+        names = set(archive.namelist())
+    reserved = set(names)
+    used_ids = set()
+    for operation in getattr(ledger, "pivot_operations", {}).values():
+        allocation = operation.allocation
+        reserved.update(allocation.owned_parts())
+        used_ids.add(int(allocation.cache_id))
+        original = getattr(operation, "original_cache_part", None)
+        if original:
+            reserved.add(original)
+            reserved.add(_rels_path(original))
+        original_records = getattr(operation, "original_records_part", None)
+        if original_records:
+            reserved.add(original_records)
+    for cache_id in getattr(graph, "caches_by_id", {}):
+        try:
+            used_ids.add(int(cache_id))
+        except (TypeError, ValueError):
+            continue
+    return IsolatedCacheAllocation(
+        cache_part=_next_numbered(_CACHE_DEF_DIR, reserved),
+        records_part=_next_numbered(_CACHE_REC_DIR, reserved),
+        cache_id=_next_cache_id(used_ids),
+        records_relationship_id="rId1",
+    )
+
+
 def plan_creates(context):
     """Add staged pivot-operation payloads to the save ``PartPlan``."""
     ledger = context.ledger
@@ -120,12 +164,9 @@ def plan_creates(context):
             _plan_remove(context, operation)
             removals.append(int(operation.allocation.cache_id))
         elif strategy == "shared-isolation":
-            raise UnsupportedStructureError(
-                "shared-cache isolation is not implemented in this layer. "
-                "Nothing was written.",
-                kind="pivot-cache-shared",
-                anchor=operation.allocation.pivot_part,
-            )
+            added, dropped = _plan_isolate(context, operation)
+            registry.extend(added)
+            removals.extend(dropped)
         elif operation.kind in (
                 "create", "refresh", "repoint", "move", "update", "rename",
                 "adopt") or strategy in (
@@ -191,6 +232,55 @@ def _plan_add(context, operation):
     return ((allocation.cache_id, cache_rid),)
 
 
+def _plan_isolate(context, operation):
+    """Add a dedicated cache and retarget only the selected pivot-to-cache edge."""
+    allocation = operation.allocation
+    payloads = operation.payloads
+    part_plan = context.part_plan
+    archive = context.archive
+    names = context.names
+    for name in (allocation.cache_part, allocation.records_part,
+                 allocation.cache_rels_part):
+        if name in names or name in part_plan.added or name in part_plan.replaced:
+            raise RelationshipPolicyError(
+                "planned isolated cache part %r already exists in the package"
+                % name,
+                kind="invalid-pivot-graph",
+                anchor=name,
+            )
+    context.part_plan.replace_part(allocation.pivot_part, payloads.pivot_table)
+    original_cache = getattr(operation, "original_cache_part", None)
+    part_plan.retarget_rel(
+        allocation.pivot_rels_part,
+        allocation.pivot_cache_relationship_id,
+        _relative_target(allocation.pivot_part, allocation.cache_part),
+        expected_type=CacheDefinition.rel_type,
+        expected_target=original_cache,
+    )
+    cache_rid = part_plan.reserve_rid(
+        context.workbook_rels_part,
+        archive.read(context.workbook_rels_part)
+        if context.workbook_rels_part in names else None)
+    part_plan.add_part(
+        allocation.records_part,
+        payloads.cache_records,
+        content_type=RecordList.mime_type,
+        relate_from=allocation.cache_part,
+        rel_type=RecordList.rel_type,
+        rel_id=allocation.records_relationship_id,
+    )
+    part_plan.add_part(
+        allocation.cache_part,
+        payloads.cache_definition,
+        content_type=CacheDefinition.mime_type,
+        relate_from=context.workbook_part,
+        rel_type=CacheDefinition.rel_type,
+        rel_id=cache_rid,
+    )
+    removals = _drop_original_cache_if_unused(context, operation)
+    return ((allocation.cache_id, cache_rid),), removals
+
+
 def _plan_replace(context, operation):
     allocation = operation.allocation
     payloads = operation.payloads
@@ -218,12 +308,90 @@ def _plan_remove(context, operation):
         allocation.pivot_part,
         referencing_rels=((sheet_rels, allocation.pivot_part),),
     )
-    context.part_plan.remove_part(
-        allocation.cache_part,
-        referencing_rels=((workbook_rels, allocation.cache_part),),
+    strategy = getattr(operation, "publication_strategy", None)
+    cache_exists = (
+        allocation.cache_part in context.names
+        or allocation.cache_part in context.part_plan.added
     )
-    if allocation.records_part:
+    if strategy == "shared-isolation" and not cache_exists:
+        _drop_original_cache_if_unused(context, operation)
+        return
+    if cache_exists:
+        context.part_plan.remove_part(
+            allocation.cache_part,
+            referencing_rels=((workbook_rels, allocation.cache_part),),
+        )
+    if allocation.records_part and (
+            allocation.records_part in context.names
+            or allocation.records_part in context.part_plan.added):
         context.part_plan.remove_part(allocation.records_part)
+    if strategy == "shared-isolation":
+        _drop_original_cache_if_unused(context, operation)
+
+
+def _departed_original_cache_parts(ledger, original_cache):
+    departed = set()
+    for operation in getattr(ledger, "pivot_operations", {}).values():
+        if getattr(operation, "noop", False):
+            continue
+        if getattr(operation, "original_cache_part", None) == original_cache:
+            departed.add(operation.allocation.pivot_part)
+    return departed
+
+
+def _original_cache_survivors(context, original_cache):
+    """Pivots or unexpected consumers that still need the original cache."""
+    from openpyxl.pivot.adopt_depend import _ALLOWED_SELECTED_RELS
+    from openpyxl.pivot.graph import load_workbook_pivot_graph
+
+    graph = load_workbook_pivot_graph(context.workbook)
+    departed = _departed_original_cache_parts(
+        context.ledger, original_cache)
+    survivors = [
+        node for node in graph.pivots
+        if node.cache_definition_part == original_cache
+        and node.identity.pivot_part not in departed
+    ]
+    if survivors:
+        return survivors
+    for rel in graph.incoming_relationships.get(original_cache, ()):
+        if rel.owner_part == graph.workbook_part:
+            continue
+        if rel.owner_part in departed:
+            continue
+        if rel.rel_type not in _ALLOWED_SELECTED_RELS:
+            return [rel]
+        if rel.rel_type.endswith("/pivotCacheDefinition"):
+            return [rel]
+    return []
+
+
+def _drop_original_cache_if_unused(context, operation):
+    """Remove the original shared cache only when no survivor remains."""
+    original = getattr(operation, "original_cache_part", None)
+    if not original or original in context.part_plan.dropped:
+        return []
+    survivors = _original_cache_survivors(context, original)
+    if survivors:
+        if getattr(operation, "remove_original_cache", False):
+            raise RelationshipPolicyError(
+                "cannot remove original shared cache %r; remaining "
+                "references still exist. Nothing was written." % original,
+                kind="invalid-pivot-graph",
+                anchor=original,
+            )
+        return []
+    records = getattr(operation, "original_records_part", None)
+    context.part_plan.remove_part(
+        original,
+        referencing_rels=((context.workbook_rels_part, original),),
+    )
+    if records and records not in context.part_plan.dropped \
+            and records in context.names:
+        context.part_plan.remove_part(records)
+    if getattr(operation, "original_cache_id", None) is not None:
+        return [int(operation.original_cache_id)]
+    return []
 
 
 def splice_workbook_caches(payload, entries):

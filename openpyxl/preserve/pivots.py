@@ -81,6 +81,13 @@ def _index(wb):
         name: list(dict.fromkeys(items))
         for name, items in qualified.items()
     }
+    referenced = {
+        part for items in qualified.values() for _sheet, part in items
+    }
+    for operation in operations.values():
+        original = getattr(operation, "original_cache_part", None)
+        if original and original not in referenced:
+            cache_parts.discard(original)
     return qualified, sorted(cache_parts)
 
 
@@ -810,7 +817,12 @@ def source_impacts(wb, ledger, *, force_recalculation=False):
     impacts = []
     snapshots = getattr(ledger, "pivot_source_snapshots", {})
     with zipfile.ZipFile(io.BytesIO(wb._paper_source)) as zin:
+        names = set(zin.namelist())
         for cache_part, pivots in sorted(pivots_by_cache.items()):
+            if cache_part not in names:
+                # Newly allocated isolated caches are rebuilt from the
+                # current source; they are not yet in the preserved package.
+                continue
             source = _cache_source(wb, zin.read(cache_part))
             if source is None:
                 continue

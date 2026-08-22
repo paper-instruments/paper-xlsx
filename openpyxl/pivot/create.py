@@ -75,6 +75,12 @@ class PivotCreateOperation:
     original_payload_hashes: tuple = ()
     original_cache_id: object = None
     persisted_cache_identity: str | None = None
+    original_cache_part: str | None = None
+    original_records_part: str | None = None
+    sibling_parts: tuple = ()
+    sibling_identities: tuple = ()
+    sibling_payload_hashes: tuple = ()
+    remove_original_cache: bool = False
 
 
 def create_pivot(worksheet, name, source, destination, rows, values,

@@ -111,7 +111,7 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
             operation_sheet = worksheet.title \
                 if worksheet is not None else operation.sheet
             effects.extend(_pivot_operation_effects(
-                operation, operation_sheet))
+                operation, operation_sheet, za, zb, names_a, names_b))
     if ledger is not None and pivot_parts:
         from .pivots import source_impacts
 
@@ -204,7 +204,8 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
     return effects
 
 
-def _pivot_operation_effects(operation, sheet):
+def _pivot_operation_effects(operation, sheet, za=None, zb=None,
+                             names_a=None, names_b=None):
     semantic_effects = getattr(operation, "semantic_effects", None)
     if semantic_effects is None:
         semantic_effects = (operation.kind,)
@@ -256,11 +257,82 @@ def _pivot_operation_effects(operation, sheet):
             item["original_cache_id"] = getattr(
                 operation, "original_cache_id", None)
             item["managed_cache_id"] = operation.allocation.cache_id
+            item.update(_adoption_graph_effects(
+                operation, za, zb, names_a, names_b))
         if effect == "delete":
             item["origin_before"] = getattr(
                 operation, "origin_before", "paper")
         result.append(item)
     return result
+
+
+def _adoption_graph_effects(operation, za, zb, names_a, names_b):
+    """Disclose sibling hashes and selected-graph part edits from the diff."""
+    extra = {}
+    identities = list(getattr(operation, "sibling_identities", ()) or ())
+    parts = list(getattr(operation, "sibling_parts", ()) or ())
+    hashes = {
+        part: expected
+        for part, expected in getattr(operation, "sibling_payload_hashes", ()) or ()
+    }
+    siblings = []
+    for index, part in enumerate(parts):
+        name, sheet = (identities[index] if index < len(identities)
+                       else (None, None))
+        before = None
+        after = None
+        if za is not None and names_a is not None and part in names_a:
+            before = hashlib.sha256(za.read(part)).hexdigest()
+        elif part in hashes:
+            before = hashes[part]
+        if zb is not None and names_b is not None and part in names_b:
+            after = hashlib.sha256(zb.read(part)).hexdigest()
+        if before is None or after is None or before != after:
+            continue
+        identity = None
+        if name and sheet:
+            identity = "%s!%s" % (sheet, name)
+        elif name:
+            identity = name
+        siblings.append({
+            "identity": identity,
+            "part": part,
+            "before_sha256": before,
+            "after_sha256": after,
+        })
+    if siblings:
+        extra["cache_siblings_unchanged"] = siblings
+    if za is None or zb is None or names_a is None or names_b is None:
+        return extra
+    allocation = operation.allocation
+    added = [
+        part for part in (
+            allocation.cache_part,
+            allocation.cache_rels_part,
+            allocation.records_part,
+        )
+        if part not in names_a and part in names_b
+    ]
+    replaced = []
+    for part in (allocation.pivot_part, allocation.pivot_rels_part):
+        if part in names_a and part in names_b and za.read(part) != zb.read(part):
+            replaced.append(part)
+    removed = []
+    from .lifecycle import _rels_path
+
+    original = getattr(operation, "original_cache_part", None)
+    original_records = getattr(operation, "original_records_part", None)
+    original_rels = None if not original else _rels_path(original)
+    for part in (original, original_rels, original_records):
+        if part and part in names_a and part not in names_b:
+            removed.append(part)
+    if added:
+        extra["selected_parts_added"] = added
+    if replaced:
+        extra["selected_parts_replaced"] = replaced
+    if removed:
+        extra["selected_parts_removed"] = removed
+    return extra
 
 
 def receipt(before, after, *, recalc=None, _ledger=None, _workbook=None):
