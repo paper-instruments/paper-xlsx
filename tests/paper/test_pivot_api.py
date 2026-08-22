@@ -42,6 +42,7 @@ def test_public_exports_are_the_semantic_types():
     import openpyxl.pivot as pivot_mod
 
     assert pivot_mod.__all__ == (
+        "PivotAdoptionQualification",
         "PivotAxisField",
         "PivotCapabilities",
         "PivotItemFilter",
