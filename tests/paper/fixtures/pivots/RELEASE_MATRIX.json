@@ -1,0 +1,19 @@
+{
+  "schema": "paper-xlsx-pivot-release-matrix",
+  "version": 1,
+  "mutation_claims": ["xlsx-transitional", "xlsm-qualified"],
+  "excel": {
+    "windows_build": null,
+    "macos_build": null,
+    "marker_survives": null,
+    "note": "Human-run Excel transcripts are required before release; CI does not install Excel."
+  },
+  "libreoffice": {
+    "version": null,
+    "load_smoke": "required-existing-lane",
+    "semantic_refresh": "qualified-simple-subset-only"
+  },
+  "operations": [
+    "create", "inspect", "refresh", "repoint", "move", "update", "rename", "delete"
+  ]
+}

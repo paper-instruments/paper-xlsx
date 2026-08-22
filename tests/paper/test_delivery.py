@@ -115,6 +115,15 @@ def _with_pivot_graph(workbook, pivots, *, refresh_on_load=False,
                 + cache_id.encode("ascii") + b'" dataCaption="Values">'
                 + b'<location ref="F1:G2" firstHeaderRow="1" '
                 + b'firstDataRow="1" firstDataCol="1"/></' + root + b'>')
+            zout.writestr(
+                "xl/pivotTables/_rels/pivotTable%s.xml.rels" % index,
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/'
+                b'package/2006/relationships"><Relationship Id="rId1" '
+                b'Type="http://schemas.openxmlformats.org/officeDocument/'
+                b'2006/relationships/pivotCacheDefinition" Target="/'
+                + cache_parts[cache_id].encode("utf-8")
+                + b'"/></Relationships>',
+            )
         refresh = b' refreshOnLoad="1"' if refresh_on_load else b""
         worksheet_sources = worksheet_sources or {}
         cache_source_types = cache_source_types or {}

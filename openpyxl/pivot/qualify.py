@@ -24,8 +24,15 @@ SUPPORTED_SOURCE_KINDS = frozenset(("table", "range", "defined-name"))
 UNSUPPORTED_SOURCE_KINDS = frozenset((
     "external", "consolidation", "scenario", "unknown", "named",
 ))
-# Empty until a fixture-backed extension is proven orthogonal to an edit.
-EXTENSION_ALLOWLIST = frozenset()
+_PIVOT_DEFAULT_LAYOUT_EXTENSION = (
+    "{747A6164-185A-40DC-8AA5-F01512510D54}")
+_PIVOT_CACHE_EXTENSION = "{725AE2AE-9491-48be-B2B4-4EB974FC3084}"
+# Excel adds these empty compatibility records when it saves a Paper pivot.
+# Their payload shape is checked separately before semantic qualification.
+EXTENSION_ALLOWLIST = frozenset((
+    _PIVOT_DEFAULT_LAYOUT_EXTENSION,
+    _PIVOT_CACHE_EXTENSION,
+))
 MUTATION_CAPABILITIES = (
     "can_headless_refresh",
     "can_rebuild_cache",
@@ -36,9 +43,14 @@ MUTATION_CAPABILITIES = (
     "can_delete",
 )
 ALL_CAPABILITIES = ("can_refresh_on_open",) + MUTATION_CAPABILITIES
+# Shared caches refuse cache rebuild, source/catalog changes, movement,
+# layout/update, and delete. Layout-only shared-cache edits are deferred in
+# v1 because ``update()`` rebuilds cache records. Rename is excluded: it
+# replaces only the selected pivot definition.
 CACHE_ISOLATION_CAPABILITIES = (
     "can_headless_refresh",
     "can_rebuild_cache",
+    "can_edit_layout",
     "can_repoint_source",
     "can_move",
     "can_delete",
@@ -46,6 +58,7 @@ CACHE_ISOLATION_CAPABILITIES = (
 OWNERSHIP_CAPABILITIES = (
     "can_headless_refresh",
     "can_rebuild_cache",
+    "can_edit_layout",
     "can_repoint_source",
     "can_move",
     "can_delete",
@@ -158,6 +171,9 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
         ), "unsupported-calculated", part=cache.definition_part)
 
     disallowed = _disallowed_extensions(extensions)
+    if extensions and not _extension_payloads_are_benign(
+            workbook, node, cache):
+        disallowed = extensions
     if disallowed:
         _disable(flags, reasons, (
             "can_headless_refresh", "can_rebuild_cache", "can_edit_layout",
@@ -180,7 +196,17 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
         and not (cache is not None and (cache.has_grouping or cache.has_calculated))
         and not disallowed
     )
-    if semantic_ok:
+    semantics_closed = True
+    if semantic_ok and workbook is not None:
+        semantics_closed = _paper_graph_matches_projection(
+            workbook, node, projection)
+        if not semantics_closed:
+            _disable(flags, reasons, (
+                "can_headless_refresh", "can_rebuild_cache",
+                "can_edit_layout", "can_repoint_source", "can_move",
+            ), "paper-semantics-unproved", part=node.identity.pivot_part)
+
+    if semantic_ok and semantics_closed:
         flags["can_edit_layout"] = True
         _drop_reasons(reasons, "can_edit_layout")
 
@@ -214,13 +240,17 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
                  output_range=node.output_range)
 
     if semantic_ok and not cache_shared and ownership_proved:
-        flags["can_headless_refresh"] = True
-        flags["can_rebuild_cache"] = True
-        flags["can_repoint_source"] = True
-        flags["can_move"] = True
         flags["can_delete"] = True
-        for name in OWNERSHIP_CAPABILITIES:
-            _drop_reasons(reasons, name)
+        _drop_reasons(reasons, "can_delete")
+        if semantics_closed:
+            flags["can_headless_refresh"] = True
+            flags["can_rebuild_cache"] = True
+            flags["can_repoint_source"] = True
+            flags["can_move"] = True
+            for name in (
+                    "can_headless_refresh", "can_rebuild_cache",
+                    "can_repoint_source", "can_move"):
+                _drop_reasons(reasons, name)
 
     return _result(
         valid, origin, flags, scope, reasons, source_supported,
@@ -229,9 +259,11 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
 
 _INVALIDATING_CODES = frozenset((
     "duplicate-cache-id",
+    "duplicate-relationship-id",
     "duplicate-incoming",
     "dangling-workbook-cache",
     "missing-part",
+    "unexpected-namespace",
 ))
 
 
@@ -250,7 +282,11 @@ def _graph_reasons(node, cache, graph):
         parts = context.get("parts") or ""
         if part in (pivot_part, cache_part) or (
                 cache_part and cache_part in parts.split(",")) or (
-                node.cache_id and context.get("cache_id") == node.cache_id):
+                node.cache_id and context.get("cache_id") == node.cache_id) \
+                or (
+                    part == node.identity.worksheet_part
+                    and context.get("rid")
+                    == node.identity.relationship_id):
             reasons.append(QualificationReason(None, item.code, item.context))
     return reasons
 
@@ -347,6 +383,29 @@ def _disallowed_extensions(extensions):
     )
 
 
+def _extension_payloads_are_benign(workbook, node, cache):
+    import io
+    import zipfile
+
+    package = getattr(workbook, "_paper_source", None)
+    if package is None:
+        return False
+    parts = [node.identity.pivot_part]
+    if cache is not None and cache.definition_part:
+        parts.append(cache.definition_part)
+    try:
+        from openpyxl.pivot.graph import _parse_xml
+
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            for part in parts:
+                root = _parse_xml(archive.read(part))
+                if root is None or not _remove_benign_excel_extensions(root):
+                    return False
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
+        return False
+    return True
+
+
 def _name_is_unique(node, graph):
     if not node.identity.name:
         return False
@@ -427,6 +486,190 @@ def _output_owned(workbook, node, projection):
     return _reconstruct_owned_output(workbook, node, projection) is not None
 
 
+def _paper_graph_matches_projection(workbook, node, projection):
+    """Require a closed Paper-owned graph before any full reserialization."""
+    import io
+    import zipfile
+
+    package = getattr(workbook, "_paper_source", None)
+    if not package or projection.spec is None:
+        return False
+    try:
+        from openpyxl.pivot.build import build_pivot_payloads
+        from openpyxl.pivot.plan import plan_pivot
+
+        snapshot = _snapshot_from_cache_package(package, node, projection)
+        plan = plan_pivot(projection.spec, snapshot)
+        expected = build_pivot_payloads(
+            plan, int(node.cache_id), workbook)
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            actual = (
+                archive.read(node.identity.pivot_part),
+                archive.read(node.cache_definition_part),
+                archive.read(node.cache_records_part),
+            )
+        wanted = (
+            expected.pivot_table,
+            expected.cache_definition,
+            expected.cache_records,
+        )
+    except Exception:
+        return False
+    if actual == wanted:
+        return True
+    return all(
+        _normalized_graph_xml(left) == _normalized_graph_xml(right)
+        for left, right in zip(actual, wanted)
+    )
+
+
+_IGNORED_REFRESH_ATTRIBUTES = frozenset((
+    "refreshOnLoad",
+    "refreshedBy",
+    "refreshedDate",
+    "refreshedDateIso",
+    "refreshedVersion",
+))
+
+
+def _normalized_graph_xml(payload):
+    from openpyxl.pivot.graph import _attr, _local, _parse_xml
+    from openpyxl.xml.constants import REL_NS, SHEET_MAIN_NS
+
+    root = _parse_xml(payload)
+    if root is None:
+        return None
+    if not _remove_benign_excel_extensions(root):
+        return None
+
+    default_attributes = {
+        "pivotTableDefinition": {
+            "asteriskTotals": "0", "chartFormat": "0",
+            "colGrandTotals": "1", "dataOnRows": "0",
+            "compact": "1", "compactData": "1", "gridDropZones": "0",
+            "disableFieldList": "0", "editData": "0",
+            "enableDrill": "1", "enableFieldProperties": "1",
+            "enableWizard": "1", "fieldListSortAscending": "0",
+            "fieldPrintTitles": "0", "immersive": "1", "indent": "1",
+            "itemPrintTitles": "0", "mdxSubqueries": "0",
+            "mergeItem": "0", "outline": "0", "outlineData": "0",
+            "pageOverThenDown": "0", "pageWrap": "0",
+            "preserveFormatting": "1", "printDrill": "0",
+            "published": "0", "rowGrandTotals": "1",
+            "showCalcMbrs": "1", "showDataDropDown": "1",
+            "showDataTips": "1", "showDrill": "1",
+            "showDropZones": "1", "showEmptyCol": "0",
+            "showEmptyRow": "0", "showError": "0", "showHeaders": "1",
+            "showItems": "1", "showMemberPropertyTips": "1",
+            "showMissing": "1", "showMultipleLabel": "1",
+            "subtotalHiddenItems": "0", "useAutoFormatting": "0",
+            "visualTotals": "1",
+        },
+        "pivotField": {
+            "compact": "1", "outline": "1",
+            "dragOff": "1", "dragToCol": "1", "dragToData": "1",
+            "dragToPage": "1", "dragToRow": "1", "itemPageCount": "10",
+            "showDropDowns": "1", "sortType": "manual",
+            "subtotalTop": "1", "topAutoShow": "1",
+        },
+        "pivotCacheDefinition": {
+            "backgroundQuery": "0", "enableRefresh": "1", "saveData": "1",
+        },
+        "cacheField": {"numFmtId": "0"},
+        "sharedItems": {"count": "0"},
+        "i": {"i": "0", "r": "0", "t": "data"},
+        "x": {"v": "0"},
+        "dataField": {"showDataAs": "normal", "subtotal": "sum"},
+        "pageField": {"item": "-1"},
+    }
+
+    def visit(element, is_root=False):
+        attributes = []
+        local = _local(element.tag)
+        for raw, value in element.attrib.items():
+            name = _local(raw)
+            if raw in (
+                    "{http://schemas.openxmlformats.org/markup-"
+                    "compatibility/2006}Ignorable",
+                    "{http://schemas.microsoft.com/office/spreadsheetml/"
+                    "2014/revision}uid"):
+                continue
+            if is_root and raw == "updatedVersion":
+                continue
+            if is_root and raw == "{%s}id" % REL_NS:
+                continue
+            if is_root and local == "pivotCacheDefinition" \
+                    and raw == name and name in _IGNORED_REFRESH_ATTRIBUTES:
+                continue
+            if raw == name \
+                    and default_attributes.get(local, {}).get(name) == value:
+                continue
+            attributes.append((raw, value))
+        children = list(element)
+        if local == "i" and element.attrib.get("t") == "grand" \
+                and len(children) == 1:
+            child = children[0]
+            measure = element.attrib.get("i") or "0"
+            if child.tag == "{%s}x" % SHEET_MAIN_NS \
+                    and (child.attrib.get("v") or "0") in ("0", measure) \
+                    and set(child.attrib) <= {"v"} and not list(child) \
+                    and not (child.text or "").strip():
+                children = []
+        return (
+            element.tag,
+            tuple(sorted(attributes)),
+            (element.text or "").strip(),
+            tuple(visit(child) for child in children),
+        )
+
+    return visit(root, is_root=True)
+
+
+def _remove_benign_excel_extensions(root):
+    """Remove only Excel's exact empty pivot compatibility extensions."""
+    from openpyxl.pivot.graph import _attr, _local
+    from openpyxl.xml.constants import SHEET_MAIN_NS
+
+    expected = {
+        "pivotTableDefinition": (
+            _PIVOT_DEFAULT_LAYOUT_EXTENSION,
+            "http://schemas.microsoft.com/office/spreadsheetml/2016/"
+            "pivotdefaultlayout",
+            "pivotTableDefinition16",
+        ),
+        "pivotCacheDefinition": (
+            _PIVOT_CACHE_EXTENSION,
+            "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main",
+            "pivotCacheDefinition",
+        ),
+    }.get(_local(root.tag))
+    for parent in root.iter():
+        for extension_list in list(parent):
+            if _local(extension_list.tag) != "extLst":
+                continue
+            if parent is not root or expected is None \
+                    or extension_list.tag != "{%s}extLst" % SHEET_MAIN_NS:
+                return False
+            extensions = [
+                child for child in list(extension_list)
+                if child.tag == "{%s}ext" % SHEET_MAIN_NS
+            ]
+            if len(extensions) != 1 or len(extensions) != len(extension_list):
+                return False
+            extension = extensions[0]
+            children = list(extension)
+            uri, namespace, child_name = expected
+            if _attr(extension, "uri") != uri or len(children) != 1:
+                return False
+            child = children[0]
+            if child.tag != "{%s}%s" % (namespace, child_name) \
+                    or child.attrib or list(child) \
+                    or (child.text or "").strip():
+                return False
+            parent.remove(extension_list)
+    return True
+
+
 def _reconstruct_owned_output(workbook, node, projection):
     """Return materialized owned output cells, or None if unproved.
 
@@ -442,27 +685,46 @@ def _reconstruct_owned_output(workbook, node, projection):
         from openpyxl.pivot.plan import plan_pivot
 
         snapshot = _snapshot_from_cache_package(package, node, projection)
-        spec = _spec_without_explicit_items(projection.spec)
-        plan = plan_pivot(spec, snapshot)
+        plan = plan_pivot(projection.spec, snapshot)
     except Exception:
         return None
     if plan.output.ref != node.output_range:
         return None
+    sheet_title = node.sheet_title
+    ledger = getattr(workbook, "_paper_ledger", None)
+    if ledger is not None:
+        for item, original in getattr(ledger, "renames", {}).items():
+            if original == sheet_title:
+                sheet_title = item.title
+                break
     worksheet = None
     for item in workbook.worksheets:
-        if item.title == node.sheet_title:
+        if item.title == sheet_title:
             worksheet = item
             break
     if worksheet is None:
         return None
     cells = getattr(worksheet, "_cells", {})
+    dirty = set()
+    ledger = getattr(workbook, "_paper_ledger", None)
+    if ledger is not None:
+        dirty = set(ledger.dirty_coordinates(worksheet))
     owned = []
     for cell in plan.output.cells:
         if cell.value is None:
             continue
+        if (cell.row, cell.column) in dirty:
+            return None
         existing = cells.get((cell.row, cell.column))
         actual = None if existing is None else existing.value
-        if actual != cell.value:
+        if type(actual) is not type(cell.value) or actual != cell.value:
+            return None
+        if existing is None or existing.data_type == "f":
+            return None
+        if cell.number_format is not None \
+                and existing.number_format != cell.number_format:
+            return None
+        if existing._comment is not None or existing._hyperlink is not None:
             return None
         owned.append((cell.row, cell.column, cell.value, cell.role))
     return tuple(owned)
@@ -510,13 +772,3 @@ def _snapshot_from_cache_package(package, node, projection):
 def _first_local(root, tag):
     from openpyxl.pivot.graph import _first
     return _first(root, tag)
-
-
-def _spec_without_explicit_items(spec):
-    from dataclasses import replace
-    from openpyxl.pivot.api_types import PivotAxisField
-
-    def _clear(fields):
-        return tuple(PivotAxisField(field.field) for field in fields)
-
-    return replace(spec, rows=_clear(spec.rows), columns=_clear(spec.columns))

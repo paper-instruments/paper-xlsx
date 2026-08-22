@@ -39,6 +39,8 @@ class PivotAllocation:
     cache_id: int
     worksheet_part: str
     workbook_part: str
+    pivot_cache_relationship_id: str = "rId1"
+    records_relationship_id: str = "rId1"
 
     @property
     def pivot_rels_part(self):
@@ -142,7 +144,7 @@ def _plan_add(context, operation):
         content_type=RecordList.mime_type,
         relate_from=allocation.cache_part,
         rel_type=RecordList.rel_type,
-        rel_id="rId1",
+        rel_id=allocation.records_relationship_id,
     )
     part_plan.add_part(
         allocation.cache_part,
@@ -162,7 +164,7 @@ def _plan_add(context, operation):
     )
     part_plan.rel_appends.setdefault(
         allocation.pivot_rels_part, []).append((
-            "rId1",
+            allocation.pivot_cache_relationship_id,
             CacheDefinition.rel_type,
             _relative_target(allocation.pivot_part, allocation.cache_part),
             None,
@@ -174,9 +176,17 @@ def _plan_replace(context, operation):
     allocation = operation.allocation
     payloads = operation.payloads
     context.part_plan.replace_part(allocation.pivot_part, payloads.pivot_table)
-    if operation.kind in ("refresh", "repoint", "update"):
+    if getattr(operation, "cache_rebuild", False):
+        cache_payload = payloads.cache_definition
+        if allocation.cache_part in context.ledger.pivot_refresh_requests:
+            from openpyxl.preserve.pivots import plan_refresh
+
+            replacements = {allocation.cache_part: cache_payload}
+            plan_refresh(
+                context.archive, (allocation.cache_part,), replacements)
+            cache_payload = replacements[allocation.cache_part]
         context.part_plan.replace_part(
-            allocation.cache_part, payloads.cache_definition)
+            allocation.cache_part, cache_payload)
         context.part_plan.replace_part(
             allocation.records_part, payloads.cache_records)
 
@@ -285,7 +295,9 @@ def _next_numbered(prefix, reserved):
 
 
 def _next_cache_id(used):
-    cache_id = 0
+    # Excel allocates positive cache IDs. Although the schema type is an
+    # unsigned integer, Excel repairs a newly authored cache with ID zero.
+    cache_id = 1
     while cache_id in used:
         cache_id += 1
     return cache_id

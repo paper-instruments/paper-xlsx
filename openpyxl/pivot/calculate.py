@@ -173,6 +173,7 @@ def apply_calculated_values(snapshot, artifact, workbook=None):
         identity=identity,
         bounds=snapshot.bounds,
         warnings=snapshot.warnings,
+        calculation_provenance=artifact.to_dict(),
     )
 
 

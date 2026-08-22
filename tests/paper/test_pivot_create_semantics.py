@@ -14,11 +14,13 @@ from openpyxl.pivot.api_types import (
     PivotMeasure,
 )
 from openpyxl.pivot.cache import CacheDefinition
+from openpyxl.pivot.inspect import _enrich_from_pivot
 from openpyxl.pivot.table import TableDefinition
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import coordinate_from_string, column_index_from_string, range_boundaries
 from openpyxl.utils.datetime import MAC_EPOCH, WINDOWS_EPOCH
 from openpyxl.worksheet.table import Table
+from openpyxl.xml.constants import SHEET_MAIN_NS
 from openpyxl.xml.functions import fromstring
 
 from .conftest import FIXTURES_DIR
@@ -130,9 +132,16 @@ def test_nested_rows_columns_and_two_measures(tmp_path):
     assert pivot.to_dict()["columns"] == ["Quarter"]
     assert pivot.spec.layout == "tabular"
     assert pivot.spec.style == "PivotStyleMedium9"
-    cache, table, _parts = _parse_created(dest)
+    cache, table, parts = _parse_created(dest)
     assert cache.recordCount == 6
     assert len(table.rowFields) == 2
+    table_root = fromstring(parts["xl/pivotTables/pivotTable1.xml"])
+    fields = table_root.find("{%s}pivotFields" % SHEET_MAIN_NS)
+    assert fields[0].attrib["defaultSubtotal"] == "0"
+    assert "defaultSubtotal" not in fields[1].attrib
+    assert "defaultSubtotal" not in fields[2].attrib
+    first_items = fields[0].find("{%s}items" % SHEET_MAIN_NS)
+    assert all(item.attrib.get("t") != "default" for item in first_items)
     assert any(field.x == -2 for field in table.colFields)
     assert len(table.dataFields) == 2
     assert table.dataFields[0].name == "Revenue"
@@ -151,8 +160,101 @@ def test_nested_rows_columns_and_two_measures(tmp_path):
     )
 
 
+def test_nested_columns_disable_automatic_subtotals(tmp_path):
+    headers = ["Region", "Year", "Quarter", "Amount", "Units"]
+    rows = [
+        ["East", 2024, "Q1", 10, 1],
+        ["East", 2024, "Q2", 4, 2],
+        ["West", 2025, "Q1", 7, 3],
+        ["West", 2025, "Q2", 6, 1],
+    ]
+    src, wb = _preserved(
+        tmp_path, headers=headers, rows=rows, table="SalesData")
+    wb["Summary"].pivots.create(
+        name="ByPeriod",
+        source="SalesData",
+        destination="B4",
+        rows=["Region"],
+        columns=["Year", "Quarter"],
+        values=[
+            PivotMeasure("Amount", caption="Revenue"),
+            PivotMeasure("Units", caption="Units"),
+        ],
+        layout="tabular",
+        row_grand_totals=False,
+        column_grand_totals=False,
+    )
+    dest = src + ".nested-columns.xlsx"
+    reopened = save_and_reopen(wb, dest, preserve=True)
+    pivot = reopened["Summary"].pivots["ByPeriod"]
+    assert pivot.spec.layout == "tabular"
+    assert pivot.spec.subtotals is False
+
+    parts = part_payloads(dest)
+    root = fromstring(parts["xl/pivotTables/pivotTable1.xml"])
+    fields = root.find("{%s}pivotFields" % SHEET_MAIN_NS)
+    year = fields[1]
+    quarter = fields[2]
+    assert year.attrib["defaultSubtotal"] == "0"
+    assert all(
+        item.attrib.get("t") != "default"
+        for item in year.find("{%s}items" % SHEET_MAIN_NS)
+    )
+    assert "defaultSubtotal" not in quarter.attrib
+    col_items = root.find("{%s}colItems" % SHEET_MAIN_NS)
+    assert col_items[1].attrib == {"r": "2", "i": "1"}
+    assert col_items[1][0].attrib == {"v": "1"}
+
+
+def test_excel_normalized_layout_defaults_reconstruct_the_same_spec():
+    tabular = fromstring(
+        b'<pivotTableDefinition compact="0" gridDropZones="1">'
+        b'<pivotFields><pivotField axis="axisRow"/>'
+        b'<pivotField axis="axisRow" defaultSubtotal="0"/>'
+        b'</pivotFields></pivotTableDefinition>'
+    )
+    details = {}
+    _enrich_from_pivot(tabular, details)
+    assert details["layout"] == "tabular"
+    assert details["subtotals"] is True
+
+    no_subtotals = fromstring(
+        b'<pivotTableDefinition compact="0" gridDropZones="1">'
+        b'<pivotFields><pivotField axis="axisRow" defaultSubtotal="0"/>'
+        b'<pivotField axis="axisRow"/>'
+        b'</pivotFields></pivotTableDefinition>'
+    )
+    details = {}
+    _enrich_from_pivot(no_subtotals, details)
+    assert details["layout"] == "tabular"
+    assert details["subtotals"] is False
+
+    reordered = fromstring(
+        b'<pivotTableDefinition compact="0" gridDropZones="1">'
+        b'<pivotFields><pivotField axis="axisRow"/>'
+        b'<pivotField axis="axisRow" defaultSubtotal="0"/>'
+        b'</pivotFields><rowFields count="2"><field x="1"/>'
+        b'<field x="0"/></rowFields></pivotTableDefinition>'
+    )
+    details = {}
+    _enrich_from_pivot(reordered, details)
+    assert details["subtotals"] is False
+
+    outline = fromstring(
+        b'<pivotTableDefinition compact="0" outline="1">'
+        b'<pivotFields><pivotField axis="axisRow"/></pivotFields>'
+        b'</pivotTableDefinition>'
+    )
+    details = {}
+    _enrich_from_pivot(outline, details)
+    assert details["layout"] == "outline"
+    assert details["subtotals"] is False
+
+
 def test_values_on_rows_and_filter_include(tmp_path):
     src, wb = _preserved(tmp_path, table="SalesData")
+    # Keep this a true multi-select subset rather than an include-all filter.
+    wb["Data"]["D2"] = "Open"
     handle = wb["Summary"].pivots.create(
         name="ClosedOnly",
         source="SalesData",
@@ -175,8 +277,92 @@ def test_values_on_rows_and_filter_include(tmp_path):
     cache, table, _parts = _parse_created(dest)
     assert table.dataOnRows is True
     assert table.pageFields[0].fld == 3
+    assert table.pageFields[0].item is None
+    assert table.location.rowPageCount == 1
+    assert table.location.colPageCount == 1
+    assert reopened["Summary"]["B2"].value == "Status"
+    assert reopened["Summary"]["C2"].value == "(Multiple Items)"
     assert "Sum" in _grid(reopened["Summary"], pivot.output_range).values()
     assert handle.output_range == pivot.output_range
+    _cache, _table, parts = _parse_created(dest)
+    table_root = fromstring(parts["xl/pivotTables/pivotTable1.xml"])
+    fields = table_root.find("{%s}pivotFields" % SHEET_MAIN_NS)
+    status_field = next(
+        field for field in fields if field.attrib.get("name") == "Status")
+    assert "defaultSubtotal" not in status_field.attrib
+
+
+def test_unrestricted_filter_is_all_not_multiple_items(tmp_path):
+    src, wb = _preserved(tmp_path, table="SalesData")
+    wb["Summary"].pivots.create(
+        name="AllStatuses",
+        source="SalesData",
+        destination="B4",
+        rows=["Region"],
+        filters=[PivotItemFilter("Status")],
+        values=["Amount"],
+    )
+    dest = src + ".all-filter.xlsx"
+    reopened = save_and_reopen(wb, dest, preserve=True)
+    pivot = reopened["Summary"].pivots["AllStatuses"]
+    assert reopened["Summary"]["C2"].value == "(All)"
+    assert pivot.spec.filters[0].include is None
+    assert pivot.capabilities.can_headless_refresh is True
+    assert pivot.capabilities.can_edit_layout is True
+    assert pivot.capabilities.can_delete is True
+    _cache, table, _parts = _parse_created(dest)
+    assert table.pageFields[0].item is None
+
+
+def test_explicit_include_all_is_canonicalized_to_unrestricted(tmp_path):
+    _src, wb = _preserved(tmp_path, table="SalesData")
+    pivot = wb["Summary"].pivots.create(
+        name="AllStatuses",
+        source="SalesData",
+        destination="B4",
+        rows=["Region"],
+        filters=[PivotItemFilter(
+            "Status", include=["Closed", "Pending"])],
+        values=["Amount"],
+    )
+    assert pivot.spec.filters[0].include is None
+
+
+def test_scalar_pivot_refuses_before_mutation(tmp_path):
+    src, wb = _preserved(tmp_path, table="SalesData")
+    before = part_payloads(src)
+    with pytest.raises(UnsupportedStructureError) as exc:
+        wb["Summary"].pivots.create(
+            name="Scalar",
+            source="SalesData",
+            destination="B4",
+            rows=[],
+            columns=[],
+            values=["Amount"],
+        )
+    assert exc.value.kind == "unsupported-pivot-feature"
+    out = src + ".scalar-refused.xlsx"
+    wb.save(out)
+    assert part_payloads(out) == before
+
+
+def test_duplicate_filter_items_are_collapsed_before_serialization(tmp_path):
+    src, wb = _preserved(tmp_path, table="SalesData")
+    wb["Summary"].pivots.create(
+        name="ClosedOnly",
+        source="SalesData",
+        destination="B4",
+        rows=["Region"],
+        filters=[PivotItemFilter("Status", include=["Closed", "Closed"])],
+        values=["Amount"],
+    )
+    dest = src + ".deduped-filter.xlsx"
+    reopened = save_and_reopen(wb, dest, preserve=True)
+    pivot = reopened["Summary"].pivots["ClosedOnly"]
+    assert pivot.spec.filters[0].include == ("Closed",)
+    assert reopened["Summary"]["C2"].value == "Closed"
+    _cache, table, _parts = _parse_created(dest)
+    assert table.pageFields[0].item >= 0
 
 
 @pytest.mark.parametrize("aggregate,caption", [
@@ -277,6 +463,11 @@ def test_subtotals_and_grand_total_toggles(tmp_path):
     assert any(
         isinstance(value, str) and value.endswith(" Total")
         for value in grid.values() if value is not None)
+    _cache, _table, parts = _parse_created(dest)
+    table_root = fromstring(parts["xl/pivotTables/pivotTable1.xml"])
+    fields = table_root.find("{%s}pivotFields" % SHEET_MAIN_NS)
+    assert "defaultSubtotal" not in fields[0].attrib
+    assert "defaultSubtotal" not in fields[1].attrib
     assert handle.valid is True
 
 
@@ -300,7 +491,7 @@ def test_captions_number_formats_and_typed_items(tmp_path):
     dest = src + ".fmt.xlsx"
     reopened = save_and_reopen(wb, dest, preserve=True)
     pivot = reopened["Summary"].pivots["Formats"]
-    assert True in _grid(reopened["Summary"], pivot.output_range).values()
+    assert "TRUE" in _grid(reopened["Summary"], pivot.output_range).values()
     assert "001" in _grid(reopened["Summary"], pivot.output_range).values()
     data_cell = None
     for row in reopened["Summary"].iter_rows():

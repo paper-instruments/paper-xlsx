@@ -1,11 +1,13 @@
 # paper-xlsx: targeted PivotTable collection and identity-bound handles
 
-"""Preserve-mode inspection of loaded PivotTables.
+"""Preserve-mode inspection and Paper-managed PivotTable lifecycle.
 
 ``Worksheet.pivots`` is a semantic overlay over the relationship-resolved
 package graph plus staged Paper-owned creates. It does not mutate
 ``Worksheet._pivots`` or deserialize foreign parts through inherited
-serializers. ``create()`` is limited to the PR 4 spine.
+serializers. Create, refresh, repoint, move, update, rename, and delete
+apply to Paper-managed dedicated-cache pivots; shared caches disable
+layout/update and the other isolation-sensitive verbs.
 """
 
 from __future__ import annotations
@@ -98,6 +100,11 @@ def _session_for(workbook):
     graph = load_workbook_pivot_graph(workbook)
     states = {}
     source = workbook._paper_source
+    ledger = workbook._paper_ledger
+    current_by_original = {
+        original: worksheet.title
+        for worksheet, original in getattr(ledger, "renames", {}).items()
+    }
     hidden = hidden_pivot_parts(getattr(workbook, "_paper_ledger", None))
     for node in graph.pivots:
         if node.identity.pivot_part in hidden:
@@ -113,7 +120,8 @@ def _session_for(workbook):
             node, cache, projection, graph, workbook=workbook)
         states[node.identity] = _PivotState(
             identity=node.identity,
-            sheet_title=node.sheet_title,
+            sheet_title=current_by_original.get(
+                node.sheet_title, node.sheet_title),
             name=node.identity.name,
             projection=projection,
             qualification=qualification,
@@ -208,11 +216,11 @@ class PivotTableCollection:
                **kwargs):
         """Create one Paper-owned pivot on this worksheet.
 
-        Accepts table or sheet-qualified range sources, the full v1 axis,
-        filter, aggregate, layout, totals, caption, number-format, and
-        built-in style vocabulary. Formula-backed sources and later
-        mutators remain out of this method. Unexpected keywords raise
-        ``TypeError``.
+        Accepts worksheet-table or sheet-qualified-range sources, plus the
+        v1 axis, filter, aggregate, layout, totals, caption,
+        number-format, and built-in style vocabulary. Formula-backed
+        sources may require stock LibreOffice; later mutators live on the
+        returned handle. Unexpected keywords raise ``TypeError``.
         """
         from openpyxl.pivot.create import create_pivot
 

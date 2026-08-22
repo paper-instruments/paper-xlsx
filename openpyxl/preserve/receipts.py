@@ -107,57 +107,11 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
         for operation in getattr(ledger, "pivot_operations", {}).values():
             if getattr(operation, "noop", False):
                 continue
-            if operation.kind == "create":
-                effects.append({
-                    "kind": "pivot_created",
-                    "name": operation.name,
-                    "sheet": operation.sheet,
-                    "output_range": operation.output_range,
-                    "cache_id": operation.allocation.cache_id,
-                    "parts": list(operation.allocation.owned_parts()),
-                })
-            elif operation.kind == "refresh":
-                effects.append({
-                    "kind": "pivot_refreshed",
-                    "name": operation.name,
-                    "sheet": operation.sheet,
-                    "output_range": operation.output_range,
-                    "source_identity": operation.source_identity,
-                })
-            elif operation.kind == "repoint":
-                effects.append({
-                    "kind": "pivot_source_repointed",
-                    "name": operation.name,
-                    "sheet": operation.sheet,
-                    "output_range": operation.output_range,
-                })
-            elif operation.kind == "move":
-                effects.append({
-                    "kind": "pivot_moved",
-                    "name": operation.name,
-                    "sheet": operation.sheet,
-                    "output_range": operation.output_range,
-                })
-            elif operation.kind == "update":
-                effects.append({
-                    "kind": "pivot_updated",
-                    "name": operation.name,
-                    "sheet": operation.sheet,
-                    "output_range": operation.output_range,
-                })
-            elif operation.kind == "rename":
-                effects.append({
-                    "kind": "pivot_renamed",
-                    "name": operation.name,
-                    "sheet": operation.sheet,
-                })
-            elif operation.kind == "delete":
-                effects.append({
-                    "kind": "pivot_deleted",
-                    "name": operation.name,
-                    "sheet": operation.sheet,
-                    "parts": list(operation.allocation.owned_parts()),
-                })
+            worksheet = getattr(operation, "worksheet", None)
+            operation_sheet = worksheet.title \
+                if worksheet is not None else operation.sheet
+            effects.extend(_pivot_operation_effects(
+                operation, operation_sheet))
     if ledger is not None and pivot_parts:
         from .pivots import source_impacts
 
@@ -248,6 +202,47 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
     except (KeyError, ValueError):
         pass
     return effects
+
+
+def _pivot_operation_effects(operation, sheet):
+    semantic_effects = getattr(operation, "semantic_effects", None)
+    if semantic_effects is None:
+        semantic_effects = (operation.kind,)
+    semantic_effects = tuple(semantic_effects)
+    source = getattr(getattr(operation, "spec", None), "source", None)
+    base = {
+        "name": operation.name,
+        "sheet": sheet,
+        "output_range": operation.output_range,
+        "source": source.to_dict() if source is not None else None,
+        "parts": list(operation.allocation.owned_parts()),
+    }
+    snapshot = getattr(operation, "source_snapshot", None)
+    calculation = getattr(snapshot, "calculation_provenance", None)
+    if calculation is not None:
+        base["calculation"] = calculation
+
+    result = []
+    for effect in semantic_effects:
+        item = dict(base)
+        item["kind"] = {
+            "create": "pivot_created",
+            "refresh": "pivot_refreshed",
+            "repoint": "pivot_repointed",
+            "move": "pivot_moved",
+            "update": "pivot_updated",
+            "rename": "pivot_renamed",
+            "delete": "pivot_deleted",
+        }[effect]
+        if effect == "create":
+            item["cache_id"] = operation.allocation.cache_id
+        if effect == "refresh":
+            item["source_identity"] = operation.source_identity
+        if effect == "rename":
+            item["cache_rebuilt"] = bool(
+                getattr(operation, "cache_rebuild", False))
+        result.append(item)
+    return result
 
 
 def receipt(before, after, *, recalc=None, _ledger=None, _workbook=None):

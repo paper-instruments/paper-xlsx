@@ -55,7 +55,6 @@ from openpyxl.xml.functions import tostring
 
 
 _RECORDS_REL_ID = "rId1"
-_CACHE_REL_ID = "rId1"
 _CREATED_VERSION = 4
 _MIN_REFRESHABLE_VERSION = 3
 _VALUES_FIELD = -2
@@ -89,11 +88,14 @@ class PivotPayloads:
         }
 
 
-def build_pivot_payloads(plan, cache_id, workbook=None):
-    """Serialize one Paper-owned pivot and its dedicated cache."""
+def build_pivot_payloads(
+        plan, cache_id, workbook=None, *,
+        records_relationship_id=_RECORDS_REL_ID):
+    """Serialize a Paper-owned pivot with its retained relationship IDs."""
     cache_id = int(cache_id)
-    fields = _cache_fields(plan)
-    records = _record_list(plan)
+    indexed_fields = _indexed_field_names(plan.spec)
+    fields = _cache_fields(plan, indexed_fields)
+    records = _record_list(plan, indexed_fields)
     cache = CacheDefinition(
         saveData=True,
         enableRefresh=True,
@@ -105,7 +107,7 @@ def build_pivot_payloads(plan, cache_id, workbook=None):
         recordCount=len(records.r),
         cacheSource=_cache_source(plan.spec.source),
         cacheFields=fields,
-        id=_RECORDS_REL_ID,
+        id=records_relationship_id,
     )
     table = _table_definition(plan, cache_id, workbook)
     _assert_consistent(plan, cache, records, table, cache_id)
@@ -130,18 +132,35 @@ def _cache_source(source):
     return CacheSource(type="worksheet", worksheetSource=worksheet)
 
 
-def _cache_fields(plan):
+def _indexed_field_names(spec):
+    return frozenset(
+        item.field
+        for collection in (spec.rows, spec.columns, spec.filters)
+        for item in collection
+    )
+
+
+def _cache_fields(plan, indexed_fields):
     fields = []
     for name, items in zip(plan.fields, plan.shared_items):
         shared = SharedItems(
-            _fields=[_shared_item(item) for item in items],
+            _fields=[_typed_item(item) for item in items]
+            if name in indexed_fields else (),
             **_shared_flags(items)
         )
-        fields.append(CacheField(name=name, sharedItems=shared, uniqueList=True))
+        fields.append(CacheField(
+            name=name,
+            sharedItems=shared,
+            uniqueList=None,
+            sqlType=None,
+            hierarchy=None,
+            level=None,
+            databaseField=None,
+        ))
     return fields
 
 
-def _shared_item(item):
+def _typed_item(item):
     if item.kind == KIND_BLANK:
         return Missing()
     if item.kind == KIND_TEXT:
@@ -178,15 +197,22 @@ def _shared_flags(items):
     mixed = len(kinds - {KIND_BLANK}) > 1
     flags = {
         "containsBlank": True if has_blank else None,
-        "containsString": True if has_string or has_bool else None,
+        "containsString": (
+            False if (has_number or has_date) and not (has_string or has_bool)
+            else True if (has_string or has_bool) and mixed else None
+        ),
         "containsNumber": True if has_number else None,
         "containsDate": True if has_date else None,
-        "containsNonDate": True if (has_string or has_number or has_bool) else None,
+        "containsNonDate": True if has_date and (
+            has_string or has_number or has_bool) else None,
         "containsInteger": True if numbers and all(
             float(value).is_integer() for value in numbers) else None,
         "containsMixedTypes": True if mixed else None,
-        "containsSemiMixedTypes": True if has_blank and (
-            has_string or has_number or has_bool or has_date) else None,
+        "containsSemiMixedTypes": (
+            True if has_blank and (
+                has_string or has_number or has_bool or has_date)
+            else False if has_number or has_date else None
+        ),
     }
     if numbers:
         flags["minValue"] = float(min(numbers))
@@ -205,14 +231,18 @@ def _shared_flags(items):
     return flags
 
 
-def _record_list(plan):
+def _record_list(plan, indexed_fields):
     catalogs = [ {item: index for index, item in enumerate(items)}
                  for items in plan.shared_items]
     records = []
     for record in plan.records:
         fields = []
-        for value, catalog in zip(record.values, catalogs):
-            fields.append(Index(v=catalog[value]))
+        for name, value, catalog in zip(
+                plan.fields, record.values, catalogs):
+            if name in indexed_fields:
+                fields.append(Index(v=catalog[value]))
+            else:
+                fields.append(_typed_item(value))
         records.append(Record(_fields=fields))
     return RecordList(r=records)
 
@@ -260,7 +290,6 @@ def _table_definition(plan, cache_id, workbook=None):
                 showAll=False,
             ))
 
-    row_keys = _visible_row_keys(plan)
     row_fields = [RowColField(x=plan.field_indexes[name]) for name in row_names]
     col_fields = [RowColField(x=plan.field_indexes[name]) for name in col_names]
     if values_field and values_on_rows:
@@ -268,15 +297,12 @@ def _table_definition(plan, cache_id, workbook=None):
     if values_field and not values_on_rows:
         col_fields.append(RowColField(x=_VALUES_FIELD))
 
-    row_items = _item_tuples(
-        row_keys, row_names, item_lookups, spec.values if values_on_rows
-        and values_field else None)
-    if spec.row_grand_totals:
-        if values_on_rows and values_field:
-            for measure_index, _measure in enumerate(spec.values):
-                row_items.append(RowColItem(
-                    t="grand", x=(Index(v=measure_index),)))
-        else:
+    if values_on_rows:
+        row_items = _values_axis_row_items(plan, row_names, item_lookups)
+    else:
+        row_items = _item_tuples(
+            _visible_row_keys(plan), row_names, item_lookups, None)
+        if spec.row_grand_totals:
             row_items.append(RowColItem(t="grand"))
 
     col_keys = list(plan.aggregate.column_keys)
@@ -288,26 +314,29 @@ def _table_definition(plan, cache_id, workbook=None):
             if not values_on_rows and values_field:
                 for measure_index, _measure in enumerate(spec.values):
                     col_items.append(RowColItem(
-                        t="grand", x=(Index(v=measure_index),)))
+                        t="grand", i=measure_index,
+                        x=(Index(v=measure_index),)))
             else:
                 col_items.append(RowColItem(t="grand"))
     elif values_field and not values_on_rows:
-        col_items = [
-            RowColItem(x=(Index(v=index),))
-            for index, _measure in enumerate(spec.values)
-        ]
+        col_items = []
+        previous = None
+        for index, _measure in enumerate(spec.values):
+            item, previous = _data_row_col_item(
+                (index,), previous, measure_index=index)
+            col_items.append(item)
     else:
-        col_items = [RowColItem(t="default")]
+        col_items = [RowColItem()]
 
     page_fields = []
     for item in spec.filters:
         index = plan.field_indexes[item.field]
         lookup = lookups[index]
         selected = _selected_items(item, plan.shared_items[index])
-        if len(selected) == 1:
+        if item.include is not None and len(selected) == 1:
             page_item = lookup[selected[0]]
         else:
-            page_item = -1
+            page_item = None
         page_fields.append(PageField(fld=index, item=page_item, hier=-1))
 
     from openpyxl.pivot.aggregate import _default_caption
@@ -318,6 +347,8 @@ def _table_definition(plan, cache_id, workbook=None):
             name=caption,
             fld=plan.field_indexes[measure.field],
             subtotal=_AGGREGATE_XML[measure.aggregate],
+            baseField=0,
+            baseItem=0,
             numFmtId=_number_format_id(workbook, measure.number_format),
         ))
 
@@ -346,6 +377,8 @@ def _table_definition(plan, cache_id, workbook=None):
             firstHeaderRow=plan.output.first_header_row,
             firstDataRow=plan.output.first_data_row,
             firstDataCol=plan.output.first_data_col,
+            rowPageCount=len(spec.filters) if spec.filters else None,
+            colPageCount=1 if spec.filters else None,
         ),
         pivotFields=pivot_fields,
         rowFields=tuple(row_fields),
@@ -362,7 +395,6 @@ def _table_definition(plan, cache_id, workbook=None):
             showColStripes=False,
             showLastColumn=True,
         ),
-        id=_CACHE_REL_ID,
     )
 
 
@@ -404,15 +436,25 @@ def _needs_values_field(spec):
 
 def _axis_pivot_field(name, axis, shared, axis_field, spec, flags):
     items, item_lookup = _field_items(shared, axis_field.items)
+    default_subtotal = None
+    if axis == "axisRow" and len(spec.rows) > 1 \
+            and spec.rows[-1].field != name:
+        if not spec.subtotals:
+            default_subtotal = False
+            items = items[:-1]
+    elif axis == "axisCol" and len(spec.columns) > 1 \
+            and spec.columns[-1].field != name:
+        # v1 subtotals apply only to row fields. Excel otherwise supplies
+        # automatic subtotals for outer column fields during refresh.
+        default_subtotal = False
+        items = items[:-1]
     field = PivotField(
         name=name,
         axis=axis,
         compact=flags["field_compact"],
         outline=flags["field_outline"],
         subtotalTop=spec.layout != "tabular",
-        defaultSubtotal=bool(
-            spec.subtotals and axis == "axisRow" and len(spec.rows) > 1
-            and spec.rows[-1].field != name),
+        defaultSubtotal=default_subtotal,
         showAll=False,
         items=items,
     )
@@ -424,16 +466,18 @@ def _filter_pivot_field(name, shared, item, flags):
     items = []
     for position, value in enumerate(shared):
         hidden = value not in selected
-        items.append(FieldItem(x=position, h=True if hidden else None))
-    items.append(FieldItem(t="default"))
+        items.append(FieldItem(
+            t=None, sd=None, x=position, h=True if hidden else None))
+    items.append(FieldItem(t="default", sd=None))
     return PivotField(
         name=name,
         axis="axisPage",
         compact=flags["field_compact"],
         outline=flags["field_outline"],
-        defaultSubtotal=False,
+        defaultSubtotal=None,
         showAll=False,
-        multipleItemSelectionAllowed=True if len(selected) != 1 else None,
+        multipleItemSelectionAllowed=(
+            True if item.include is None or len(selected) != 1 else None),
         items=items,
     )
 
@@ -445,8 +489,8 @@ def _field_items(shared, explicit):
         from openpyxl.pivot.source import typed_value
         lookup = {item: index for index, item in enumerate(shared)}
         order = [lookup[typed_value(value)] for value in explicit]
-    items = [FieldItem(x=position) for position in order]
-    items.append(FieldItem(t="default"))
+    items = [FieldItem(t=None, sd=None, x=position) for position in order]
+    items.append(FieldItem(t="default", sd=None))
     return items, {shared[position]: index for index, position in enumerate(order)}
 
 
@@ -463,26 +507,96 @@ def _visible_row_keys(plan):
     spec = plan.spec
     if spec.subtotals and len(spec.rows) > 1:
         from openpyxl.pivot.layout import _with_subtotal_rows
-        keys = _with_subtotal_rows(keys, plan.aggregate.row_subtotals)
+        keys = _with_subtotal_rows(
+            keys, plan.aggregate.row_subtotals,
+            totals_first=spec.layout in ("compact", "outline"))
     return keys
 
 
 def _item_tuples(keys, field_names, item_lookups, measures):
     items = []
+    previous = None
     for key in keys:
         if isinstance(key, tuple) and key and key[0] == "__subtotal__":
+            previous = None
             prefix = key[1]
             indexes = _key_indexes(prefix, field_names, item_lookups)
-            items.append(RowColItem(t="default", x=indexes))
+            if measures is None:
+                items.append(RowColItem(t="default", x=indexes))
+            else:
+                for measure_index, _measure in enumerate(measures):
+                    items.append(RowColItem(
+                        t="default", i=measure_index,
+                        x=indexes + (Index(v=measure_index),)))
             continue
         indexes = _key_indexes(key, field_names, item_lookups)
         if measures is None:
-            items.append(RowColItem(x=indexes))
+            item, previous = _data_row_col_item(
+                tuple(index.v for index in indexes), previous)
+            items.append(item)
         else:
             for measure_index, _measure in enumerate(measures):
-                items.append(RowColItem(
-                    x=indexes + (Index(v=measure_index),)))
+                values = tuple(index.v for index in indexes) + (measure_index,)
+                item, previous = _data_row_col_item(
+                    values, previous, measure_index=measure_index)
+                items.append(item)
     return items
+
+
+def _values_axis_row_items(plan, field_names, item_lookups):
+    from openpyxl.pivot.layout import _values_row_events
+
+    items = []
+    previous = None
+    for event in _values_row_events(plan.spec, plan.aggregate):
+        indexes = tuple(
+            index.v for index in _key_indexes(
+                event.key, field_names, item_lookups)
+        )
+        if event.kind == "dimension":
+            item, previous = _data_row_col_item(indexes, previous)
+        elif event.kind == "data":
+            values = indexes + (event.measure_index,)
+            item, previous = _data_row_col_item(
+                values, previous, measure_index=event.measure_index)
+        else:
+            item = RowColItem(
+                t="default",
+                i=event.measure_index or None,
+                x=tuple(Index(v=None if value == 0 else value)
+                        for value in indexes),
+            )
+            previous = None
+        items.append(item)
+    if plan.spec.row_grand_totals:
+        for measure_index, _measure in enumerate(plan.spec.values):
+            items.append(RowColItem(
+                t="grand",
+                i=measure_index or None,
+                x=(Index(v=None),),
+            ))
+    return items
+
+
+def _data_row_col_item(values, previous, measure_index=None):
+    repeated = 0
+    if previous is not None:
+        repeated = next(
+            (index for index, pair in enumerate(zip(previous, values))
+             if pair[0] != pair[1]),
+            min(len(previous), len(values)),
+        )
+    indexes = tuple(
+        Index(v=None if value == 0 else value)
+        for value in values[repeated:]
+    )
+    item = RowColItem(
+        t=None,
+        r=repeated or None,
+        i=measure_index or None,
+        x=indexes,
+    )
+    return item, values
 
 
 def _key_indexes(key, field_names, item_lookups):

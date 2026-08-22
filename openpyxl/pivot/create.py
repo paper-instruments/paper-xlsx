@@ -8,6 +8,7 @@ exception rolls both back.
 from __future__ import annotations
 
 import uuid
+from copy import copy
 from dataclasses import dataclass, replace
 
 from openpyxl.errors import (
@@ -55,6 +56,19 @@ class PivotCreateOperation:
     noop: bool = False
     replace_existing: bool = False
     relationship_id: str | None = None
+    cache_rebuild: bool = False
+    validate_source_identity: bool = True
+    source_snapshot: object = None
+    published_cell_payloads: tuple = ()
+    rollback_cells: tuple = ()
+    rollback_dirty_coordinates: tuple = ()
+    rollback_value_overwrites: tuple = ()
+    rollback_number_formats: tuple = ()
+    rollback_cell_styles: tuple = ()
+    qualification: object = None
+    worksheet: object = None
+    semantic_effects: tuple = ()
+    baseline_spec: object = None
 
 
 def create_pivot(worksheet, name, source, destination, rows, values,
@@ -119,7 +133,12 @@ def create_pivot(worksheet, name, source, destination, rows, values,
     formats_before = tuple(workbook._number_formats)
     styles_before = tuple(workbook._cell_styles)
     try:
-        payloads = build_pivot_payloads(plan, allocation.cache_id, workbook)
+        payloads = build_pivot_payloads(
+            plan,
+            allocation.cache_id,
+            workbook,
+            records_relationship_id=allocation.records_relationship_id,
+        )
         _checkpoint("built", workbook)
         _write_output_cells(worksheet, plan.output.cells)
         _checkpoint("cells", workbook)
@@ -140,6 +159,21 @@ def create_pivot(worksheet, name, source, destination, rows, values,
             owned_coordinates=tuple(
                 (cell.row, cell.column) for cell in plan.output.cells
             ),
+            cache_rebuild=True,
+            source_snapshot=snapshot,
+            published_cell_payloads=_capture_cell_payloads(
+                worksheet,
+                ((cell.row, cell.column) for cell in plan.output.cells),
+            ),
+            rollback_cells=cell_snapshots,
+            rollback_dirty_coordinates=tuple(sorted(dirty_before)),
+            rollback_value_overwrites=tuple(sorted(overwrites_before)),
+            rollback_number_formats=formats_before,
+            rollback_cell_styles=styles_before,
+            qualification=staged_qualification(),
+            worksheet=worksheet,
+            semantic_effects=("create",),
+            baseline_spec=None,
         )
         staged = dict(ledger.pivot_operations)
         staged[operation.session_id] = operation
@@ -159,9 +193,14 @@ def create_pivot(worksheet, name, source, destination, rows, values,
 
 
 def validate_create_freshness(workbook, ledger):
-    """Refuse a save when a staged create's source changed after planning."""
+    """Validate staged pivot sources and their exact worksheet payloads."""
+    _validate_managed_output_mutations(workbook, ledger)
     for operation in getattr(ledger, "pivot_operations", {}).values():
-        if operation.kind == "delete" or getattr(operation, "noop", False):
+        if getattr(operation, "noop", False):
+            continue
+        _validate_published_cells(workbook, operation)
+        if operation.kind == "delete" \
+                or not getattr(operation, "validate_source_identity", True):
             continue
         snapshot = snapshot_for_pivot(workbook, operation.spec.source)
         if _content_identity(snapshot) != operation.source_identity:
@@ -171,7 +210,8 @@ def validate_create_freshness(workbook, ledger):
                 "the pivot from the current source. Nothing was written."
                 % operation.name,
                 kind="stale-pivot",
-                anchor="%s!%s" % (operation.sheet, operation.name),
+                anchor="%s!%s" % (
+                    _operation_sheet_title(operation), operation.name),
             )
 
 
@@ -235,15 +275,26 @@ def iter_staged_states(workbook):
         identity = _staged_identity(operation)
         states.append(_PivotState(
             identity=identity,
-            sheet_title=operation.sheet,
+            sheet_title=_operation_sheet_title(operation),
             name=operation.name,
             projection=staged_projection(operation),
-            qualification=staged_qualification(),
+            qualification=operation.qualification or staged_qualification(),
         ))
     return tuple(states)
 
 
+def _operation_sheet_title(operation):
+    worksheet = getattr(operation, "worksheet", None)
+    return worksheet.title if worksheet is not None else operation.sheet
+
+
 def _validate_public_spec(spec):
+    if not spec.rows and not spec.columns:
+        raise UnsupportedStructureError(
+            "pivot creation requires at least one row or column field. "
+            "Nothing was changed.",
+            kind="unsupported-pivot-feature",
+        )
     if spec.style is not None and spec.style not in BUILT_IN_PIVOT_STYLES:
         raise UnsupportedStructureError(
             "pivot style %r is not a supported built-in PivotTable style. "
@@ -279,6 +330,7 @@ def _resolve_filters(filters, snapshot):
         shared_set = set(shared)
         if item.include is not None:
             selected = []
+            selected_typed = set()
             for value in item.include:
                 typed = typed_value(value)
                 if typed not in shared_set:
@@ -288,8 +340,14 @@ def _resolve_filters(filters, snapshot):
                         kind="invalid-pivot-source",
                         options=[item.field],
                     )
+                if typed in selected_typed:
+                    continue
+                selected_typed.add(typed)
                 selected.append(_plain(typed))
-            resolved.append(PivotItemFilter(item.field, include=selected))
+            resolved.append(PivotItemFilter(
+                item.field,
+                include=None if selected_typed == shared_set else selected,
+            ))
             continue
         excluded = {typed_value(value) for value in (item.exclude or ())}
         include = [_plain(value) for value in shared if value not in excluded]
@@ -298,7 +356,10 @@ def _resolve_filters(filters, snapshot):
                 "filters excluded every source row",
                 kind="invalid-pivot-source",
             )
-        resolved.append(PivotItemFilter(item.field, include=include))
+        resolved.append(PivotItemFilter(
+            item.field,
+            include=None if not excluded else include,
+        ))
     return tuple(resolved)
 
 
@@ -396,14 +457,14 @@ def _assert_name_available(name, graph, ledger, ignore_name=None):
 
 def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
                          ignore_coordinates=(), ignore_name=None):
-    output = range_boundaries(plan.output.ref)
+    occupied = _occupied_bounds(plan)
     source_bounds = snapshot.bounds
     if source_bounds[1] is not None and source_bounds[0] == worksheet.title:
         source = (
             source_bounds[1], source_bounds[2],
             source_bounds[3], source_bounds[4],
         )
-        if _ranges_overlap(output, source):
+        if _ranges_overlap(occupied, source):
             raise BoundaryViolationError(
                 "pivot output %s overlaps its source" % plan.output.ref,
                 kind="pivot-source-output-overlap",
@@ -414,7 +475,7 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
             bounds = range_boundaries(table.ref)
         except (TypeError, ValueError):
             continue
-        if _ranges_overlap(output, bounds):
+        if _ranges_overlap(occupied, bounds):
             raise BoundaryViolationError(
                 "pivot output %s overlaps table %r"
                 % (plan.output.ref, getattr(table, "displayName", table.ref)),
@@ -423,15 +484,20 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
             )
     for merged in worksheet.merged_cells.ranges:
         bounds = (merged.min_col, merged.min_row, merged.max_col, merged.max_row)
-        if _ranges_overlap(output, bounds):
+        if _ranges_overlap(occupied, bounds):
             raise BoundaryViolationError(
                 "pivot output %s overlaps a merged range" % plan.output.ref,
                 kind="pivot-output-collision",
                 anchor="%s!%s" % (worksheet.title, plan.output.ref),
             )
     hidden = hidden_pivot_parts(ledger)
+    current_by_original = {
+        original: item.title
+        for item, original in getattr(ledger, "renames", {}).items()
+    }
     for node in graph.pivots:
-        if node.sheet_title != worksheet.title or not node.output_range:
+        sheet_title = current_by_original.get(node.sheet_title, node.sheet_title)
+        if sheet_title != worksheet.title or not node.output_range:
             continue
         if node.identity.pivot_part in hidden:
             continue
@@ -441,7 +507,7 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
             bounds = range_boundaries(node.output_range)
         except (TypeError, ValueError):
             continue
-        if _ranges_overlap(output, bounds):
+        if _ranges_overlap(occupied, bounds):
             raise BoundaryViolationError(
                 "pivot output %s overlaps existing pivot %r"
                 % (plan.output.ref, node.identity.name),
@@ -449,7 +515,7 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
                 anchor="%s!%s" % (worksheet.title, plan.output.ref),
             )
     for operation in getattr(ledger, "pivot_operations", {}).values():
-        if operation.sheet != worksheet.title:
+        if _operation_sheet_title(operation) != worksheet.title:
             continue
         if operation.kind == "delete" or getattr(operation, "noop", False):
             continue
@@ -458,7 +524,7 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
         if not operation.output_range:
             continue
         bounds = range_boundaries(operation.output_range)
-        if _ranges_overlap(output, bounds):
+        if _ranges_overlap(occupied, bounds):
             raise BoundaryViolationError(
                 "pivot output %s overlaps staged pivot %r"
                 % (plan.output.ref, operation.name),
@@ -476,6 +542,14 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
         if existing.value is not None:
             raise BoundaryViolationError(
                 "pivot output collides with a nonblank cell at %s"
+                % existing.coordinate,
+                kind="pivot-output-collision",
+                anchor="%s!%s" % (worksheet.title, existing.coordinate),
+            )
+        if existing.has_style or existing._comment is not None \
+                or existing._hyperlink is not None:
+            raise BoundaryViolationError(
+                "pivot output collides with formatted or annotated cell %s"
                 % existing.coordinate,
                 kind="pivot-output-collision",
                 anchor="%s!%s" % (worksheet.title, existing.coordinate),
@@ -499,6 +573,12 @@ def _ranges_overlap(left, right):
     )
 
 
+def _occupied_bounds(plan):
+    columns = [cell.column for cell in plan.output.cells]
+    rows = [cell.row for cell in plan.output.cells]
+    return min(columns), min(rows), max(columns), max(rows)
+
+
 def _cell_snapshots(worksheet, cells):
     snapshots = []
     store = getattr(worksheet, "_cells", {})
@@ -509,7 +589,13 @@ def _cell_snapshots(worksheet, cells):
         else:
             snapshots.append((
                 cell.row, cell.column,
-                (existing._value, existing.data_type, existing._style),
+                (
+                    existing._value,
+                    existing.data_type,
+                    copy(existing._style) if existing._style is not None else None,
+                    existing._hyperlink,
+                    existing._comment,
+                ),
             ))
     return tuple(snapshots)
 
@@ -519,8 +605,10 @@ def _write_output_cells(worksheet, cells):
         if item.value is None:
             continue
         cell = worksheet.cell(item.row, item.column, value=item.value)
-        if item.number_format:
+        if item.number_format is not None:
             cell.number_format = item.number_format
+        elif cell.data_type != "d":
+            cell.number_format = "General"
 
 
 def _restore_cells(worksheet, snapshots):
@@ -531,8 +619,164 @@ def _restore_cells(worksheet, snapshots):
             continue
         cell = store.get((row, column))
         if cell is None:
+            cell = worksheet.cell(row, column)
+        value, data_type, style, hyperlink, comment = state
+        cell._value = value
+        cell._data_type = data_type
+        cell._style = copy(style) if style is not None else None
+        cell._hyperlink = hyperlink
+        if hyperlink is not None:
+            hyperlink.ref = cell.coordinate
+        cell._comment = comment
+        if comment is not None:
+            comment._parent = cell
+
+
+def _capture_cell_payloads(worksheet, coordinates):
+    """Freeze the exact cell payload a staged pivot intends to publish."""
+    store = getattr(worksheet, "_cells", {})
+    return tuple(
+        (row, column, _cell_payload(store.get((row, column))))
+        for row, column in sorted(set(coordinates))
+    )
+
+
+def _cell_payload(cell):
+    if cell is None:
+        return None
+    value = cell._value
+    value_type = (type(value).__module__, type(value).__qualname__)
+    style = tuple(cell._style) if cell._style is not None else None
+    comment = None
+    if cell._comment is not None:
+        comment = (
+            cell._comment.text,
+            cell._comment.author,
+            cell._comment.height,
+            cell._comment.width,
+        )
+    hyperlink = None
+    if cell._hyperlink is not None:
+        hyperlink = (
+            cell._hyperlink.target,
+            cell._hyperlink.location,
+            cell._hyperlink.tooltip,
+            cell._hyperlink.display,
+        )
+    return (value_type, value, cell.data_type, style, comment, hyperlink)
+
+
+def _validate_published_cells(workbook, operation):
+    worksheet = getattr(operation, "worksheet", None)
+    if worksheet is not None and (
+            worksheet.parent is not workbook
+            or worksheet not in workbook.worksheets):
+        raise UnsupportedStructureError(
+            "the worksheet for staged pivot %r is no longer in the "
+            "workbook. Nothing was written." % operation.name,
+            kind="invalid-pivot-graph",
+            anchor=operation.allocation.worksheet_part,
+        )
+    if worksheet is None:
+        try:
+            worksheet = workbook[operation.sheet]
+        except KeyError as exc:
+            raise UnsupportedStructureError(
+                "cannot resolve the worksheet for staged pivot %r. "
+                "Nothing was written." % operation.name,
+                kind="invalid-pivot-graph",
+                anchor=operation.allocation.worksheet_part,
+            ) from exc
+    store = getattr(worksheet, "_cells", {})
+    for row, column, expected in getattr(
+            operation, "published_cell_payloads", ()):
+        actual = _cell_payload(store.get((row, column)))
+        if actual != expected:
+            coordinate = worksheet.cell(row, column).coordinate
+            raise BoundaryViolationError(
+                "pivot output changed after the operation was staged at %s; "
+                "saving would publish worksheet cells that disagree with the "
+                "pivot graph. Nothing was written." % coordinate,
+                kind="pivot-output-collision",
+                anchor="%s!%s" % (worksheet.title, coordinate),
+            )
+
+
+def _validate_managed_output_mutations(workbook, ledger):
+    """Reject direct writes inside loaded PivotTable output rectangles."""
+    from openpyxl.pivot.graph import load_workbook_pivot_graph
+    from openpyxl.utils import get_column_letter
+
+    graph = load_workbook_pivot_graph(workbook)
+    operations = {
+        operation.allocation.pivot_part: operation
+        for operation in getattr(ledger, "pivot_operations", {}).values()
+    }
+    current_by_original = {
+        original: worksheet.title
+        for worksheet, original in getattr(ledger, "renames", {}).items()
+    }
+    worksheets = {worksheet.title: worksheet for worksheet in workbook.worksheets}
+    for node in graph.pivots:
+        sheet_title = current_by_original.get(node.sheet_title, node.sheet_title)
+        if not node.output_range or sheet_title not in worksheets:
             continue
-        cell._value, cell.data_type, cell._style = state
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(
+                node.output_range)
+        except (TypeError, ValueError):
+            continue
+        worksheet = worksheets[sheet_title]
+        managed = {
+            (row, column)
+            for row in range(min_row, max_row + 1)
+            for column in range(min_col, max_col + 1)
+        }
+        cache = graph.caches_by_part.get(node.cache_definition_part)
+        try:
+            from openpyxl.pivot.inspect import project_pivot
+            from openpyxl.pivot.plan import plan_pivot
+            from openpyxl.pivot.qualify import _snapshot_from_cache_package
+
+            projection = project_pivot(
+                node, cache, workbook._paper_source, workbook)
+            if projection.complete:
+                snapshot = _snapshot_from_cache_package(
+                    workbook._paper_source, node, projection)
+                plan = plan_pivot(projection.spec, snapshot)
+                managed = {
+                    (cell.row, cell.column) for cell in plan.output.cells
+                }
+        except Exception:
+            pass
+        dirty = {
+            (row, column)
+            for row, column in ledger.dirty_coordinates(worksheet)
+            if (row, column) in managed
+        }
+        if not dirty:
+            continue
+        operation = operations.get(node.identity.pivot_part)
+        allowed = set()
+        if operation is not None:
+            allowed = {
+                (row, column)
+                for row, column, _payload in getattr(
+                    operation, "published_cell_payloads", ())
+            }
+            allowed.update(getattr(operation, "clear_coordinates", ()))
+        unexpected = sorted(dirty - allowed)
+        if not unexpected:
+            continue
+        row, column = unexpected[0]
+        coordinate = "%s%s" % (get_column_letter(column), row)
+        raise BoundaryViolationError(
+            "cell %s is inside PivotTable %r output and was edited outside "
+            "its pivot operation. Nothing was written."
+            % (coordinate, node.identity.name),
+            kind="pivot-output-collision",
+            anchor="%s!%s" % (worksheet.title, coordinate),
+        )
 
 
 def _restore_ledger_cells(ledger, worksheet, dirty_before, overwrites_before):

@@ -1,16 +1,13 @@
 Pivot Tables
 ============
 
-openpyxl provides read-support for pivot tables so that they will be
-preserved in existing files. The specification for pivot tables, while
-extensive, is not very clear and it is not intended that client code should
-be able to create pivot tables. However, it should be possible to edit and
-manipulate existing pivot tables, eg. change their ranges or whether they
-should update automatically settings.
+paper-xlsx adds preserve-mode ``Worksheet.pivots`` for inspection and for
+Paper-managed classic worksheet PivotTables. See :ref:`paper-pivottables`.
+Direct mutation of inherited ``Worksheet._pivots`` is not the safe Paper API.
 
-As is the case for charts, images and tables there is currently no management
-API for pivot tables so that client code will have to loop over the
-``_pivots`` list of a worksheet.
+Upstream openpyxl still documents the low-level serializer objects below.
+Those objects remain available, but they are not the Paper mutation
+contract and must not be used to bypass typed refusals.
 
 
 Example

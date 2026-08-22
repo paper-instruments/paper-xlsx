@@ -80,6 +80,7 @@ class SourceSnapshot:
     identity: str
     bounds: tuple
     warnings: tuple = ()
+    calculation_provenance: object = None
 
     @property
     def field_index(self):
@@ -208,10 +209,21 @@ def snapshot_from_matrix(headers, rows, source=None, formula_coordinates=(),
 def snapshot_from_workbook(workbook, source, limits=DEFAULT_LIMITS):
     """Read a table or range through already-materialized cells only."""
     source = PivotSource.parse(source)
-    worksheet, ref = resolve_source_ref(workbook, source)
-    min_col, min_row, max_col, max_row = range_boundaries(ref)
+    table = None
+    if source.kind == "table":
+        worksheet, table = _find_table(workbook, source.name)
+        ref = table.ref
+    else:
+        worksheet, ref = resolve_source_ref(workbook, source)
+    min_col, min_row, max_col, max_row = _closed_range_boundaries(
+        worksheet, ref)
+    _refuse_merged_source(worksheet, min_col, min_row, max_col, max_row)
+    data_max_row = max_row
+    if table is not None:
+        data_max_row -= _validate_table_source(
+            worksheet, table, min_col, min_row, max_col, max_row)
     field_count = max_col - min_col + 1
-    data_rows = max_row - min_row
+    data_rows = data_max_row - min_row
     if field_count > limits.source_fields:
         raise BoundaryViolationError(
             "pivot source has %s fields; the limit is %s"
@@ -231,7 +243,7 @@ def snapshot_from_workbook(workbook, source, limits=DEFAULT_LIMITS):
     rows = []
     formulas = []
     cells = getattr(worksheet, "_cells", {})
-    for row in range(min_row + 1, max_row + 1):
+    for row in range(min_row + 1, data_max_row + 1):
         values = []
         for column in range(min_col, max_col + 1):
             cell = cells.get((row, column))
@@ -278,6 +290,98 @@ def resolve_source_ref(workbook, source):
         "unsupported pivot source kind %r" % source.kind,
         kind="unsupported-pivot-source",
     )
+
+
+def _closed_range_boundaries(worksheet, ref):
+    try:
+        bounds = range_boundaries(ref)
+    except (TypeError, ValueError) as exc:
+        raise BoundaryViolationError(
+            "pivot source %r is not a rectangular A1 range" % ref,
+            kind="invalid-pivot-source",
+            anchor="%s!%s" % (worksheet.title, ref),
+        ) from exc
+    if None in bounds:
+        raise BoundaryViolationError(
+            "pivot sources must have finite row and column bounds",
+            kind="unsupported-pivot-source",
+            anchor="%s!%s" % (worksheet.title, ref),
+            options=[ref],
+        )
+    return bounds
+
+
+def _refuse_merged_source(worksheet, min_col, min_row, max_col, max_row):
+    for merged in worksheet.merged_cells.ranges:
+        if not (
+            merged.max_col < min_col or max_col < merged.min_col
+            or merged.max_row < min_row or max_row < merged.min_row
+        ):
+            raise BoundaryViolationError(
+                "pivot source intersects merged cells at %s" % merged.coord,
+                kind="unsupported-pivot-source",
+                anchor="%s!%s" % (worksheet.title, merged.coord),
+                options=[merged.coord],
+            )
+
+
+def _validate_table_source(worksheet, table, min_col, min_row,
+                           max_col, max_row):
+    name = table.displayName or table.name
+    if table.tableType not in (None, "worksheet") \
+            or table.connectionId is not None:
+        raise BoundaryViolationError(
+            "table %r is query-backed or externally connected" % name,
+            kind="unsupported-pivot-source",
+            options=[name],
+        )
+    header_rows = table.headerRowCount
+    if header_rows is None:
+        header_rows = 1
+    if isinstance(header_rows, bool) or header_rows != 1:
+        raise BoundaryViolationError(
+            "table %r must have exactly one header row" % name,
+            kind="unsupported-pivot-source",
+            anchor="%s!%s" % (worksheet.title, table.ref),
+            options=[str(header_rows)],
+        )
+    totals_count = table.totalsRowCount
+    if isinstance(totals_count, bool) or totals_count not in (None, 0, 1):
+        raise BoundaryViolationError(
+            "table %r has unsupported totals-row metadata" % name,
+            kind="unsupported-pivot-source",
+            anchor="%s!%s" % (worksheet.title, table.ref),
+            options=[str(totals_count)],
+        )
+    totals_rows = int(totals_count == 1 or bool(table.totalsRowShown))
+    if max_row - min_row + 1 < header_rows + totals_rows + 1:
+        raise BoundaryViolationError(
+            "table %r must contain at least one data row" % name,
+            kind="invalid-pivot-source",
+            anchor="%s!%s" % (worksheet.title, table.ref),
+        )
+    columns = list(table.tableColumns)
+    width = max_col - min_col + 1
+    if columns and len(columns) != width:
+        raise BoundaryViolationError(
+            "table %r column metadata does not match its range" % name,
+            kind="unsupported-pivot-source",
+            anchor="%s!%s" % (worksheet.title, table.ref),
+            options=[str(len(columns)), str(width)],
+        )
+    if columns:
+        headers = [
+            _cell_value(worksheet, min_row, column)
+            for column in range(min_col, max_col + 1)
+        ]
+        declared = [column.name for column in columns]
+        if declared != headers:
+            raise BoundaryViolationError(
+                "table %r column metadata does not match its headers" % name,
+                kind="unsupported-pivot-source",
+                anchor="%s!%s" % (worksheet.title, table.ref),
+            )
+    return totals_rows
 
 
 def _validate_headers(headers, limits):

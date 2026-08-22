@@ -45,6 +45,15 @@ def _freeze_sequence(value, label):
     return items
 
 
+def _axis_item_identity(value):
+    """Return the equality key used by the typed pivot source model."""
+    if value is None or value == "":
+        return ("blank",)
+    if isinstance(value, bool):
+        return ("boolean", value)
+    return ("value", value)
+
+
 @dataclass(frozen=True)
 class PivotSource:
     """A same-workbook table or rectangular range source."""
@@ -126,10 +135,6 @@ def _parse_sheet_range(text):
     if not sheet or not cells:
         raise ValueError(
             "range shorthand must be an explicit sheet-qualified A1 range")
-    min_col, min_row, max_col, max_row = range_boundaries(cells)
-    if None in (min_col, min_row, max_col, max_row):
-        raise ValueError(
-            "range shorthand must include both corners of an A1 range")
     return PivotSource.range(sheet, cells)
 
 
@@ -144,10 +149,11 @@ class PivotAxisField:
         if self.items is not None:
             seen = set()
             for item in self.items:
-                if item in seen:
+                identity = _axis_item_identity(item)
+                if identity in seen:
                     raise ValueError(
                         "PivotAxisField.items must not contain duplicates")
-                seen.add(item)
+                seen.add(identity)
 
     def to_dict(self):
         payload = {"field": self.field}

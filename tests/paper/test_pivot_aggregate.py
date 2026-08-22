@@ -1,10 +1,12 @@
 """Deterministic pivot aggregation."""
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from openpyxl.errors import BoundaryViolationError
-from openpyxl.pivot.aggregate import aggregate_snapshot
+from openpyxl.pivot.aggregate import aggregate_snapshot, display_item
 from openpyxl.pivot.api_types import (
     PivotAxisField,
     PivotItemFilter,
@@ -12,7 +14,7 @@ from openpyxl.pivot.api_types import (
     PivotSource,
     PivotSpec,
 )
-from openpyxl.pivot.source import PivotLimits, snapshot_from_matrix
+from openpyxl.pivot.source import PivotLimits, snapshot_from_matrix, typed_value
 
 
 def _spec(**overrides):
@@ -94,6 +96,24 @@ def test_sum_refuses_text_or_boolean_measures():
     assert exc.value.kind == "invalid-pivot-source"
 
 
+@pytest.mark.parametrize("aggregate", ["min", "max"])
+@pytest.mark.parametrize("values", [
+    [date(2024, 1, 1), 1],
+    [1, date(2024, 1, 1)],
+])
+def test_min_max_refuse_mixed_dates_and_numbers(aggregate, values):
+    snapshot = snapshot_from_matrix(
+        ["Region", "Amount"],
+        [["East", value] for value in values],
+    )
+    with pytest.raises(BoundaryViolationError) as exc:
+        aggregate_snapshot(snapshot, _spec(
+            source=PivotSource.range("Data", "A1:B3"),
+            values=(PivotMeasure("Amount", aggregate=aggregate),),
+        ))
+    assert exc.value.kind == "invalid-pivot-source"
+
+
 def test_filters_and_repeated_keys_preserve_first_seen_order():
     result = aggregate_snapshot(_snapshot(), _spec(
         filters=(PivotItemFilter("Product", include=["A"]),),
@@ -142,3 +162,9 @@ def test_cardinality_limit_refuses_before_output_allocation():
         aggregate_snapshot(
             snapshot, _spec(), limits=PivotLimits(aggregate_states=0))
     assert exc.value.kind == "pivot-cardinality-too-large"
+
+
+def test_dimension_captions_match_excel_for_boolean_and_blank_items():
+    assert display_item(typed_value(True)) == "TRUE"
+    assert display_item(typed_value(False)) == "FALSE"
+    assert display_item(typed_value(None)) == "(blank)"

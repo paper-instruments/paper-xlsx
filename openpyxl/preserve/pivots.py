@@ -49,7 +49,39 @@ def _index(wb):
         for ws, original in getattr(ledger, "renames", {}).items()
     }
     qualified = graph.qualified_name_map(current_by_original)
-    return qualified, list(graph.registered_cache_parts)
+    cache_parts = set(graph.registered_cache_parts)
+    operations = getattr(ledger, "pivot_operations", {})
+    for operation in operations.values():
+        if not getattr(operation, "replace_existing", False):
+            continue
+        allocation = operation.allocation
+        for node in graph.pivots:
+            if node.identity.pivot_part != allocation.pivot_part:
+                continue
+            current_title = current_by_original.get(
+                node.sheet_title, node.sheet_title)
+            existing = qualified.get(node.identity.name, [])
+            qualified[node.identity.name] = [
+                item for item in existing
+                if item != (current_title, node.cache_definition_part)
+            ]
+            if not qualified[node.identity.name]:
+                qualified.pop(node.identity.name, None)
+            break
+        if operation.kind == "delete" or getattr(operation, "noop", False):
+            cache_parts.discard(allocation.cache_part)
+            continue
+        worksheet = getattr(operation, "worksheet", None)
+        sheet_title = worksheet.title if worksheet is not None \
+            else operation.sheet
+        qualified.setdefault(operation.name, []).append(
+            (sheet_title, allocation.cache_part))
+        cache_parts.add(allocation.cache_part)
+    qualified = {
+        name: list(dict.fromkeys(items))
+        for name, items in qualified.items()
+    }
+    return qualified, sorted(cache_parts)
 
 
 def _worksheet(wb, title):
@@ -831,8 +863,8 @@ def validate_source_freshness(wb, ledger):
     for operation in getattr(ledger, "pivot_operations", {}).values():
         if getattr(operation, "noop", False):
             continue
-        if operation.kind in (
-                "create", "refresh", "repoint", "update", "delete"):
+        if operation.kind == "delete" \
+                or getattr(operation, "cache_rebuild", False):
             rebuilt.add(operation.allocation.cache_part)
     unsafe = [impact for impact in impacts
               if impact["part"] not in ledger.pivot_refresh_requests

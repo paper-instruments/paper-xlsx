@@ -21,7 +21,7 @@ from openpyxl.errors import (
     RelationshipPolicyError,
     UnsupportedStructureError,
 )
-from openpyxl.xml.constants import REL_NS, SHEET_MAIN_NS
+from openpyxl.xml.constants import PKG_REL_NS, REL_NS, SHEET_MAIN_NS
 
 _PIVOT_TABLE_REL = "/pivotTable"
 _PIVOT_CACHE_REL = "/pivotCacheDefinition"
@@ -66,9 +66,7 @@ def _attr(element, *names):
 
 def _rid(element):
     attrib = element.attrib
-    if _REL_ID_NS in attrib:
-        return attrib[_REL_ID_NS]
-    return _attr(element, "id")
+    return attrib.get(_REL_ID_NS)
 
 
 def _children(element, tag):
@@ -199,6 +197,7 @@ class PivotCacheNode:
     records_part: str | None
     source_descriptor: SourceDescriptor | None
     referenced_by: tuple
+    records_relationship_id: str | None = None
     field_names: tuple = ()
     shared_item_kinds: tuple = ()
     declared_record_count: int | None = None
@@ -245,6 +244,7 @@ class PivotNode:
     cache_records_part: str | None
     output_range: str | None
     source_descriptor: SourceDescriptor | None
+    cache_relationship_id: str | None = None
     extension_fingerprints: tuple = ()
     tag: str | None = None
     created_version: str | None = None
@@ -391,13 +391,14 @@ def _load_from_zip(zin, workbook):
             "{0}. Nothing was changed.".format(exc),
             kind="invalid-pivot-graph") from exc
 
-    incoming, rels_by_owner = _scan_relationships(zin, names)
-    graph_reasons = []
+    incoming, rels_by_owner, duplicate_ids, relationship_reasons = \
+        _scan_relationships(zin, names)
+    graph_reasons = list(relationship_reasons)
     graph_reasons.extend(_duplicate_incoming_reasons(incoming))
 
     try:
         registered, registry_reasons = _workbook_cache_registry(
-            zin, names, workbook_part, rels_by_owner)
+            zin, names, workbook_part, rels_by_owner, duplicate_ids)
     except ScanRefusal as exc:
         raise RelationshipPolicyError(
             "workbook.xml is not a usable pivot registry: {0}. Nothing was "
@@ -434,7 +435,7 @@ def _load_from_zip(zin, workbook):
         for rel in sheet_rels:
             pivots.append(_parse_pivot(
                 zin, names, sheet_title, sheet_part, rel, cache_nodes,
-                incoming, workbook))
+                incoming, rels_by_owner, workbook))
 
     caches_by_id, caches_by_part, _id_reasons = _index_caches(cache_nodes)
     pivots = tuple(_rebind_pivot_caches(node, caches_by_id) for node in pivots)
@@ -466,25 +467,109 @@ def _load_from_zip(zin, workbook):
 def _scan_relationships(zin, names):
     incoming = {}
     by_owner = {}
+    duplicate_ids = {}
+    reasons = []
     for rels_part in sorted(name for name in names if name.endswith(".rels")):
         owner = _owner_of_rels(rels_part)
         root = _parse_xml(zin.read(rels_part))
-        if root is None or _local(root.tag) != "Relationships":
+        if root is None:
+            continue
+        if root.tag != "{%s}Relationships" % PKG_REL_NS:
+            reasons.append(_reason(
+                "unexpected-namespace", part=owner,
+                element=_local(root.tag)))
+            by_owner[owner] = ()
             continue
         rels = []
+        relationship_counts = {}
         for child in list(root):
-            if _local(child.tag) != "Relationship":
-                continue
-            if child.attrib.get("TargetMode") == "External":
+            if child.tag != "{%s}Relationship" % PKG_REL_NS:
+                if _local(child.tag) == "Relationship":
+                    reasons.append(_reason(
+                        "unexpected-namespace", part=owner,
+                        element="Relationship"))
                 continue
             rel_id = child.attrib.get("Id", "")
+            relationship_counts[rel_id] = relationship_counts.get(rel_id, 0) + 1
+            if child.attrib.get("TargetMode") == "External":
+                continue
             rel_type = child.attrib.get("Type", "")
             target = _resolve_target(owner, child.attrib.get("Target", ""))
             rel = IncomingRelationship(owner, rel_id, rel_type, target)
             rels.append(rel)
             incoming.setdefault(target, []).append(rel)
         by_owner[owner] = tuple(rels)
-    return incoming, by_owner
+        repeated = tuple(sorted(
+            rel_id for rel_id, count in relationship_counts.items()
+            if count > 1
+        ))
+        if repeated:
+            duplicate_ids[owner] = repeated
+            reasons.extend(
+                _reason("duplicate-relationship-id", part=owner, rid=rel_id)
+                for rel_id in repeated
+            )
+    return incoming, by_owner, duplicate_ids, reasons
+
+
+def _resolve_internal_relationship(
+        root, owner_part, rels_by_owner, expected_type, link,
+        *, allow_implicit=False, required=True):
+    """Resolve one part-level relationship without guessing past ``r:id``."""
+    rels = rels_by_owner.get(owner_part, ())
+    rid = _rid(root)
+    if rid is not None:
+        if not rid:
+            return None, (_reason(
+                "missing-relationship-id", part=owner_part, link=link),)
+        matches = [rel for rel in rels if rel.relationship_id == rid]
+        if not matches:
+            return None, (_reason(
+                "missing-internal-relationship", part=owner_part, rid=rid,
+                link=link),)
+        if len(matches) != 1:
+            return None, (_reason(
+                "duplicate-relationship-id", part=owner_part, rid=rid,
+                link=link),)
+        rel = matches[0]
+        if not rel.rel_type.endswith(expected_type):
+            return None, (_reason(
+                "relationship-type-mismatch", part=owner_part, rid=rid,
+                link=link, rel_type=rel.rel_type),)
+        return rel, ()
+
+    typed = [rel for rel in rels if rel.rel_type.endswith(expected_type)]
+    if allow_implicit and len(typed) == 1:
+        rel = typed[0]
+        if not rel.relationship_id:
+            return None, (_reason(
+                "missing-relationship-id", part=owner_part, link=link),)
+        matches = [
+            item for item in rels
+            if item.relationship_id == rel.relationship_id
+        ]
+        if len(matches) != 1:
+            return None, (_reason(
+                "duplicate-relationship-id", part=owner_part,
+                rid=rel.relationship_id, link=link),)
+        return rel, ()
+    if allow_implicit and len(typed) > 1:
+        relationship_ids = [rel.relationship_id for rel in typed]
+        if len(set(relationship_ids)) != len(relationship_ids):
+            return None, (_reason(
+                "duplicate-relationship-id", part=owner_part, link=link),)
+        return None, (_reason(
+            "ambiguous-internal-relationship", part=owner_part, link=link),)
+    if allow_implicit and required:
+        if rels:
+            return None, (_reason(
+                "relationship-type-mismatch", part=owner_part, link=link),)
+        return None, (_reason(
+            "missing-internal-relationship", part=owner_part, link=link),)
+    if required:
+        return None, (_reason(
+            "missing-relationship-id", part=owner_part, link=link),)
+    return None, ()
 
 
 def _duplicate_incoming_reasons(incoming):
@@ -514,27 +599,42 @@ def _duplicate_incoming_reasons(incoming):
     return reasons
 
 
-def _workbook_cache_registry(zin, names, workbook_part, rels_by_owner):
-    from openpyxl.preserve import crosspart
-
-    root = crosspart.scan_small(zin.read(workbook_part), "workbook",
-                                max_depth=3)
+def _workbook_cache_registry(
+        zin, names, workbook_part, rels_by_owner, duplicate_ids_by_owner):
+    root = _parse_xml(zin.read(workbook_part))
+    if root is None or root.tag != "{%s}workbook" % SHEET_MAIN_NS:
+        return [], [_reason(
+            "unexpected-namespace", part=workbook_part,
+            element="workbook")]
+    workbook_rels = rels_by_owner.get(workbook_part, ())
+    duplicate_ids = set(duplicate_ids_by_owner.get(workbook_part, ()))
     cache_targets = {
         rel.relationship_id: rel.target
-        for rel in rels_by_owner.get(workbook_part, ())
+        for rel in workbook_rels
         if rel.rel_type.endswith(_PIVOT_CACHE_REL)
+        and rel.relationship_id not in duplicate_ids
     }
     registered = []
     reasons = []
     seen_ids = {}
-    for group in root.children:
-        if group.local() != "pivotCaches":
+    for group in list(root):
+        if _local(group.tag) != "pivotCaches":
             continue
-        for child in group.children:
-            if child.local() != "pivotCache":
+        if group.tag != "{%s}pivotCaches" % SHEET_MAIN_NS:
+            reasons.append(_reason(
+                "unexpected-namespace", part=workbook_part,
+                element="pivotCaches"))
+            continue
+        for child in list(group):
+            if _local(child.tag) != "pivotCache":
                 continue
-            cache_id = child.attrs.get("cacheId")
-            rid = child.attrs.get("id") or child.attrs.get("r:id")
+            cache_id = child.attrib.get("cacheId")
+            rid = child.attrib.get(_REL_ID_NS)
+            if child.tag != "{%s}pivotCache" % SHEET_MAIN_NS:
+                reasons.append(_reason(
+                    "unexpected-namespace", part=workbook_part,
+                    cache_id=cache_id, element="pivotCache"))
+                continue
             target = cache_targets.get(rid)
             exists = bool(target) and target in names
             if cache_id is None:
@@ -585,11 +685,25 @@ def _parse_cache(zin, names, part, cache_ids, rels_by_owner, incoming,
             valid=False,
         )
 
-    records_rel = None
-    for rel in rels_by_owner.get(part, ()):
-        if rel.rel_type.endswith(_PIVOT_RECORDS_REL):
-            records_rel = rel
-            break
+    declared = _attr(root, "recordCount")
+    try:
+        declared_count = int(declared) if declared is not None else None
+    except (TypeError, ValueError):
+        declared_count = None
+        reasons.append(_reason("invalid-record-count", part=part, value=declared))
+
+    has_records_link = _rid(root) is not None or any(
+        rel.rel_type.endswith(_PIVOT_RECORDS_REL)
+        for rel in rels_by_owner.get(part, ()))
+    records_rel, relationship_reasons = _resolve_internal_relationship(
+        root,
+        part,
+        rels_by_owner,
+        _PIVOT_RECORDS_REL,
+        "cache-to-records",
+        required=has_records_link or bool(declared_count),
+    )
+    reasons.extend(relationship_reasons)
     records_part = records_rel.target if records_rel is not None else None
     if records_part and records_part not in names:
         reasons.append(_reason(
@@ -610,12 +724,6 @@ def _parse_cache(zin, names, part, cache_ids, rels_by_owner, incoming,
         reasons.append(_reason(
             "duplicate-incoming", part=records_part, owner=part))
 
-    declared = _attr(root, "recordCount")
-    try:
-        declared_count = int(declared) if declared is not None else None
-    except (TypeError, ValueError):
-        declared_count = None
-        reasons.append(_reason("invalid-record-count", part=part, value=declared))
     if (declared_count is not None and records_actual is not None
             and declared_count != records_actual):
         reasons.append(_reason(
@@ -638,6 +746,8 @@ def _parse_cache(zin, names, part, cache_ids, rels_by_owner, incoming,
         records_part=records_part if records_part in names else None,
         source_descriptor=source,
         referenced_by=(),
+        records_relationship_id=(
+            records_rel.relationship_id if records_rel is not None else None),
         field_names=tuple(fields),
         shared_item_kinds=tuple(kinds),
         declared_record_count=declared_count,
@@ -821,7 +931,7 @@ def _extension_fingerprints(root):
 
 
 def _parse_pivot(zin, names, sheet_title, sheet_part, rel, cache_nodes,
-                 incoming, workbook):
+                 incoming, rels_by_owner, workbook):
     identity = PivotIdentity(
         worksheet_part=sheet_part,
         pivot_part=rel.target,
@@ -886,18 +996,16 @@ def _parse_pivot(zin, names, sheet_title, sheet_part, rel, cache_nodes,
         reasons.append(_reason("missing-name", part=rel.target, sheet=sheet_title))
 
     cache_id = _attr(root, "cacheId")
-    cache_from_rel = None
-    rels_part = _rels_path(rel.target)
-    if rels_part in names:
-        rel_root = _parse_xml(zin.read(rels_part))
-        if rel_root is not None:
-            for child in list(rel_root):
-                if _local(child.tag) != "Relationship":
-                    continue
-                if child.attrib.get("Type", "").endswith(_PIVOT_CACHE_REL):
-                    cache_from_rel = _resolve_target(
-                        rel.target, child.attrib.get("Target", ""))
-                    break
+    cache_rel, relationship_reasons = _resolve_internal_relationship(
+        root,
+        rel.target,
+        rels_by_owner,
+        _PIVOT_CACHE_REL,
+        "pivot-to-cache",
+        allow_implicit=True,
+    )
+    reasons.extend(relationship_reasons)
+    cache_from_rel = cache_rel.target if cache_rel is not None else None
     if cache_from_rel and cache_from_rel not in names:
         reasons.append(_reason(
             "dangling-pivot-cache", part=rel.target, cache_part=cache_from_rel))
@@ -915,6 +1023,12 @@ def _parse_pivot(zin, names, sheet_title, sheet_part, rel, cache_nodes,
             "cache-relationship-mismatch", part=rel.target,
             cache_id=cache_id, rel_target=cache_from_rel,
             registry_part=cache_node.definition_part))
+    if (cache_node is not None and cache_id is not None
+            and cache_node.cache_id != cache_id):
+        reasons.append(_reason(
+            "cache-relationship-mismatch", part=rel.target,
+            cache_id=cache_id, rel_target=cache_from_rel,
+            registry_cache_id=cache_node.cache_id))
 
     location = _first(root, "location")
     output_range = _attr(location, "ref") if location is not None else None
@@ -947,6 +1061,8 @@ def _parse_pivot(zin, names, sheet_title, sheet_part, rel, cache_nodes,
             cache_node.records_part if cache_node is not None else None),
         output_range=output_range,
         source_descriptor=source,
+        cache_relationship_id=(
+            cache_rel.relationship_id if cache_rel is not None else None),
         extension_fingerprints=tuple(_extension_fingerprints(root)),
         tag=_attr(root, "tag"),
         created_version=_attr(root, "createdVersion"),
@@ -1034,6 +1150,10 @@ def _pivot_fields(root):
                 "field": field_index,
                 "aggregate": _DATA_FIELD_FUNCS.get(func, func),
                 "name": _attr(child, "name"),
+                "number_format_id": _attr(child, "numFmtId"),
+                "show_data_as": _attr(child, "showDataAs") or "normal",
+                "base_field": _attr(child, "baseField"),
+                "base_item": _attr(child, "baseItem"),
             }))
     return len(fields), row_fields, column_fields, page_fields, data_fields, reasons
 
@@ -1053,6 +1173,7 @@ def _attach_cache_references(cache_nodes, pivots):
             records_part=node.records_part,
             source_descriptor=node.source_descriptor,
             referenced_by=referenced,
+            records_relationship_id=node.records_relationship_id,
             field_names=node.field_names,
             shared_item_kinds=node.shared_item_kinds,
             declared_record_count=node.declared_record_count,
@@ -1107,6 +1228,7 @@ def _rebind_pivot_caches(node, caches_by_id):
         cache_records_part=cache.records_part,
         output_range=node.output_range,
         source_descriptor=cache.source_descriptor or node.source_descriptor,
+        cache_relationship_id=node.cache_relationship_id,
         extension_fingerprints=node.extension_fingerprints,
         tag=node.tag,
         created_version=node.created_version,

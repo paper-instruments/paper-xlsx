@@ -13,13 +13,14 @@ from openpyxl.pivot.api_types import (
     PivotSource,
     PivotSpec,
 )
-from openpyxl.pivot.layout import ROLE_GRAND_TOTAL, ROLE_HEADER, ROLE_VALUE
+from openpyxl.pivot.layout import ROLE_GRAND_TOTAL, ROLE_HEADER, ROLE_SUBTOTAL, ROLE_VALUE
 from openpyxl.pivot.plan import plan_pivot
 from openpyxl.pivot.source import (
     DEFAULT_LIMITS,
     PivotLimits,
     snapshot_from_matrix,
 )
+from openpyxl.utils.cell import range_boundaries
 from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW
 
 from .conftest import FIXTURES_DIR
@@ -56,26 +57,37 @@ def _grid(plan):
     }
 
 
+def _matrix(plan):
+    min_col, min_row, max_col, max_row = range_boundaries(plan.output.ref)
+    grid = _grid(plan)
+    return [
+        [grid.get((row, column))
+         for column in range(min_col, max_col + 1)]
+        for row in range(min_row, max_row + 1)
+    ]
+
+
 def test_tabular_one_row_field_one_measure():
     plan = _plan()
     grid = _grid(plan)
     assert plan.output.destination == "E3"
-    assert plan.output.ref == "E3:F6"
-    assert plan.output.first_header_row == 1
+    assert plan.output.ref == "E3:F7"
+    assert plan.output.first_header_row == 2
     assert plan.output.first_data_row == 2
     assert plan.output.first_data_col == 1
-    assert grid[(3, 5)] == "Region"
-    assert grid[(3, 6)] == "Sum"
-    assert grid[(4, 5)] == "East"
-    assert grid[(4, 6)] == 10
-    assert grid[(5, 5)] == "West"
-    assert grid[(5, 6)] == 7
-    assert grid[(6, 5)] == "Grand Total"
-    assert grid[(6, 6)] == 17
+    assert grid[(3, 5)] == "Sum"
+    assert grid[(4, 5)] == "Region"
+    assert grid[(4, 6)] == "Total"
+    assert grid[(5, 5)] == "East"
+    assert grid[(5, 6)] == 10
+    assert grid[(6, 5)] == "West"
+    assert grid[(6, 6)] == 7
+    assert grid[(7, 5)] == "Grand Total"
+    assert grid[(7, 6)] == 17
     roles = {(cell.row, cell.column): cell.role for cell in plan.output.cells}
-    assert roles[(3, 6)] == ROLE_HEADER
-    assert roles[(4, 6)] == ROLE_VALUE
-    assert roles[(6, 6)] == ROLE_GRAND_TOTAL
+    assert roles[(4, 6)] == ROLE_HEADER
+    assert roles[(5, 6)] == ROLE_VALUE
+    assert roles[(7, 6)] == ROLE_GRAND_TOTAL
 
 
 def test_multiple_measures_and_values_axis_orientations():
@@ -84,10 +96,10 @@ def test_multiple_measures_and_values_axis_orientations():
         PivotMeasure("Amount", aggregate="count", caption="Count"),
     ))
     assert columns.output.column_count == 3
-    assert _grid(columns)[(3, 6)] == "Sum"
-    assert _grid(columns)[(3, 7)] == "Count"
-    assert _grid(columns)[(4, 6)] == 10
-    assert _grid(columns)[(4, 7)] == 1
+    assert _grid(columns)[(4, 6)] == "Sum"
+    assert _grid(columns)[(4, 7)] == "Count"
+    assert _grid(columns)[(5, 6)] == 10
+    assert _grid(columns)[(5, 7)] == 1
 
     rows = _plan(
         values=(
@@ -100,6 +112,217 @@ def test_multiple_measures_and_values_axis_orientations():
     assert rows.output.row_count >= 4
     assert "Sum" in _grid(rows).values()
     assert "Count" in _grid(rows).values()
+
+
+def test_values_on_rows_preserve_dimension_labels_and_measure_captions():
+    snapshot = snapshot_from_matrix(
+        ["Region", "Product", "Amount"],
+        [["East", "A", 10], ["East", "B", 4], ["West", "A", 7]],
+        source=PivotSource.range("Data", "A1:C4"),
+    )
+    spec = PivotSpec(
+        name="SalesByRegion",
+        source=PivotSource.range("Data", "A1:C4"),
+        destination="E3",
+        rows=(PivotAxisField("Region"),),
+        columns=(PivotAxisField("Product"),),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Sum"),
+            PivotMeasure("Amount", aggregate="count", caption="Count"),
+        ),
+        layout="tabular",
+        values_axis="rows",
+        row_grand_totals=True,
+        column_grand_totals=False,
+    )
+
+    plan = plan_pivot(spec, snapshot)
+
+    assert plan.output.ref == "E3:H10"
+    assert plan.output.row_count == 8
+    assert plan.output.column_count == 4
+    assert plan.output.first_data_row == 2
+    assert plan.output.first_data_col == 2
+    assert _matrix(plan) == [
+        [None, None, "Product", None],
+        ["Region", "Values", "A", "B"],
+        ["East", "Sum", 10, 4],
+        [None, "Count", 1, 1],
+        ["West", "Sum", 7, None],
+        [None, "Count", 1, None],
+        ["Total Sum", None, 17, 4],
+        ["Total Count", None, 2, 1],
+    ]
+
+
+def test_nested_column_fields_materialize_every_header_level():
+    snapshot = snapshot_from_matrix(
+        ["Region", "Year", "Quarter", "Amount", "Units"],
+        [
+            ["East", 2024, "Q1", 10, 1],
+            ["East", 2024, "Q2", 4, 2],
+            ["West", 2025, "Q1", 7, 3],
+        ],
+        source=PivotSource.range("Data", "A1:E4"),
+    )
+    spec = PivotSpec(
+        name="SalesByPeriod",
+        source=PivotSource.range("Data", "A1:E4"),
+        destination="B4",
+        rows=(PivotAxisField("Region"),),
+        columns=(PivotAxisField("Year"), PivotAxisField("Quarter")),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Revenue"),
+            PivotMeasure("Units", aggregate="sum", caption="Units"),
+        ),
+        layout="tabular",
+        values_axis="columns",
+        row_grand_totals=False,
+        column_grand_totals=False,
+    )
+
+    plan = plan_pivot(spec, snapshot)
+
+    assert plan.output.ref == "B4:H9"
+    assert plan.output.row_count == 6
+    assert plan.output.column_count == 7
+    assert plan.output.first_data_row == 4
+    assert plan.output.first_data_col == 1
+    assert _matrix(plan) == [
+        [None, "Year", "Quarter", "Values", None, None, None],
+        [None, 2024, None, None, None, 2025, None],
+        [None, "Q1", None, "Q2", None, "Q1", None],
+        ["Region", "Revenue", "Units", "Revenue", "Units", "Revenue", "Units"],
+        ["East", 10, 1, 4, 2, None, None],
+        ["West", None, None, None, None, 7, 3],
+    ]
+
+
+def test_subtotals_on_values_axis_rows_stay_inside_ref():
+    plan = _plan(
+        data=[["East", "A", 10], ["East", "B", 4], ["West", "A", 7]],
+        rows=(PivotAxisField("Region"), PivotAxisField("Product")),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Sum"),
+            PivotMeasure("Amount", aggregate="count", caption="Count"),
+        ),
+        values_axis="rows",
+        subtotals=True,
+        layout="tabular",
+    )
+    min_col, min_row, max_col, max_row = range_boundaries(plan.output.ref)
+    for cell in plan.output.cells:
+        assert min_row <= cell.row <= max_row
+        assert min_col <= cell.column <= max_col
+    grid = _grid(plan)
+    assert "East Sum" in grid.values()
+    assert "East Count" in grid.values()
+    subtotal_rows = sorted({
+        cell.row for cell in plan.output.cells if cell.role == ROLE_SUBTOTAL
+    })
+    assert len(subtotal_rows) == 4
+    east_total_row = min(
+        cell.row for cell in plan.output.cells
+        if cell.value == "East Sum")
+    assert grid[(east_total_row, 8)] == 14
+    assert grid[(east_total_row + 1, 8)] == 2
+    grand_row = min(
+        cell.row for cell in plan.output.cells
+        if cell.value == "Total Sum")
+    assert grand_row == max(subtotal_rows) + 1
+    assert grid[(grand_row, 8)] == 21
+    assert grid[(grand_row + 1, 8)] == 3
+
+
+@pytest.mark.parametrize(
+    "layout, expected",
+    (
+        ("outline", [
+            ["Region", "Product", "Values", None],
+            ["East", None, None, None],
+            [None, "A", None, None],
+            [None, None, "Sum", 10],
+            [None, None, "Count", 1],
+            [None, "B", None, None],
+            [None, None, "Sum", 4],
+            [None, None, "Count", 1],
+            ["East Sum", None, None, 14],
+            ["East Count", None, None, 2],
+            ["West", None, None, None],
+            [None, "A", None, None],
+            [None, None, "Sum", 7],
+            [None, None, "Count", 1],
+            ["West Sum", None, None, 7],
+            ["West Count", None, None, 1],
+            ["Total Sum", None, None, 21],
+            ["Total Count", None, None, 3],
+        ]),
+        ("compact", [
+            ["Row Labels", None],
+            ["East", None],
+            ["A", None],
+            ["Sum", 10],
+            ["Count", 1],
+            ["B", None],
+            ["Sum", 4],
+            ["Count", 1],
+            ["East Sum", 14],
+            ["East Count", 2],
+            ["West", None],
+            ["A", None],
+            ["Sum", 7],
+            ["Count", 1],
+            ["West Sum", 7],
+            ["West Count", 1],
+            ["Total Sum", 21],
+            ["Total Count", 3],
+        ]),
+    ),
+)
+def test_values_on_rows_match_excel_hierarchical_layout(layout, expected):
+    plan = _plan(
+        data=[["East", "A", 10], ["East", "B", 4], ["West", "A", 7]],
+        rows=(PivotAxisField("Region"), PivotAxisField("Product")),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Sum"),
+            PivotMeasure("Amount", aggregate="count", caption="Count"),
+        ),
+        values_axis="rows",
+        subtotals=True,
+        layout=layout,
+    )
+    assert _matrix(plan) == expected
+
+
+def test_multilevel_column_grand_total_captions_match_excel_header_row():
+    snapshot = snapshot_from_matrix(
+        ["Region", "Year", "Quarter", "Amount"],
+        [
+            ["East", 2024, "Q1", 10],
+            ["East", 2024, "Q2", 4],
+            ["West", 2025, "Q1", 7],
+        ],
+        source=PivotSource.range("Data", "A1:D4"),
+    )
+    spec = PivotSpec(
+        name="SalesByPeriod",
+        source=PivotSource.range("Data", "A1:D4"),
+        destination="B4",
+        rows=(PivotAxisField("Region"),),
+        columns=(PivotAxisField("Year"), PivotAxisField("Quarter")),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Sum"),
+            PivotMeasure("Amount", aggregate="count", caption="Count"),
+        ),
+        layout="tabular",
+        values_axis="columns",
+        row_grand_totals=True,
+        column_grand_totals=True,
+    )
+    plan = plan_pivot(spec, snapshot)
+    matrix = _matrix(plan)
+    assert matrix[1][-2:] == ["Total Sum", "Total Count"]
+    assert matrix[2][-2:] == [None, None]
 
 
 def test_compact_outline_and_tabular_label_columns():
@@ -122,6 +345,33 @@ def test_compact_outline_and_tabular_label_columns():
     assert compact.output.first_data_col == 1
     assert outline.output.first_data_col == 2
     assert "layout-coordinates-provisional" in tabular.warnings
+
+
+def test_outline_subtotals_match_excel_top_of_group_geometry():
+    plan = _plan(
+        data=[
+            ["East", "A", 10],
+            ["East", "B", 4],
+            ["West", "A", 7],
+            ["West", "B", 6],
+        ],
+        rows=(PivotAxisField("Region"), PivotAxisField("Product")),
+        layout="outline",
+        subtotals=True,
+    )
+    assert plan.output.ref == "E3:G10"
+    assert plan.output.first_header_row == 1
+    assert plan.output.first_data_row == 1
+    assert _matrix(plan) == [
+        ["Region", "Product", "Sum"],
+        ["East", None, 14],
+        [None, "A", 10],
+        [None, "B", 4],
+        ["West", None, 13],
+        [None, "A", 7],
+        [None, "B", 6],
+        ["Grand Total", None, 27],
+    ]
 
 
 def test_output_beyond_sheet_edge_refuses():

@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime
 
 from openpyxl.pivot.api_types import (
     SUPPORTED_AGGREGATES,
@@ -122,7 +123,8 @@ def project_pivot(node, cache, source=None, workbook=None):
         details.get("page_includes") or {},
         node.identity.pivot_part, reasons)
     values = _project_values(
-        node.data_fields, field_names, node.identity.pivot_part, reasons)
+        node.data_fields, field_names, node.identity.pivot_part, reasons,
+        workbook)
 
     complete = not reasons
     spec = None
@@ -334,17 +336,18 @@ def _project_filters(page_fields, field_names, shared_counts, shared_values,
         elif selected:
             values = []
             shared = shared_values[field_index] if field_index < len(shared_values) else ()
-            for shared_index in selected:
-                if shared_index < len(shared):
-                    values.append(shared[shared_index])
-                else:
-                    values.append(shared_index)
-            include = tuple(values) if values else None
+            if tuple(selected) != tuple(range(len(shared))):
+                for shared_index in selected:
+                    if shared_index < len(shared):
+                        values.append(shared[shared_index])
+                    else:
+                        values.append(shared_index)
+                include = tuple(values) if values else None
         filters.append(PivotItemFilter(name, include=include))
     return tuple(filters)
 
 
-def _project_values(data_fields, field_names, part, reasons):
+def _project_values(data_fields, field_names, part, reasons, workbook=None):
     if not data_fields:
         return None
     values = []
@@ -362,13 +365,62 @@ def _project_values(data_fields, field_names, part, reasons):
                 aggregate=str(aggregate),
             ))
             return None
+        show_data_as = item.get("show_data_as") or "normal"
+        base_field = item.get("base_field")
+        base_item = item.get("base_item")
+        base_pair = (base_field, base_item)
+        supported_base = (
+            base_field in (None, "-1")
+            and base_item in (None, "1048832")
+        ) or base_pair == ("0", "0")
+        if show_data_as != "normal" or not supported_base:
+            reasons.append(_reason(
+                "unsupported-data-field-semantics",
+                part=part,
+                field=name,
+                show_data_as=show_data_as,
+            ))
+            return None
+        number_format = _number_format(
+            item.get("number_format_id"), workbook, part, name, reasons)
+        if number_format is _INVALID_NUMBER_FORMAT:
+            return None
         caption = item.get("name")
         values.append(PivotMeasure(
             name,
             aggregate=aggregate,
             caption=caption if caption else None,
+            number_format=number_format,
         ))
     return tuple(values)
+
+
+_INVALID_NUMBER_FORMAT = object()
+
+
+def _number_format(raw, workbook, part, field, reasons):
+    if raw is None:
+        return None
+    try:
+        number_format_id = int(raw)
+    except (TypeError, ValueError):
+        reasons.append(_reason(
+            "invalid-number-format", part=part, field=field, value=str(raw)))
+        return _INVALID_NUMBER_FORMAT
+    from openpyxl.styles.numbers import (
+        BUILTIN_FORMATS, BUILTIN_FORMATS_MAX_SIZE,
+    )
+
+    if number_format_id in BUILTIN_FORMATS:
+        return BUILTIN_FORMATS[number_format_id]
+    index = number_format_id - BUILTIN_FORMATS_MAX_SIZE
+    formats = () if workbook is None else workbook._number_formats
+    if index < 0 or index >= len(formats):
+        reasons.append(_reason(
+            "invalid-number-format", part=part, field=field,
+            value=str(number_format_id)))
+        return _INVALID_NUMBER_FORMAT
+    return formats[index]
 
 
 def _field_name(index, field_names, part, axis, reasons):
@@ -429,13 +481,13 @@ def _enrich_from_pivot(root, details):
     if root is None:
         return
     compact = _bool_attr(root, "compact", default=True)
-    outline = _bool_attr(root, "outline", default=True)
+    grid_drop_zones = _bool_attr(root, "gridDropZones", default=False)
     if compact:
         details["layout"] = "compact"
-    elif outline:
-        details["layout"] = "outline"
-    else:
+    elif grid_drop_zones:
         details["layout"] = "tabular"
+    else:
+        details["layout"] = "outline"
     if _bool_attr(root, "dataOnRows", default=False):
         details["values_axis"] = "rows"
     details["row_grand_totals"] = _bool_attr(
@@ -471,13 +523,30 @@ def _enrich_from_pivot(root, details):
     column_items_by_field = {}
     page_includes = {}
     subtotals = False
+    row_axis_fields = []
+    row_container = _first(root, "rowFields")
+    if row_container is not None:
+        for child in _children(row_container, "field"):
+            try:
+                index = int(_attr(child, "x"))
+            except (TypeError, ValueError):
+                continue
+            if index >= 0:
+                row_axis_fields.append(index)
+    else:
+        row_axis_fields = [
+            index for index, field in enumerate(fields)
+            if _attr(field, "axis") == "axisRow"
+        ]
+    outer_row_fields = set(row_axis_fields[:-1])
     for field_index, field in enumerate(fields):
         axis = _attr(field, "axis")
         items = tuple(_item_indexes(field))
         if axis == "axisRow":
             row_indexes.append(items)
             row_items_by_field[field_index] = items
-            if _bool_attr(field, "defaultSubtotal", default=True):
+            if field_index in outer_row_fields and _bool_attr(
+                    field, "defaultSubtotal", default=True):
                 subtotals = True
         elif axis == "axisCol":
             column_indexes.append(items)
@@ -562,6 +631,11 @@ def _shared_item_value(element):
         return number
     if tag == "b":
         return raw in _TRUE
+    if tag == "d":
+        try:
+            return datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            return raw
     return raw
 
 

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import io
 import os
+import zipfile
 
 import pytest
 
@@ -40,6 +42,18 @@ def _codes(qualification, capability=None):
     ]
 
 
+def _rewrite_payload(payload, part, transform):
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(payload)) as before, \
+            zipfile.ZipFile(output, "w") as after:
+        for info in before.infolist():
+            body = before.read(info.filename)
+            if info.filename == part:
+                body = transform(body)
+            after.writestr(info, body)
+    return output.getvalue()
+
+
 def test_foreign_valid_pivot_receives_only_refresh_on_open():
     qualification, projection, node, cache = _qualify(_basic_package())
     assert qualification.origin == "foreign"
@@ -61,13 +75,76 @@ def test_paper_marker_does_not_grant_ownership_dependent_caps():
     assert qualification.valid is True
     assert projection.complete is True
     assert qualification.capabilities.can_refresh_on_open is True
-    assert qualification.capabilities.can_edit_layout is True
+    assert qualification.capabilities.can_edit_layout is False
     assert qualification.capabilities.can_rename is True
     assert qualification.capabilities.can_headless_refresh is False
     assert qualification.capabilities.can_delete is False
     assert "output-ownership-unproved" in _codes(
         qualification, "can_delete")
+    assert "output-ownership-unproved" in _codes(
+        qualification, "can_edit_layout")
     assert node.tag == PAPER_TAG
+
+
+def test_duplicate_external_worksheet_rid_invalidates_affected_pivot():
+    payload = _basic_package(tag=PAPER_TAG)
+
+    def add_duplicate(body):
+        closing = b"</Relationships>"
+        duplicate = (
+            b'<Relationship Id="rIdPivot1" Type="urn:external" '
+            b'Target="https://example.invalid/pivot" '
+            b'TargetMode="External"/>'
+        )
+        assert closing in body
+        return body.replace(closing, duplicate + closing, 1)
+
+    payload = _rewrite_payload(
+        payload, "xl/worksheets/_rels/sheet1.xml.rels", add_duplicate)
+    qualification = _qualify(payload, ownership_proved=True)[0]
+    assert qualification.valid is False
+    assert qualification.capabilities.can_edit_layout is False
+    assert "duplicate-relationship-id" in _codes(qualification)
+
+
+def test_foreign_namespace_cannot_define_workbook_cache_registry():
+    payload = _basic_package(tag=PAPER_TAG)
+
+    def replace_registry(body):
+        assert b"<pivotCaches>" in body
+        return body.replace(
+            b"<pivotCaches>",
+            b'<evil:pivotCaches xmlns:evil="urn:paper-test:evil">',
+            1,
+        ).replace(b"</pivotCaches>", b"</evil:pivotCaches>", 1)
+
+    payload = _rewrite_payload(payload, "xl/workbook.xml", replace_registry)
+    qualification = _qualify(payload, ownership_proved=True)[0]
+    assert qualification.valid is False
+    assert qualification.capabilities.can_edit_layout is False
+
+
+def test_foreign_namespace_cannot_define_relationship_nodes():
+    payload = _basic_package(tag=PAPER_TAG)
+
+    def replace_relationship(body):
+        marker = b'<Relationship Id="rIdPivot1"'
+        replacement = (
+            b'<evil:Relationship xmlns:evil="urn:paper-test:evil" '
+            b'Id="rIdPivot1"'
+        )
+        assert marker in body
+        return body.replace(marker, replacement, 1)
+
+    payload = _rewrite_payload(
+        payload, "xl/worksheets/_rels/sheet1.xml.rels",
+        replace_relationship)
+    graph = load_pivot_graph(payload)
+    assert not graph.pivots
+    assert any(
+        reason.code == "unexpected-namespace"
+        for reason in graph.reasons
+    )
 
 
 def test_missing_field_unknown_aggregate_and_bad_item_index():
@@ -127,6 +204,9 @@ def test_shared_cache_disables_isolation_sensitive_caps():
     )
     assert qualification.cache_shared is True
     assert qualification.capabilities.can_refresh_on_open is True
+    assert qualification.capabilities.can_edit_layout is False
+    assert qualification.capabilities.can_headless_refresh is False
+    assert qualification.capabilities.can_move is False
     assert qualification.refresh_on_open_scope == (
         "Summary!MarginByRegion",
         "Summary!SalesByRegion",
@@ -134,6 +214,8 @@ def test_shared_cache_disables_isolation_sensitive_caps():
     assert "pivot-cache-shared" in _codes(qualification, "can_delete")
     assert "pivot-cache-shared" in _codes(
         qualification, "can_repoint_source")
+    assert "pivot-cache-shared" in _codes(
+        qualification, "can_edit_layout")
 
 
 def test_broken_graph_disables_every_capability():
