@@ -21,7 +21,7 @@ from openpyxl.errors import (
     RelationshipPolicyError,
     UnsupportedStructureError,
 )
-from openpyxl.xml.constants import REL_NS, SHEET_MAIN_NS
+from openpyxl.xml.constants import PKG_REL_NS, REL_NS, SHEET_MAIN_NS
 
 _PIVOT_TABLE_REL = "/pivotTable"
 _PIVOT_CACHE_REL = "/pivotCacheDefinition"
@@ -66,12 +66,7 @@ def _attr(element, *names):
 
 def _rid(element):
     attrib = element.attrib
-    if _REL_ID_NS in attrib:
-        return attrib[_REL_ID_NS]
-    for name, value in attrib.items():
-        if name.startswith("{") and _local(name) == "id":
-            return value
-    return None
+    return attrib.get(_REL_ID_NS)
 
 
 def _children(element, tag):
@@ -396,13 +391,14 @@ def _load_from_zip(zin, workbook):
             "{0}. Nothing was changed.".format(exc),
             kind="invalid-pivot-graph") from exc
 
-    incoming, rels_by_owner = _scan_relationships(zin, names)
-    graph_reasons = []
+    incoming, rels_by_owner, duplicate_ids, relationship_reasons = \
+        _scan_relationships(zin, names)
+    graph_reasons = list(relationship_reasons)
     graph_reasons.extend(_duplicate_incoming_reasons(incoming))
 
     try:
         registered, registry_reasons = _workbook_cache_registry(
-            zin, names, workbook_part, rels_by_owner)
+            zin, names, workbook_part, rels_by_owner, duplicate_ids)
     except ScanRefusal as exc:
         raise RelationshipPolicyError(
             "workbook.xml is not a usable pivot registry: {0}. Nothing was "
@@ -471,25 +467,49 @@ def _load_from_zip(zin, workbook):
 def _scan_relationships(zin, names):
     incoming = {}
     by_owner = {}
+    duplicate_ids = {}
+    reasons = []
     for rels_part in sorted(name for name in names if name.endswith(".rels")):
         owner = _owner_of_rels(rels_part)
         root = _parse_xml(zin.read(rels_part))
-        if root is None or _local(root.tag) != "Relationships":
+        if root is None:
+            continue
+        if root.tag != "{%s}Relationships" % PKG_REL_NS:
+            reasons.append(_reason(
+                "unexpected-namespace", part=owner,
+                element=_local(root.tag)))
+            by_owner[owner] = ()
             continue
         rels = []
+        relationship_counts = {}
         for child in list(root):
-            if _local(child.tag) != "Relationship":
-                continue
-            if child.attrib.get("TargetMode") == "External":
+            if child.tag != "{%s}Relationship" % PKG_REL_NS:
+                if _local(child.tag) == "Relationship":
+                    reasons.append(_reason(
+                        "unexpected-namespace", part=owner,
+                        element="Relationship"))
                 continue
             rel_id = child.attrib.get("Id", "")
+            relationship_counts[rel_id] = relationship_counts.get(rel_id, 0) + 1
+            if child.attrib.get("TargetMode") == "External":
+                continue
             rel_type = child.attrib.get("Type", "")
             target = _resolve_target(owner, child.attrib.get("Target", ""))
             rel = IncomingRelationship(owner, rel_id, rel_type, target)
             rels.append(rel)
             incoming.setdefault(target, []).append(rel)
         by_owner[owner] = tuple(rels)
-    return incoming, by_owner
+        repeated = tuple(sorted(
+            rel_id for rel_id, count in relationship_counts.items()
+            if count > 1
+        ))
+        if repeated:
+            duplicate_ids[owner] = repeated
+            reasons.extend(
+                _reason("duplicate-relationship-id", part=owner, rid=rel_id)
+                for rel_id in repeated
+            )
+    return incoming, by_owner, duplicate_ids, reasons
 
 
 def _resolve_internal_relationship(
@@ -579,27 +599,42 @@ def _duplicate_incoming_reasons(incoming):
     return reasons
 
 
-def _workbook_cache_registry(zin, names, workbook_part, rels_by_owner):
-    from openpyxl.preserve import crosspart
-
-    root = crosspart.scan_small(zin.read(workbook_part), "workbook",
-                                max_depth=3)
+def _workbook_cache_registry(
+        zin, names, workbook_part, rels_by_owner, duplicate_ids_by_owner):
+    root = _parse_xml(zin.read(workbook_part))
+    if root is None or root.tag != "{%s}workbook" % SHEET_MAIN_NS:
+        return [], [_reason(
+            "unexpected-namespace", part=workbook_part,
+            element="workbook")]
+    workbook_rels = rels_by_owner.get(workbook_part, ())
+    duplicate_ids = set(duplicate_ids_by_owner.get(workbook_part, ()))
     cache_targets = {
         rel.relationship_id: rel.target
-        for rel in rels_by_owner.get(workbook_part, ())
+        for rel in workbook_rels
         if rel.rel_type.endswith(_PIVOT_CACHE_REL)
+        and rel.relationship_id not in duplicate_ids
     }
     registered = []
     reasons = []
     seen_ids = {}
-    for group in root.children:
-        if group.local() != "pivotCaches":
+    for group in list(root):
+        if _local(group.tag) != "pivotCaches":
             continue
-        for child in group.children:
-            if child.local() != "pivotCache":
+        if group.tag != "{%s}pivotCaches" % SHEET_MAIN_NS:
+            reasons.append(_reason(
+                "unexpected-namespace", part=workbook_part,
+                element="pivotCaches"))
+            continue
+        for child in list(group):
+            if _local(child.tag) != "pivotCache":
                 continue
-            cache_id = child.attrs.get("cacheId")
-            rid = child.attrs.get("id") or child.attrs.get("r:id")
+            cache_id = child.attrib.get("cacheId")
+            rid = child.attrib.get(_REL_ID_NS)
+            if child.tag != "{%s}pivotCache" % SHEET_MAIN_NS:
+                reasons.append(_reason(
+                    "unexpected-namespace", part=workbook_part,
+                    cache_id=cache_id, element="pivotCache"))
+                continue
             target = cache_targets.get(rid)
             exists = bool(target) and target in names
             if cache_id is None:

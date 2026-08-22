@@ -80,6 +80,7 @@ class SourceSnapshot:
     identity: str
     bounds: tuple
     warnings: tuple = ()
+    calculation_provenance: object = None
 
     @property
     def field_index(self):

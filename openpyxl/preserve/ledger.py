@@ -574,6 +574,16 @@ def allow_sheet_removal(wb, ws):
     if led is None:
         return True
     _guard_data_only_loaded_sheet(wb, ws, "remove")
+    staged = _staged_pivots_touching_sheet(wb, ws)
+    if staged:
+        raise UnsupportedStructureError(
+            "removing sheet {0!r} would invalidate staged pivot "
+            "operation(s): {1}. Nothing was changed.".format(
+                ws.title, ", ".join(staged)),
+            kind="invalid-pivot-graph",
+            anchor=ws.title,
+            options=staged,
+        )
     if ws in led.added_sheets:
         led.added_sheets.discard(ws)
         led.cells.pop(ws, None)
@@ -830,6 +840,17 @@ def record_rename(sheet_child, new_title):
     if old_title not in led.loaded_sheet_titles:
         return
 
+    staged_sources = _staged_pivot_range_sources(wb, old_title)
+    if staged_sources:
+        raise UnsupportedStructureError(
+            "renaming sheet {0!r} would invalidate staged range-backed "
+            "pivot operation(s): {1}. Nothing was changed.".format(
+                old_title, ", ".join(staged_sources)),
+            kind="unsupported-pivot-operation",
+            anchor=old_title,
+            options=staged_sources,
+        )
+
     from .rewrite import (
         rename_sheet_in_formula,
         title_in_string_literals,
@@ -940,6 +961,43 @@ def record_rename(sheet_child, new_title):
     if old_title in led.sheet_states:
         led.sheet_states[new_title] = led.sheet_states.pop(old_title)
     led.formulas_changed = True
+    from openpyxl.pivot.api import invalidate_pivot_overlay
+
+    invalidate_pivot_overlay(wb)
+
+
+def _staged_pivot_range_sources(wb, title):
+    ledger = getattr(wb, "_paper_ledger", None)
+    found = []
+    for operation in getattr(ledger, "pivot_operations", {}).values():
+        source = getattr(getattr(operation, "spec", None), "source", None)
+        if getattr(source, "kind", None) == "range" \
+                and getattr(source, "sheet", None) == title:
+            found.append(operation.name)
+    return sorted(set(found))
+
+
+def _staged_pivots_touching_sheet(wb, worksheet):
+    ledger = getattr(wb, "_paper_ledger", None)
+    found = []
+    table_names = {
+        name.casefold() for table in worksheet.tables.values()
+        for name in (getattr(table, "name", None),
+                     getattr(table, "displayName", None))
+        if isinstance(name, str)
+    }
+    for operation in getattr(ledger, "pivot_operations", {}).values():
+        if getattr(operation, "worksheet", None) is worksheet:
+            found.append(operation.name)
+            continue
+        source = getattr(getattr(operation, "spec", None), "source", None)
+        kind = getattr(source, "kind", None)
+        if kind == "range" and getattr(source, "sheet", None) == worksheet.title:
+            found.append(operation.name)
+        elif kind == "table" and isinstance(getattr(source, "name", None), str) \
+                and source.name.casefold() in table_names:
+            found.append(operation.name)
+    return sorted(set(found))
 
 def _victim_exclusive_parts(wb, original_title):
     """Package parts that die WITH the sheet if it is removed (its

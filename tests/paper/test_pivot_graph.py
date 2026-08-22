@@ -653,6 +653,65 @@ def test_graph_detects_duplicate_cache_ids():
     assert "1" not in graph.caches_by_id
 
 
+def test_graph_detects_duplicate_workbook_relationship_ids():
+    source = _basic_package()
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source)) as before, \
+            zipfile.ZipFile(output, "w") as after:
+        for info in before.infolist():
+            payload = before.read(info.filename)
+            if info.filename == "xl/_rels/workbook.xml.rels":
+                marker = (
+                    b'<Relationship Id="rIdCache1" Type="http://schemas.'
+                    b'openxmlformats.org/officeDocument/2006/relationships/'
+                    b'pivotCacheDefinition" Target="/xl/pivotCache/'
+                    b'pivotCacheDefinition1.xml"/>'
+                )
+                assert marker in payload
+                payload = payload.replace(marker, marker + marker, 1)
+            after.writestr(info, payload)
+
+    graph = load_pivot_graph(output.getvalue())
+    assert any(
+        reason.code == "duplicate-relationship-id"
+        for reason in graph.reasons
+    )
+    assert any(
+        reason.code == "dangling-workbook-cache"
+        for reason in graph.reasons
+    )
+
+
+def test_external_relationship_cannot_reuse_internal_cache_id():
+    source = _basic_package()
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source)) as before, \
+            zipfile.ZipFile(output, "w") as after:
+        for info in before.infolist():
+            payload = before.read(info.filename)
+            if info.filename == "xl/_rels/workbook.xml.rels":
+                closing = b"</Relationships>"
+                external = (
+                    b'<Relationship Id="rIdCache1" Type="urn:external" '
+                    b'Target="https://example.invalid/book" '
+                    b'TargetMode="External"/>'
+                )
+                assert closing in payload
+                payload = payload.replace(closing, external + closing, 1)
+            after.writestr(info, payload)
+
+    graph = load_pivot_graph(output.getvalue())
+    assert any(
+        reason.code == "duplicate-relationship-id"
+        and dict(reason.context).get("rid") == "rIdCache1"
+        for reason in graph.reasons
+    )
+    assert any(
+        reason.code == "dangling-workbook-cache"
+        for reason in graph.reasons
+    )
+
+
 def test_graph_keeps_valid_sibling_when_one_pivot_is_invalid():
     payload = _basic_package(
         extra_pivots=(

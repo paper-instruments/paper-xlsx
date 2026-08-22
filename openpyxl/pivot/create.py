@@ -65,6 +65,10 @@ class PivotCreateOperation:
     rollback_value_overwrites: tuple = ()
     rollback_number_formats: tuple = ()
     rollback_cell_styles: tuple = ()
+    qualification: object = None
+    worksheet: object = None
+    semantic_effects: tuple = ()
+    baseline_spec: object = None
 
 
 def create_pivot(worksheet, name, source, destination, rows, values,
@@ -166,6 +170,10 @@ def create_pivot(worksheet, name, source, destination, rows, values,
             rollback_value_overwrites=tuple(sorted(overwrites_before)),
             rollback_number_formats=formats_before,
             rollback_cell_styles=styles_before,
+            qualification=staged_qualification(),
+            worksheet=worksheet,
+            semantic_effects=("create",),
+            baseline_spec=None,
         )
         staged = dict(ledger.pivot_operations)
         staged[operation.session_id] = operation
@@ -202,7 +210,8 @@ def validate_create_freshness(workbook, ledger):
                 "the pivot from the current source. Nothing was written."
                 % operation.name,
                 kind="stale-pivot",
-                anchor="%s!%s" % (operation.sheet, operation.name),
+                anchor="%s!%s" % (
+                    _operation_sheet_title(operation), operation.name),
             )
 
 
@@ -266,15 +275,26 @@ def iter_staged_states(workbook):
         identity = _staged_identity(operation)
         states.append(_PivotState(
             identity=identity,
-            sheet_title=operation.sheet,
+            sheet_title=_operation_sheet_title(operation),
             name=operation.name,
             projection=staged_projection(operation),
-            qualification=staged_qualification(),
+            qualification=operation.qualification or staged_qualification(),
         ))
     return tuple(states)
 
 
+def _operation_sheet_title(operation):
+    worksheet = getattr(operation, "worksheet", None)
+    return worksheet.title if worksheet is not None else operation.sheet
+
+
 def _validate_public_spec(spec):
+    if not spec.rows and not spec.columns:
+        raise UnsupportedStructureError(
+            "pivot creation requires at least one row or column field. "
+            "Nothing was changed.",
+            kind="unsupported-pivot-feature",
+        )
     if spec.style is not None and spec.style not in BUILT_IN_PIVOT_STYLES:
         raise UnsupportedStructureError(
             "pivot style %r is not a supported built-in PivotTable style. "
@@ -324,7 +344,10 @@ def _resolve_filters(filters, snapshot):
                     continue
                 selected_typed.add(typed)
                 selected.append(_plain(typed))
-            resolved.append(PivotItemFilter(item.field, include=selected))
+            resolved.append(PivotItemFilter(
+                item.field,
+                include=None if selected_typed == shared_set else selected,
+            ))
             continue
         excluded = {typed_value(value) for value in (item.exclude or ())}
         include = [_plain(value) for value in shared if value not in excluded]
@@ -333,7 +356,10 @@ def _resolve_filters(filters, snapshot):
                 "filters excluded every source row",
                 kind="invalid-pivot-source",
             )
-        resolved.append(PivotItemFilter(item.field, include=include))
+        resolved.append(PivotItemFilter(
+            item.field,
+            include=None if not excluded else include,
+        ))
     return tuple(resolved)
 
 
@@ -465,8 +491,13 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
                 anchor="%s!%s" % (worksheet.title, plan.output.ref),
             )
     hidden = hidden_pivot_parts(ledger)
+    current_by_original = {
+        original: item.title
+        for item, original in getattr(ledger, "renames", {}).items()
+    }
     for node in graph.pivots:
-        if node.sheet_title != worksheet.title or not node.output_range:
+        sheet_title = current_by_original.get(node.sheet_title, node.sheet_title)
+        if sheet_title != worksheet.title or not node.output_range:
             continue
         if node.identity.pivot_part in hidden:
             continue
@@ -484,7 +515,7 @@ def _assert_output_legal(worksheet, plan, snapshot, graph, ledger,
                 anchor="%s!%s" % (worksheet.title, plan.output.ref),
             )
     for operation in getattr(ledger, "pivot_operations", {}).values():
-        if operation.sheet != worksheet.title:
+        if _operation_sheet_title(operation) != worksheet.title:
             continue
         if operation.kind == "delete" or getattr(operation, "noop", False):
             continue
@@ -574,8 +605,10 @@ def _write_output_cells(worksheet, cells):
         if item.value is None:
             continue
         cell = worksheet.cell(item.row, item.column, value=item.value)
-        if item.number_format:
+        if item.number_format is not None:
             cell.number_format = item.number_format
+        elif cell.data_type != "d":
+            cell.number_format = "General"
 
 
 def _restore_cells(worksheet, snapshots):
@@ -634,7 +667,26 @@ def _cell_payload(cell):
 
 
 def _validate_published_cells(workbook, operation):
-    worksheet = workbook[operation.sheet]
+    worksheet = getattr(operation, "worksheet", None)
+    if worksheet is not None and (
+            worksheet.parent is not workbook
+            or worksheet not in workbook.worksheets):
+        raise UnsupportedStructureError(
+            "the worksheet for staged pivot %r is no longer in the "
+            "workbook. Nothing was written." % operation.name,
+            kind="invalid-pivot-graph",
+            anchor=operation.allocation.worksheet_part,
+        )
+    if worksheet is None:
+        try:
+            worksheet = workbook[operation.sheet]
+        except KeyError as exc:
+            raise UnsupportedStructureError(
+                "cannot resolve the worksheet for staged pivot %r. "
+                "Nothing was written." % operation.name,
+                kind="invalid-pivot-graph",
+                anchor=operation.allocation.worksheet_part,
+            ) from exc
     store = getattr(worksheet, "_cells", {})
     for row, column, expected in getattr(
             operation, "published_cell_payloads", ()):
@@ -660,16 +712,21 @@ def _validate_managed_output_mutations(workbook, ledger):
         operation.allocation.pivot_part: operation
         for operation in getattr(ledger, "pivot_operations", {}).values()
     }
+    current_by_original = {
+        original: worksheet.title
+        for worksheet, original in getattr(ledger, "renames", {}).items()
+    }
     worksheets = {worksheet.title: worksheet for worksheet in workbook.worksheets}
     for node in graph.pivots:
-        if not node.output_range or node.sheet_title not in worksheets:
+        sheet_title = current_by_original.get(node.sheet_title, node.sheet_title)
+        if not node.output_range or sheet_title not in worksheets:
             continue
         try:
             min_col, min_row, max_col, max_row = range_boundaries(
                 node.output_range)
         except (TypeError, ValueError):
             continue
-        worksheet = worksheets[node.sheet_title]
+        worksheet = worksheets[sheet_title]
         managed = {
             (row, column)
             for row in range(min_row, max_row + 1)
@@ -707,6 +764,7 @@ def _validate_managed_output_mutations(workbook, ledger):
                 for row, column, _payload in getattr(
                     operation, "published_cell_payloads", ())
             }
+            allowed.update(getattr(operation, "clear_coordinates", ()))
         unexpected = sorted(dirty - allowed)
         if not unexpected:
             continue

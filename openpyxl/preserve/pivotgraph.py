@@ -177,8 +177,16 @@ def _plan_replace(context, operation):
     payloads = operation.payloads
     context.part_plan.replace_part(allocation.pivot_part, payloads.pivot_table)
     if getattr(operation, "cache_rebuild", False):
+        cache_payload = payloads.cache_definition
+        if allocation.cache_part in context.ledger.pivot_refresh_requests:
+            from openpyxl.preserve.pivots import plan_refresh
+
+            replacements = {allocation.cache_part: cache_payload}
+            plan_refresh(
+                context.archive, (allocation.cache_part,), replacements)
+            cache_payload = replacements[allocation.cache_part]
         context.part_plan.replace_part(
-            allocation.cache_part, payloads.cache_definition)
+            allocation.cache_part, cache_payload)
         context.part_plan.replace_part(
             allocation.records_part, payloads.cache_records)
 

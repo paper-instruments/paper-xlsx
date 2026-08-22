@@ -100,6 +100,11 @@ def _session_for(workbook):
     graph = load_workbook_pivot_graph(workbook)
     states = {}
     source = workbook._paper_source
+    ledger = workbook._paper_ledger
+    current_by_original = {
+        original: worksheet.title
+        for worksheet, original in getattr(ledger, "renames", {}).items()
+    }
     hidden = hidden_pivot_parts(getattr(workbook, "_paper_ledger", None))
     for node in graph.pivots:
         if node.identity.pivot_part in hidden:
@@ -115,7 +120,8 @@ def _session_for(workbook):
             node, cache, projection, graph, workbook=workbook)
         states[node.identity] = _PivotState(
             identity=node.identity,
-            sheet_title=node.sheet_title,
+            sheet_title=current_by_original.get(
+                node.sheet_title, node.sheet_title),
             name=node.identity.name,
             projection=projection,
             qualification=qualification,

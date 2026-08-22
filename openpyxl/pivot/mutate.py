@@ -116,6 +116,9 @@ def rename_pivot(handle, name):
         _allocation_from_handle(workbook, worksheet, handle)
     replacing_create = staged is not None and staged.kind == "create" \
         and not staged.replace_existing
+    baseline_spec = None if replacing_create else (
+        staged.baseline_spec if staged is not None
+        and staged.baseline_spec is not None else state.projection.spec)
     operation = PivotCreateOperation(
         kind="create" if replacing_create else "rename",
         session_id=staged.session_id if replacing_create else uuid.uuid4().hex,
@@ -148,6 +151,13 @@ def rename_pivot(handle, name):
             staged.rollback_number_formats if staged is not None else ()),
         rollback_cell_styles=(
             staged.rollback_cell_styles if staged is not None else ()),
+        qualification=state.qualification,
+        worksheet=worksheet,
+        semantic_effects=(
+            ("create",) if replacing_create else _net_semantic_effects(
+                staged, baseline_spec, spec, "rename")
+        ),
+        baseline_spec=baseline_spec,
     )
     operations = dict(ledger.pivot_operations)
     if staged is not None:
@@ -205,9 +215,15 @@ def delete_pivot(handle):
                 relationship_id=handle._identity.relationship_id,
                 validate_source_identity=False,
                 published_cell_payloads=_capture_cell_payloads(
-                    worksheet,
-                    clear_coordinates,
+                    worksheet, (),
                 ),
+                qualification=state.qualification,
+                worksheet=worksheet,
+                semantic_effects=("delete",),
+                baseline_spec=(
+                    staged.baseline_spec if staged is not None
+                    and staged.baseline_spec is not None
+                    else state.projection.spec),
             )
             ops = dict(ledger.pivot_operations)
             if staged is not None:
@@ -293,7 +309,10 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
         )
         _write_output_cells(worksheet, plan.output.cells)
         _clear_obsolete(worksheet, old_cells, plan)
-        clear_coordinates = _clear_coordinates(old_cells, plan)
+        clear_coordinates = set(_clear_coordinates(old_cells, plan))
+        if staged is not None:
+            clear_coordinates.update(staged.clear_coordinates)
+        clear_coordinates = tuple(sorted(clear_coordinates))
         rollback_cells = ()
         rollback_dirty = ()
         rollback_overwrites = ()
@@ -306,6 +325,11 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
         cache_rebuild = kind in ("refresh", "repoint", "update")
         if staged is not None:
             cache_rebuild = cache_rebuild or staged.cache_rebuild
+        replacing_create = staged is not None and staged.kind == "create" \
+            and not staged.replace_existing
+        baseline_spec = None if replacing_create else (
+            staged.baseline_spec if staged is not None
+            and staged.baseline_spec is not None else state.projection.spec)
         operation = PivotCreateOperation(
             kind="create" if (staged is not None and staged.kind == "create"
                               and not staged.replace_existing) else kind,
@@ -335,8 +359,7 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
             source_snapshot=snapshot,
             published_cell_payloads=_capture_cell_payloads(
                 worksheet,
-                tuple((cell.row, cell.column) for cell in plan.output.cells)
-                + tuple(clear_coordinates),
+                tuple((cell.row, cell.column) for cell in plan.output.cells),
             ),
             rollback_cells=rollback_cells,
             rollback_dirty_coordinates=rollback_dirty,
@@ -345,6 +368,14 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
                 staged.rollback_number_formats if staged is not None else ()),
             rollback_cell_styles=(
                 staged.rollback_cell_styles if staged is not None else ()),
+            qualification=state.qualification,
+            worksheet=worksheet,
+            semantic_effects=(
+                ("create",) if replacing_create
+                else _net_semantic_effects(
+                    staged, baseline_spec, spec, kind)
+            ),
+            baseline_spec=baseline_spec,
         )
         ops = dict(ledger.pivot_operations)
         if staged is not None:
@@ -531,6 +562,7 @@ def _clear_cells(worksheet, cells):
                 anchor="%s!%s" % (worksheet.title, existing.coordinate),
             )
         existing.value = None
+        existing._style = None
 
 
 def _is_noop(kind, state, plan, worksheet, spec, snapshot, staged, workbook, handle):
@@ -739,3 +771,31 @@ def _spec_with_changes(spec, changes):
     spec = PivotSpec(**values)
     _validate_public_spec(spec)
     return spec
+
+
+_EFFECT_ORDER = ("refresh", "repoint", "move", "update", "rename")
+_UPDATE_FIELDS = (
+    "rows", "columns", "filters", "values", "layout", "values_axis",
+    "row_grand_totals", "column_grand_totals", "subtotals", "style",
+)
+
+
+def _net_semantic_effects(staged, baseline, after, verb):
+    prior = set(getattr(staged, "semantic_effects", ()) or ())
+    if "create" in prior:
+        return ("create",)
+    effects = {"refresh"} if "refresh" in prior else set()
+    if baseline.source != after.source:
+        effects.add("repoint")
+    if baseline.destination != after.destination:
+        effects.add("move")
+    if baseline.name != after.name:
+        effects.add("rename")
+    if any(getattr(baseline, name) != getattr(after, name)
+           for name in _UPDATE_FIELDS):
+        effects.add("update")
+    if verb == "refresh":
+        effects.add("refresh")
+    elif not effects and staged is None and verb in _EFFECT_ORDER:
+        effects.add(verb)
+    return tuple(name for name in _EFFECT_ORDER if name in effects)

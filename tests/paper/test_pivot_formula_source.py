@@ -57,7 +57,21 @@ def test_formula_source_uses_calculated_values(tmp_path, monkeypatch):
     wb["Summary"].pivots.create(
         name="ByRegion", source="Sales", destination="A1",
         rows=["Region"], values=["Amount"])
-    wb = save_and_reopen(wb, str(tmp_path / "out.xlsx"), preserve=True)
+    destination = str(tmp_path / "out.xlsx")
+    receipt = wb.save(destination, receipt=True)
+    created = [
+        item for item in receipt.derived_effects
+        if item["kind"] == "pivot_created"
+    ]
+    calculation = created[0]["calculation"]
+    assert calculation["candidate_sha256"] == "abc"
+    assert calculation["engine"] == "libreoffice"
+    assert calculation["engine_version"] == "test"
+    assert calculation["source_identity"]
+    assert calculation["value_count"] == 1
+    assert calculation["excluded"] == []
+    assert calculation["errors"] == []
+    wb = load_workbook(destination, preserve=True)
     assert wb["Summary"]["B3"].value == 11
 
 

@@ -290,7 +290,6 @@ def _table_definition(plan, cache_id, workbook=None):
                 showAll=False,
             ))
 
-    row_keys = _visible_row_keys(plan)
     row_fields = [RowColField(x=plan.field_indexes[name]) for name in row_names]
     col_fields = [RowColField(x=plan.field_indexes[name]) for name in col_names]
     if values_field and values_on_rows:
@@ -298,16 +297,12 @@ def _table_definition(plan, cache_id, workbook=None):
     if values_field and not values_on_rows:
         col_fields.append(RowColField(x=_VALUES_FIELD))
 
-    row_items = _item_tuples(
-        row_keys, row_names, item_lookups, spec.values if values_on_rows
-        and values_field else None)
-    if spec.row_grand_totals:
-        if values_on_rows and values_field:
-            for measure_index, _measure in enumerate(spec.values):
-                row_items.append(RowColItem(
-                    t="grand", i=measure_index,
-                    x=(Index(v=measure_index),)))
-        else:
+    if values_on_rows:
+        row_items = _values_axis_row_items(plan, row_names, item_lookups)
+    else:
+        row_items = _item_tuples(
+            _visible_row_keys(plan), row_names, item_lookups, None)
+        if spec.row_grand_totals:
             row_items.append(RowColItem(t="grand"))
 
     col_keys = list(plan.aggregate.column_keys)
@@ -331,17 +326,17 @@ def _table_definition(plan, cache_id, workbook=None):
                 (index,), previous, measure_index=index)
             col_items.append(item)
     else:
-        col_items = [RowColItem(t="default")]
+        col_items = [RowColItem()]
 
     page_fields = []
     for item in spec.filters:
         index = plan.field_indexes[item.field]
         lookup = lookups[index]
         selected = _selected_items(item, plan.shared_items[index])
-        if len(selected) == 1:
+        if item.include is not None and len(selected) == 1:
             page_item = lookup[selected[0]]
         else:
-            page_item = -1
+            page_item = None
         page_fields.append(PageField(fld=index, item=page_item, hier=-1))
 
     from openpyxl.pivot.aggregate import _default_caption
@@ -481,7 +476,8 @@ def _filter_pivot_field(name, shared, item, flags):
         outline=flags["field_outline"],
         defaultSubtotal=None,
         showAll=False,
-        multipleItemSelectionAllowed=True if len(selected) != 1 else None,
+        multipleItemSelectionAllowed=(
+            True if item.include is None or len(selected) != 1 else None),
         items=items,
     )
 
@@ -544,6 +540,41 @@ def _item_tuples(keys, field_names, item_lookups, measures):
                 item, previous = _data_row_col_item(
                     values, previous, measure_index=measure_index)
                 items.append(item)
+    return items
+
+
+def _values_axis_row_items(plan, field_names, item_lookups):
+    from openpyxl.pivot.layout import _values_row_events
+
+    items = []
+    previous = None
+    for event in _values_row_events(plan.spec, plan.aggregate):
+        indexes = tuple(
+            index.v for index in _key_indexes(
+                event.key, field_names, item_lookups)
+        )
+        if event.kind == "dimension":
+            item, previous = _data_row_col_item(indexes, previous)
+        elif event.kind == "data":
+            values = indexes + (event.measure_index,)
+            item, previous = _data_row_col_item(
+                values, previous, measure_index=event.measure_index)
+        else:
+            item = RowColItem(
+                t="default",
+                i=event.measure_index or None,
+                x=tuple(Index(v=None if value == 0 else value)
+                        for value in indexes),
+            )
+            previous = None
+        items.append(item)
+    if plan.spec.row_grand_totals:
+        for measure_index, _measure in enumerate(plan.spec.values):
+            items.append(RowColItem(
+                t="grand",
+                i=measure_index or None,
+                x=(Index(v=None),),
+            ))
     return items
 
 

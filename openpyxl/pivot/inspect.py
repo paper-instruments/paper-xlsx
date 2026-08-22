@@ -336,12 +336,13 @@ def _project_filters(page_fields, field_names, shared_counts, shared_values,
         elif selected:
             values = []
             shared = shared_values[field_index] if field_index < len(shared_values) else ()
-            for shared_index in selected:
-                if shared_index < len(shared):
-                    values.append(shared[shared_index])
-                else:
-                    values.append(shared_index)
-            include = tuple(values) if values else None
+            if tuple(selected) != tuple(range(len(shared))):
+                for shared_index in selected:
+                    if shared_index < len(shared):
+                        values.append(shared[shared_index])
+                    else:
+                        values.append(shared_index)
+                include = tuple(values) if values else None
         filters.append(PivotItemFilter(name, include=include))
     return tuple(filters)
 
@@ -522,10 +523,21 @@ def _enrich_from_pivot(root, details):
     column_items_by_field = {}
     page_includes = {}
     subtotals = False
-    row_axis_fields = [
-        index for index, field in enumerate(fields)
-        if _attr(field, "axis") == "axisRow"
-    ]
+    row_axis_fields = []
+    row_container = _first(root, "rowFields")
+    if row_container is not None:
+        for child in _children(row_container, "field"):
+            try:
+                index = int(_attr(child, "x"))
+            except (TypeError, ValueError):
+                continue
+            if index >= 0:
+                row_axis_fields.append(index)
+    else:
+        row_axis_fields = [
+            index for index, field in enumerate(fields)
+            if _attr(field, "axis") == "axisRow"
+        ]
     outer_row_fields = set(row_axis_fields[:-1])
     for field_index, field in enumerate(fields):
         axis = _attr(field, "axis")

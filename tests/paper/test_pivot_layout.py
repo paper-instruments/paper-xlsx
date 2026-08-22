@@ -215,14 +215,15 @@ def test_subtotals_on_values_axis_rows_stay_inside_ref():
         assert min_row <= cell.row <= max_row
         assert min_col <= cell.column <= max_col
     grid = _grid(plan)
-    assert "East Total" in grid.values()
+    assert "East Sum" in grid.values()
+    assert "East Count" in grid.values()
     subtotal_rows = sorted({
         cell.row for cell in plan.output.cells if cell.role == ROLE_SUBTOTAL
     })
     assert len(subtotal_rows) == 4
     east_total_row = min(
         cell.row for cell in plan.output.cells
-        if cell.value == "East Total")
+        if cell.value == "East Sum")
     assert grid[(east_total_row, 8)] == 14
     assert grid[(east_total_row + 1, 8)] == 2
     grand_row = min(
@@ -231,6 +232,97 @@ def test_subtotals_on_values_axis_rows_stay_inside_ref():
     assert grand_row == max(subtotal_rows) + 1
     assert grid[(grand_row, 8)] == 21
     assert grid[(grand_row + 1, 8)] == 3
+
+
+@pytest.mark.parametrize(
+    "layout, expected",
+    (
+        ("outline", [
+            ["Region", "Product", "Values", None],
+            ["East", None, None, None],
+            [None, "A", None, None],
+            [None, None, "Sum", 10],
+            [None, None, "Count", 1],
+            [None, "B", None, None],
+            [None, None, "Sum", 4],
+            [None, None, "Count", 1],
+            ["East Sum", None, None, 14],
+            ["East Count", None, None, 2],
+            ["West", None, None, None],
+            [None, "A", None, None],
+            [None, None, "Sum", 7],
+            [None, None, "Count", 1],
+            ["West Sum", None, None, 7],
+            ["West Count", None, None, 1],
+            ["Total Sum", None, None, 21],
+            ["Total Count", None, None, 3],
+        ]),
+        ("compact", [
+            ["Row Labels", None],
+            ["East", None],
+            ["A", None],
+            ["Sum", 10],
+            ["Count", 1],
+            ["B", None],
+            ["Sum", 4],
+            ["Count", 1],
+            ["East Sum", 14],
+            ["East Count", 2],
+            ["West", None],
+            ["A", None],
+            ["Sum", 7],
+            ["Count", 1],
+            ["West Sum", 7],
+            ["West Count", 1],
+            ["Total Sum", 21],
+            ["Total Count", 3],
+        ]),
+    ),
+)
+def test_values_on_rows_match_excel_hierarchical_layout(layout, expected):
+    plan = _plan(
+        data=[["East", "A", 10], ["East", "B", 4], ["West", "A", 7]],
+        rows=(PivotAxisField("Region"), PivotAxisField("Product")),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Sum"),
+            PivotMeasure("Amount", aggregate="count", caption="Count"),
+        ),
+        values_axis="rows",
+        subtotals=True,
+        layout=layout,
+    )
+    assert _matrix(plan) == expected
+
+
+def test_multilevel_column_grand_total_captions_match_excel_header_row():
+    snapshot = snapshot_from_matrix(
+        ["Region", "Year", "Quarter", "Amount"],
+        [
+            ["East", 2024, "Q1", 10],
+            ["East", 2024, "Q2", 4],
+            ["West", 2025, "Q1", 7],
+        ],
+        source=PivotSource.range("Data", "A1:D4"),
+    )
+    spec = PivotSpec(
+        name="SalesByPeriod",
+        source=PivotSource.range("Data", "A1:D4"),
+        destination="B4",
+        rows=(PivotAxisField("Region"),),
+        columns=(PivotAxisField("Year"), PivotAxisField("Quarter")),
+        values=(
+            PivotMeasure("Amount", aggregate="sum", caption="Sum"),
+            PivotMeasure("Amount", aggregate="count", caption="Count"),
+        ),
+        layout="tabular",
+        values_axis="columns",
+        row_grand_totals=True,
+        column_grand_totals=True,
+    )
+    plan = plan_pivot(spec, snapshot)
+    matrix = _matrix(plan)
+    assert matrix[1][-2:] == ["Total Sum", "Total Count"]
+    assert matrix[2][-2:] == [None, None]
 
 
 def test_compact_outline_and_tabular_label_columns():

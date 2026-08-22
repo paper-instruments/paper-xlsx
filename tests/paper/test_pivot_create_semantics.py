@@ -229,6 +229,17 @@ def test_excel_normalized_layout_defaults_reconstruct_the_same_spec():
     assert details["layout"] == "tabular"
     assert details["subtotals"] is False
 
+    reordered = fromstring(
+        b'<pivotTableDefinition compact="0" gridDropZones="1">'
+        b'<pivotFields><pivotField axis="axisRow"/>'
+        b'<pivotField axis="axisRow" defaultSubtotal="0"/>'
+        b'</pivotFields><rowFields count="2"><field x="1"/>'
+        b'<field x="0"/></rowFields></pivotTableDefinition>'
+    )
+    details = {}
+    _enrich_from_pivot(reordered, details)
+    assert details["subtotals"] is False
+
     outline = fromstring(
         b'<pivotTableDefinition compact="0" outline="1">'
         b'<pivotFields><pivotField axis="axisRow"/></pivotFields>'
@@ -242,6 +253,8 @@ def test_excel_normalized_layout_defaults_reconstruct_the_same_spec():
 
 def test_values_on_rows_and_filter_include(tmp_path):
     src, wb = _preserved(tmp_path, table="SalesData")
+    # Keep this a true multi-select subset rather than an include-all filter.
+    wb["Data"]["D2"] = "Open"
     handle = wb["Summary"].pivots.create(
         name="ClosedOnly",
         source="SalesData",
@@ -264,6 +277,7 @@ def test_values_on_rows_and_filter_include(tmp_path):
     cache, table, _parts = _parse_created(dest)
     assert table.dataOnRows is True
     assert table.pageFields[0].fld == 3
+    assert table.pageFields[0].item is None
     assert table.location.rowPageCount == 1
     assert table.location.colPageCount == 1
     assert reopened["Summary"]["B2"].value == "Status"
@@ -276,6 +290,60 @@ def test_values_on_rows_and_filter_include(tmp_path):
     status_field = next(
         field for field in fields if field.attrib.get("name") == "Status")
     assert "defaultSubtotal" not in status_field.attrib
+
+
+def test_unrestricted_filter_is_all_not_multiple_items(tmp_path):
+    src, wb = _preserved(tmp_path, table="SalesData")
+    wb["Summary"].pivots.create(
+        name="AllStatuses",
+        source="SalesData",
+        destination="B4",
+        rows=["Region"],
+        filters=[PivotItemFilter("Status")],
+        values=["Amount"],
+    )
+    dest = src + ".all-filter.xlsx"
+    reopened = save_and_reopen(wb, dest, preserve=True)
+    pivot = reopened["Summary"].pivots["AllStatuses"]
+    assert reopened["Summary"]["C2"].value == "(All)"
+    assert pivot.spec.filters[0].include is None
+    assert pivot.capabilities.can_headless_refresh is True
+    assert pivot.capabilities.can_edit_layout is True
+    assert pivot.capabilities.can_delete is True
+    _cache, table, _parts = _parse_created(dest)
+    assert table.pageFields[0].item is None
+
+
+def test_explicit_include_all_is_canonicalized_to_unrestricted(tmp_path):
+    _src, wb = _preserved(tmp_path, table="SalesData")
+    pivot = wb["Summary"].pivots.create(
+        name="AllStatuses",
+        source="SalesData",
+        destination="B4",
+        rows=["Region"],
+        filters=[PivotItemFilter(
+            "Status", include=["Closed", "Pending"])],
+        values=["Amount"],
+    )
+    assert pivot.spec.filters[0].include is None
+
+
+def test_scalar_pivot_refuses_before_mutation(tmp_path):
+    src, wb = _preserved(tmp_path, table="SalesData")
+    before = part_payloads(src)
+    with pytest.raises(UnsupportedStructureError) as exc:
+        wb["Summary"].pivots.create(
+            name="Scalar",
+            source="SalesData",
+            destination="B4",
+            rows=[],
+            columns=[],
+            values=["Amount"],
+        )
+    assert exc.value.kind == "unsupported-pivot-feature"
+    out = src + ".scalar-refused.xlsx"
+    wb.save(out)
+    assert part_payloads(out) == before
 
 
 def test_duplicate_filter_items_are_collapsed_before_serialization(tmp_path):

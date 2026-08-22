@@ -24,8 +24,15 @@ SUPPORTED_SOURCE_KINDS = frozenset(("table", "range", "defined-name"))
 UNSUPPORTED_SOURCE_KINDS = frozenset((
     "external", "consolidation", "scenario", "unknown", "named",
 ))
-# Empty until a fixture-backed extension is proven orthogonal to an edit.
-EXTENSION_ALLOWLIST = frozenset()
+_PIVOT_DEFAULT_LAYOUT_EXTENSION = (
+    "{747A6164-185A-40DC-8AA5-F01512510D54}")
+_PIVOT_CACHE_EXTENSION = "{725AE2AE-9491-48be-B2B4-4EB974FC3084}"
+# Excel adds these empty compatibility records when it saves a Paper pivot.
+# Their payload shape is checked separately before semantic qualification.
+EXTENSION_ALLOWLIST = frozenset((
+    _PIVOT_DEFAULT_LAYOUT_EXTENSION,
+    _PIVOT_CACHE_EXTENSION,
+))
 MUTATION_CAPABILITIES = (
     "can_headless_refresh",
     "can_rebuild_cache",
@@ -51,6 +58,7 @@ CACHE_ISOLATION_CAPABILITIES = (
 OWNERSHIP_CAPABILITIES = (
     "can_headless_refresh",
     "can_rebuild_cache",
+    "can_edit_layout",
     "can_repoint_source",
     "can_move",
     "can_delete",
@@ -163,6 +171,9 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
         ), "unsupported-calculated", part=cache.definition_part)
 
     disallowed = _disallowed_extensions(extensions)
+    if extensions and not _extension_payloads_are_benign(
+            workbook, node, cache):
+        disallowed = extensions
     if disallowed:
         _disable(flags, reasons, (
             "can_headless_refresh", "can_rebuild_cache", "can_edit_layout",
@@ -248,9 +259,11 @@ def qualify_pivot(node, cache, projection, graph, workbook=None,
 
 _INVALIDATING_CODES = frozenset((
     "duplicate-cache-id",
+    "duplicate-relationship-id",
     "duplicate-incoming",
     "dangling-workbook-cache",
     "missing-part",
+    "unexpected-namespace",
 ))
 
 
@@ -269,7 +282,11 @@ def _graph_reasons(node, cache, graph):
         parts = context.get("parts") or ""
         if part in (pivot_part, cache_part) or (
                 cache_part and cache_part in parts.split(",")) or (
-                node.cache_id and context.get("cache_id") == node.cache_id):
+                node.cache_id and context.get("cache_id") == node.cache_id) \
+                or (
+                    part == node.identity.worksheet_part
+                    and context.get("rid")
+                    == node.identity.relationship_id):
             reasons.append(QualificationReason(None, item.code, item.context))
     return reasons
 
@@ -364,6 +381,29 @@ def _disallowed_extensions(extensions):
         item for item in extensions
         if item.uri not in EXTENSION_ALLOWLIST
     )
+
+
+def _extension_payloads_are_benign(workbook, node, cache):
+    import io
+    import zipfile
+
+    package = getattr(workbook, "_paper_source", None)
+    if package is None:
+        return False
+    parts = [node.identity.pivot_part]
+    if cache is not None and cache.definition_part:
+        parts.append(cache.definition_part)
+    try:
+        from openpyxl.pivot.graph import _parse_xml
+
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            for part in parts:
+                root = _parse_xml(archive.read(part))
+                if root is None or not _remove_benign_excel_extensions(root):
+                    return False
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
+        return False
+    return True
 
 
 def _name_is_unique(node, graph):
@@ -493,31 +533,141 @@ _IGNORED_REFRESH_ATTRIBUTES = frozenset((
 
 
 def _normalized_graph_xml(payload):
-    from openpyxl.pivot.graph import _local, _parse_xml
-    from openpyxl.xml.constants import REL_NS
+    from openpyxl.pivot.graph import _attr, _local, _parse_xml
+    from openpyxl.xml.constants import REL_NS, SHEET_MAIN_NS
 
     root = _parse_xml(payload)
     if root is None:
         return None
+    if not _remove_benign_excel_extensions(root):
+        return None
+
+    default_attributes = {
+        "pivotTableDefinition": {
+            "asteriskTotals": "0", "chartFormat": "0",
+            "colGrandTotals": "1", "dataOnRows": "0",
+            "compact": "1", "compactData": "1", "gridDropZones": "0",
+            "disableFieldList": "0", "editData": "0",
+            "enableDrill": "1", "enableFieldProperties": "1",
+            "enableWizard": "1", "fieldListSortAscending": "0",
+            "fieldPrintTitles": "0", "immersive": "1", "indent": "1",
+            "itemPrintTitles": "0", "mdxSubqueries": "0",
+            "mergeItem": "0", "outline": "0", "outlineData": "0",
+            "pageOverThenDown": "0", "pageWrap": "0",
+            "preserveFormatting": "1", "printDrill": "0",
+            "published": "0", "rowGrandTotals": "1",
+            "showCalcMbrs": "1", "showDataDropDown": "1",
+            "showDataTips": "1", "showDrill": "1",
+            "showDropZones": "1", "showEmptyCol": "0",
+            "showEmptyRow": "0", "showError": "0", "showHeaders": "1",
+            "showItems": "1", "showMemberPropertyTips": "1",
+            "showMissing": "1", "showMultipleLabel": "1",
+            "subtotalHiddenItems": "0", "useAutoFormatting": "0",
+            "visualTotals": "1",
+        },
+        "pivotField": {
+            "compact": "1", "outline": "1",
+            "dragOff": "1", "dragToCol": "1", "dragToData": "1",
+            "dragToPage": "1", "dragToRow": "1", "itemPageCount": "10",
+            "showDropDowns": "1", "sortType": "manual",
+            "subtotalTop": "1", "topAutoShow": "1",
+        },
+        "pivotCacheDefinition": {
+            "backgroundQuery": "0", "enableRefresh": "1", "saveData": "1",
+        },
+        "cacheField": {"numFmtId": "0"},
+        "sharedItems": {"count": "0"},
+        "i": {"i": "0", "r": "0", "t": "data"},
+        "x": {"v": "0"},
+        "dataField": {"showDataAs": "normal", "subtotal": "sum"},
+        "pageField": {"item": "-1"},
+    }
 
     def visit(element, is_root=False):
         attributes = []
+        local = _local(element.tag)
         for raw, value in element.attrib.items():
             name = _local(raw)
+            if raw in (
+                    "{http://schemas.openxmlformats.org/markup-"
+                    "compatibility/2006}Ignorable",
+                    "{http://schemas.microsoft.com/office/spreadsheetml/"
+                    "2014/revision}uid"):
+                continue
+            if is_root and raw == "updatedVersion":
+                continue
             if is_root and raw == "{%s}id" % REL_NS:
                 continue
-            if is_root and _local(element.tag) == "pivotCacheDefinition" \
-                    and name in _IGNORED_REFRESH_ATTRIBUTES:
+            if is_root and local == "pivotCacheDefinition" \
+                    and raw == name and name in _IGNORED_REFRESH_ATTRIBUTES:
                 continue
-            attributes.append((name, value))
+            if raw == name \
+                    and default_attributes.get(local, {}).get(name) == value:
+                continue
+            attributes.append((raw, value))
+        children = list(element)
+        if local == "i" and element.attrib.get("t") == "grand" \
+                and len(children) == 1:
+            child = children[0]
+            measure = element.attrib.get("i") or "0"
+            if child.tag == "{%s}x" % SHEET_MAIN_NS \
+                    and (child.attrib.get("v") or "0") in ("0", measure) \
+                    and set(child.attrib) <= {"v"} and not list(child) \
+                    and not (child.text or "").strip():
+                children = []
         return (
-            _local(element.tag),
+            element.tag,
             tuple(sorted(attributes)),
             (element.text or "").strip(),
-            tuple(visit(child) for child in list(element)),
+            tuple(visit(child) for child in children),
         )
 
     return visit(root, is_root=True)
+
+
+def _remove_benign_excel_extensions(root):
+    """Remove only Excel's exact empty pivot compatibility extensions."""
+    from openpyxl.pivot.graph import _attr, _local
+    from openpyxl.xml.constants import SHEET_MAIN_NS
+
+    expected = {
+        "pivotTableDefinition": (
+            _PIVOT_DEFAULT_LAYOUT_EXTENSION,
+            "http://schemas.microsoft.com/office/spreadsheetml/2016/"
+            "pivotdefaultlayout",
+            "pivotTableDefinition16",
+        ),
+        "pivotCacheDefinition": (
+            _PIVOT_CACHE_EXTENSION,
+            "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main",
+            "pivotCacheDefinition",
+        ),
+    }.get(_local(root.tag))
+    for parent in root.iter():
+        for extension_list in list(parent):
+            if _local(extension_list.tag) != "extLst":
+                continue
+            if parent is not root or expected is None \
+                    or extension_list.tag != "{%s}extLst" % SHEET_MAIN_NS:
+                return False
+            extensions = [
+                child for child in list(extension_list)
+                if child.tag == "{%s}ext" % SHEET_MAIN_NS
+            ]
+            if len(extensions) != 1 or len(extensions) != len(extension_list):
+                return False
+            extension = extensions[0]
+            children = list(extension)
+            uri, namespace, child_name = expected
+            if _attr(extension, "uri") != uri or len(children) != 1:
+                return False
+            child = children[0]
+            if child.tag != "{%s}%s" % (namespace, child_name) \
+                    or child.attrib or list(child) \
+                    or (child.text or "").strip():
+                return False
+            parent.remove(extension_list)
+    return True
 
 
 def _reconstruct_owned_output(workbook, node, projection):
@@ -540,9 +690,16 @@ def _reconstruct_owned_output(workbook, node, projection):
         return None
     if plan.output.ref != node.output_range:
         return None
+    sheet_title = node.sheet_title
+    ledger = getattr(workbook, "_paper_ledger", None)
+    if ledger is not None:
+        for item, original in getattr(ledger, "renames", {}).items():
+            if original == sheet_title:
+                sheet_title = item.title
+                break
     worksheet = None
     for item in workbook.worksheets:
-        if item.title == node.sheet_title:
+        if item.title == sheet_title:
             worksheet = item
             break
     if worksheet is None:
