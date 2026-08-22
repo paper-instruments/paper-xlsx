@@ -1,0 +1,25 @@
+{
+  "fixture": "excel_data_model.xlsx",
+  "provenance": {
+    "app": "pending desktop Excel",
+    "version": "",
+    "notes": "Metadata-only external-corpus entry. A licensed Excel Data Model / OLAP-backed workbook was not available to commit. Do not fabricate this ZIP."
+  },
+  "features": [
+    "pivot",
+    "data-model",
+    "external-corpus"
+  ],
+  "ground_truth": {
+    "expected_pivot_graph": null,
+    "visible_values": null
+  },
+  "expected_pivot_graph": null,
+  "authoring_steps": [
+    "Author in desktop Excel with a Power Pivot / Data Model source.",
+    "Save as transitional .xlsx.",
+    "Record exact Excel build and verification status in this sidecar."
+  ],
+  "verified_by": "not yet authored; external-corpus tier",
+  "date": "2026-08-20"
+}

@@ -110,3 +110,58 @@ class TestRecordList:
 
         assert archive.namelist() == [records.path[1:]]
         assert manifest.find(records.mime_type)
+
+
+    def test_extLst_round_trip(self, RecordList):
+        from openpyxl.descriptors.excel import Extension, ExtensionList
+
+        ext = ExtensionList(ext=[Extension(uri="{paper-test}")])
+        records = RecordList(r=(), extLst=ext)
+        node = fromstring(tostring(records.to_tree()))
+        loaded = RecordList.from_tree(node)
+        assert loaded.extLst is not None
+        assert loaded.extLst.ext[0].uri == "{paper-test}"
+        xml = tostring(loaded.to_tree())
+        expected = """
+        <pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0">
+          <extLst>
+            <ext uri="{paper-test}"/>
+          </extLst>
+        </pivotCacheRecords>
+        """
+        diff = compare_xml(xml, expected)
+        assert diff is None, diff
+
+
+def test_record_constructor_keeps_typed_fields():
+    from openpyxl.pivot.fields import Boolean, DateTimeField, Error, Index, Missing, Number, Text
+    from openpyxl.pivot.record import Record
+
+    record = Record(
+        m=Missing(),
+        n=Number(v=2),
+        b=Boolean(v=True),
+        e=Error(v="#DIV/0!"),
+        s=Text(v="x"),
+        d=DateTimeField(v="2014-03-24T00:00:00"),
+        x=Index(v=3),
+    )
+    assert [type(item) for item in record._fields] == [
+        Missing, Number, Boolean, Error, Text, DateTimeField, Index]
+    xml = tostring(record.to_tree())
+    expected = """
+    <r>
+      <m/>
+      <n v="2"/>
+      <b v="1"/>
+      <e v="#DIV/0!"/>
+      <s v="x"/>
+      <d v="2014-03-24T00:00:00"/>
+      <x v="3"/>
+    </r>
+    """
+    diff = compare_xml(xml, expected)
+    assert diff is None, diff
+    loaded = Record.from_tree(fromstring(xml))
+    assert [type(item) for item in loaded._fields] == [
+        Missing, Number, Boolean, Error, Text, DateTimeField, Index]

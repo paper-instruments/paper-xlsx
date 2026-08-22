@@ -674,7 +674,7 @@ class CacheField(Serialisable):
     mappingCount = Integer(allow_none=True)
     memberPropertyField = Bool(allow_none=True)
 
-    __elements__ = ('sharedItems', 'fieldGroup', 'mpMap')
+    __elements__ = ('sharedItems', 'fieldGroup', 'mpMap', 'extLst')
 
     def __init__(self,
                  sharedItems=None,
@@ -805,7 +805,7 @@ class CacheSource(Serialisable):
     consolidation = Typed(expected_type=Consolidation, allow_none=True)
     extLst = Typed(expected_type=ExtensionList, allow_none=True)
 
-    __elements__ = ('worksheetSource', 'consolidation',)
+    __elements__ = ('worksheetSource', 'consolidation', 'extLst')
 
     def __init__(self,
                  type=None,
@@ -818,6 +818,7 @@ class CacheSource(Serialisable):
         self.connectionId = connectionId
         self.worksheetSource = worksheetSource
         self.consolidation = consolidation
+        self.extLst = extLst
 
 
 class CacheDefinition(Serialisable):
@@ -862,7 +863,7 @@ class CacheDefinition(Serialisable):
 
     __elements__ = ('cacheSource', 'cacheFields', 'cacheHierarchies', 'kpis',
                     'tupleCache', 'calculatedItems', 'calculatedMembers', 'dimensions',
-                    'measureGroups', 'maps',)
+                    'measureGroups', 'maps', 'extLst')
 
     def __init__(self,
                  invalid=None,
@@ -922,6 +923,7 @@ class CacheDefinition(Serialisable):
         self.dimensions = dimensions
         self.measureGroups = measureGroups
         self.maps = maps
+        self.extLst = extLst
         self.id = id
 
 

@@ -823,3 +823,53 @@ class TestConsolidation:
         assert cons.autoPage is None
         assert len(cons.pages) == 1
         assert len(cons.rangeSets) == 1
+
+
+def test_cache_source_keeps_extLst(CacheSource, WorksheetSource):
+    from openpyxl.descriptors.excel import Extension, ExtensionList
+
+    ext = ExtensionList(ext=[Extension(uri="{paper-cache-source}")])
+    source = CacheSource(
+        type="worksheet",
+        worksheetSource=WorksheetSource(name="mydata"),
+        extLst=ext,
+    )
+    xml = tostring(source.to_tree())
+    expected = """
+    <cacheSource type="worksheet">
+      <worksheetSource name="mydata"/>
+      <extLst>
+        <ext uri="{paper-cache-source}"/>
+      </extLst>
+    </cacheSource>
+    """
+    diff = compare_xml(xml, expected)
+    assert diff is None, diff
+    loaded = CacheSource.from_tree(fromstring(xml))
+    assert loaded.extLst.ext[0].uri == "{paper-cache-source}"
+    assert loaded.worksheetSource.name == "mydata"
+
+
+def test_cache_definition_keeps_extLst(DummyCache, CacheDefinition):
+    from openpyxl.descriptors.excel import Extension, ExtensionList
+
+    DummyCache.extLst = ExtensionList(ext=[Extension(uri="{paper-cache}")])
+    xml = tostring(DummyCache.to_tree())
+    assert b'uri="{paper-cache}"' in xml
+    loaded = CacheDefinition.from_tree(fromstring(xml))
+    assert loaded.extLst.ext[0].uri == "{paper-cache}"
+    assert loaded.cacheSource.worksheetSource.name == "Sheet1"
+    assert loaded.cacheFields[0].name == "field1"
+
+
+def test_cache_field_keeps_extLst(CacheField):
+    from openpyxl.descriptors.excel import Extension, ExtensionList
+
+    field = CacheField(
+        name="Region",
+        extLst=ExtensionList(ext=[Extension(uri="{paper-field}")]),
+    )
+    xml = tostring(field.to_tree())
+    loaded = CacheField.from_tree(fromstring(xml))
+    assert loaded.name == "Region"
+    assert loaded.extLst.ext[0].uri == "{paper-field}"
