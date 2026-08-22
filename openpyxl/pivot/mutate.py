@@ -103,6 +103,7 @@ def rename_pivot(handle, name):
     if name == state.name:
         return handle
     workbook = worksheet.parent
+    _assert_consumers_allow(workbook, handle, "rename")
     ledger = workbook._paper_ledger
     graph = load_workbook_pivot_graph(workbook)
     staged = _find_staged(ledger, handle)
@@ -158,6 +159,7 @@ def rename_pivot(handle, name):
                 staged, baseline_spec, spec, "rename")
         ),
         baseline_spec=baseline_spec,
+        **_publication_fields(staged),
     )
     operations = dict(ledger.pivot_operations)
     if staged is not None:
@@ -172,6 +174,7 @@ def rename_pivot(handle, name):
 def delete_pivot(handle):
     state = handle._state()
     _prepare_mutation(state, handle, "delete", "can_delete")
+    _assert_consumers_allow(handle._worksheet.parent, handle, "delete")
     worksheet = handle._worksheet
     workbook = worksheet.parent
     ledger = workbook._paper_ledger
@@ -224,6 +227,7 @@ def delete_pivot(handle):
                     staged.baseline_spec if staged is not None
                     and staged.baseline_spec is not None
                     else state.projection.spec),
+                **_publication_fields(staged, final_action="delete"),
             )
             ops = dict(ledger.pivot_operations)
             if staged is not None:
@@ -258,6 +262,16 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
             refuse_shared=kind != "rename")
     spec = spec or state.projection.spec
     workbook = worksheet.parent
+    if kind == "move":
+        _assert_consumers_allow(workbook, handle, "move")
+    elif kind == "update" and state.projection.spec is not None:
+        verbs = []
+        if spec.destination != state.projection.spec.destination:
+            verbs.append("move")
+        if spec.name != state.name:
+            verbs.append("rename")
+        if verbs:
+            _assert_consumers_allow(workbook, handle, *verbs)
     ledger = workbook._paper_ledger
     staged = _find_staged(ledger, handle)
     if staged is not None:
@@ -306,6 +320,7 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
                 _node_for(handle, graph).cache_id),
             workbook,
             records_relationship_id=allocation.records_relationship_id,
+            pivot_cache_relationship_id=allocation.pivot_cache_relationship_id,
         )
         _write_output_cells(worksheet, plan.output.cells)
         _clear_obsolete(worksheet, old_cells, plan)
@@ -376,6 +391,7 @@ def _rebuild(handle, kind, spec=None, allow_self_overlap=False):
                     staged, baseline_spec, spec, kind)
             ),
             baseline_spec=baseline_spec,
+            **_publication_fields(staged, final_action=kind),
         )
         ops = dict(ledger.pivot_operations)
         if staged is not None:
@@ -430,12 +446,20 @@ def _prepare_mutation(state, handle, verb, capability, refuse_shared=True):
 
 def _require_capability(state, name):
     caps = state.qualification.capabilities
-    if not getattr(caps, name, False):
+    if getattr(caps, name, False):
+        return
+    if state.qualification.origin == "foreign":
         raise UnsupportedStructureError(
-            "this pivot does not support %s. Nothing was changed." % name,
+            "this foreign pivot does not support %s; call adopt() first. "
+            "Nothing was changed." % name,
             kind="unsupported-pivot-operation",
-            options=[name],
+            options=["adopt", name],
         )
+    raise UnsupportedStructureError(
+        "this pivot does not support %s. Nothing was changed." % name,
+        kind="unsupported-pivot-operation",
+        options=[name],
+    )
 
 
 def _refuse_shared_cache(state, handle, verb):
@@ -780,10 +804,82 @@ _UPDATE_FIELDS = (
 )
 
 
+def _owned_from_plan_cells(cells):
+    return tuple(
+        (cell.row, cell.column, cell.value, cell.role)
+        for cell in cells
+        if cell.value is not None
+    )
+
+
+def _publication_fields(staged, final_action=None):
+    if staged is None:
+        return {
+            "origin_before": "paper",
+            "publication_strategy": None,
+            "final_action": final_action,
+            "original_payload_hashes": (),
+            "original_cache_id": None,
+            "persisted_cache_identity": None,
+        }
+    return {
+        "origin_before": getattr(staged, "origin_before", "paper"),
+        "publication_strategy": getattr(staged, "publication_strategy", None),
+        "final_action": final_action or getattr(staged, "final_action", None),
+        "original_payload_hashes": getattr(
+            staged, "original_payload_hashes", ()),
+        "original_cache_id": getattr(staged, "original_cache_id", None),
+        "persisted_cache_identity": getattr(
+            staged, "persisted_cache_identity", None),
+    }
+
+
+def _assert_consumers_allow(workbook, handle, *verbs):
+    wanted = set()
+    if "rename" in verbs:
+        wanted.add("can_rename")
+    if "delete" in verbs:
+        wanted.add("can_delete")
+    if "move" in verbs:
+        wanted.add("can_move")
+    if not wanted:
+        return
+    from openpyxl.pivot.adopt_depend import scan_consumer_constraints
+
+    state = handle._state()
+    ledger = getattr(workbook, "_paper_ledger", None)
+    staged = None if ledger is None else _find_staged(ledger, handle)
+    if staged is not None and staged.output_cells:
+        footprint = {
+            (row, column) for row, column, value, _role in staged.output_cells
+            if value is not None
+        }
+    else:
+        try:
+            footprint = {
+                (row, column)
+                for row, column, _value, _role in _owned_cells(
+                    state, staged, handle._worksheet)
+            }
+        except Exception:
+            footprint = set()
+    for reason in scan_consumer_constraints(
+            workbook, state.name, handle._worksheet.title, footprint):
+        if reason.capability in wanted:
+            raise UnsupportedStructureError(
+                "this operation would invalidate a dependent reference "
+                "(%s). Nothing was changed." % reason.code,
+                kind="unsupported-pivot-operation",
+                options=[reason.code],
+            )
+
+
 def _net_semantic_effects(staged, baseline, after, verb):
     prior = set(getattr(staged, "semantic_effects", ()) or ())
     if "create" in prior:
         return ("create",)
+    if "adopt" in prior:
+        return ("adopt",)
     effects = {"refresh"} if "refresh" in prior else set()
     if baseline.source != after.source:
         effects.add("repoint")

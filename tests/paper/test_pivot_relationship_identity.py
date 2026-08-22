@@ -61,6 +61,7 @@ def _create_pivot(source, destination):
 
 def _renumber_relationships(source, destination):
     _rewrite_package(source, destination, {
+        _PIVOT_PART: ((b'r:id="rId1"', b'r:id="rId7"'),),
         _PIVOT_RELS: (
             (b'Id="rId1"', b'Id="rId7"'),
         ),
@@ -95,7 +96,7 @@ def _assert_relationship_closure(path):
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         pivot_root = fromstring(archive.read(_PIVOT_PART))
         cache_root = fromstring(archive.read(_CACHE_PART))
-        assert _REL_ID not in pivot_root.attrib
+        assert pivot_root.attrib[_REL_ID] == "rId7"
         assert cache_root.attrib[_REL_ID] == "rId8"
         pivot_rels = fromstring(archive.read(_PIVOT_RELS))
         cache_rels = fromstring(archive.read(_CACHE_RELS))

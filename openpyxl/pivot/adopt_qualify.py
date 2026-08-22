@@ -2,9 +2,9 @@
 
 """Answer whether one loaded foreign pivot can become Paper-managed.
 
-This module does not add ``adopt()`` and does not mutate the workbook.
-Ordinary inspection remains metadata-bounded; cache reconstruction and
-dependency analysis run only here.
+Qualification itself does not mutate the workbook. Ordinary inspection
+remains metadata-bounded; cache reconstruction and dependency analysis
+run only here and inside ``adopt()``.
 """
 
 from __future__ import annotations

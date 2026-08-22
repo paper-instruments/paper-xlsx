@@ -5,9 +5,11 @@
 ``Worksheet.pivots`` is a semantic overlay over the relationship-resolved
 package graph plus staged Paper-owned creates. It does not mutate
 ``Worksheet._pivots`` or deserialize foreign parts through inherited
-serializers. Create, refresh, repoint, move, update, rename, and delete
-apply to Paper-managed dedicated-cache pivots; shared caches disable
-layout/update and the other isolation-sensitive verbs.
+serializers. Create, refresh, repoint, move, update, rename, delete, and
+dedicated-cache ``adopt()`` apply to Paper-managed dedicated-cache
+pivots; shared caches disable layout/update and the other
+isolation-sensitive verbs. Foreign pivots stay inspectable until
+``adopt()`` converts a qualified dedicated cache.
 """
 
 from __future__ import annotations
@@ -329,6 +331,16 @@ class PivotTable:
         from openpyxl.pivot.adopt_qualify import qualify_adoption
 
         return qualify_adoption(self)
+
+    def adopt(self):
+        """Convert a qualified foreign dedicated-cache pivot to Paper-managed.
+
+        Shared-cache isolation is a later layer. Eligibility remains gated
+        on managed Excel evidence; a refused call changes nothing.
+        """
+        from openpyxl.pivot.adopt import adopt_pivot
+
+        return adopt_pivot(self)
 
     @property
     def refresh_on_open_scope(self):

@@ -205,6 +205,7 @@ _REPRESENTED_ATTRS = {
     ("pivotField", "compact"): REPRESENTED,
     ("pivotField", "outline"): REPRESENTED,
     ("pivotField", "subtotalTop"): REPRESENTED,
+    ("pivotField", "multipleItemSelectionAllowed"): REPRESENTED,
     ("item", "x"): REPRESENTED,
     ("item", "t"): REPRESENTED,
     ("item", "h"): REPRESENTED,

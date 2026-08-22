@@ -233,12 +233,14 @@ isolation-sensitive capabilities; ``update()``, headless ``refresh()``,
 touching siblings. Layout-only shared-cache edits are not in v1.
 Foreign Excel-authored pivots stay inspectable and byte-preserved;
 v1 grants them at most ``can_refresh_on_open`` through
-``Workbook.set_pivot_refresh_on_load``. ``PivotTable.qualify_adoption()``
-is an explicit, read-only eligibility analysis for a later adoption
-stack. It does not mutate the workbook, does not invoke LibreOffice, and
-does not make foreign pivots editable. ``eligible=True`` is withheld until
-desktop Excel evidence proves the managed serializer and provenance
-channel. There is no ``adopt()`` method in this release.
+``Workbook.set_pivot_refresh_on_load`` until ``PivotTable.adopt()``
+converts a qualified dedicated-cache pivot. ``qualify_adoption()`` is
+the read-only eligibility analysis; it does not mutate the workbook and
+does not invoke LibreOffice. ``eligible=True`` and a successful
+``adopt()`` remain withheld until desktop Excel evidence proves the
+managed serializer and provenance channel. Shared-cache isolation is
+not in this layer; ``adopt()`` refuses those pivots. Do not treat
+foreign inspection as a license to edit any PivotTable.
 
 Pivot creation accepts worksheet tables and sheet-qualified ranges. Inspection
 also resolves supported existing pivots whose source is a static defined name.
