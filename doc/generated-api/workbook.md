@@ -1,6 +1,6 @@
-<!-- Generated from paper-xlsx 0.2.0 with griffe2md 1.5.0. Do not edit by hand. -->
+<!-- Generated from paper-xlsx 0.2.1 with griffe2md 1.5.0. Do not edit by hand. -->
 
-> Generated from the `openpyxl.workbook.Workbook` docstrings in paper-xlsx 0.2.0.
+> Generated from the `openpyxl.workbook.Workbook` docstrings in paper-xlsx 0.2.1.
 
 # `openpyxl.workbook.Workbook`
 
