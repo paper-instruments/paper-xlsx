@@ -13,9 +13,9 @@
 
 </div>
 
-**An import-compatible, agent-safe fork of openpyxl designed to prevent silent loss during supported edits to existing Excel files.**
+**An import-compatible, agent-safe fork of openpyxl for creating Excel workbooks and preventing silent loss during supported edits.**
 
-`paper-xlsx` is an import-compatible hard fork of [openpyxl](https://foss.heptapod.net/openpyxl/openpyxl) 3.1.5 for safely inspecting, editing, and verifying existing Excel workbooks. It keeps openpyxl's reader, object model, formula tokenizer, and broad file-format support. It adds a preserve-mode save path that retains package content openpyxl does not model.
+`paper-xlsx` is an import-compatible hard fork of [openpyxl](https://foss.heptapod.net/openpyxl/openpyxl) 3.1.5 for creating and editing Excel workbooks. It keeps openpyxl's reader, object model, formula tokenizer, and broad file-format support. When you edit an existing file, preserve mode retains package content openpyxl does not model.
 
 ```python
 import openpyxl   # the import name is unchanged; see "Drop-in by design"
