@@ -1,15 +1,13 @@
 # Copyright (c) 2010-2024 openpyxl
 
-"""paper-xlsx — Paper Instruments' hard fork of openpyxl for LOSSLESS,
-SAFE editing of existing Excel files.
+"""paper-xlsx is Paper Instruments' import-compatible fork of openpyxl for
+creating and safely editing Excel workbooks.
 
 The import name stays ``openpyxl`` so existing imports are unchanged. The
-fork adds a **preserve mode**: ``load_workbook(path)`` keeps the original
-package bytes as the source of truth by default, so saving
-splices your edits back in without destroying the charts, pivots, VBA,
-or formatting a normal openpyxl round-trip drops — and any edit it
-cannot make safely refuses loudly (a typed `openpyxl.errors`
-exception) instead of corrupting the file.
+standard object model creates new workbooks. For existing files, preserve mode
+keeps the original package bytes as the source of truth and splices supported
+edits into them. Unsafe edits raise a typed `openpyxl.errors` exception instead
+of writing a damaged file.
 
 Start here: `openpyxl.__paper_version__` (fork sentinel), and the
 `openpyxl.preserve`, `openpyxl.oracle` and

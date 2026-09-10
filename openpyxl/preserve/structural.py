@@ -6,9 +6,9 @@ The scariest damage in the model is here: ``insert_rows`` moves cells while
 updating NOTHING — not formulas, not defined names, not chart ranges — so
 one inserted row silently corrupts every SUM below it with numbers that
 look plausible (measured: LibreOffice computes 1100/6399/5400 where the
-correct answers are 7499/6500). Under preserve mode
-the shift refuses with the precise list of what would break; the stock path
-keeps stock behavior plus a loud warning.
+correct answers are 7499/6500). Under preserve mode the shift refuses with the
+precise list of what would break. The stock path keeps upstream behavior
+without Paper guards or warnings.
 """
 
 import io
