@@ -635,7 +635,7 @@ class Workbook:
             formulas. Under preserve mode such a save refuses unless this
             flag is set (and even then only cells you actually edited lose
             their formulas — untouched cells keep them in the original
-            bytes). On the stock path the flag silences the loud warning.
+            bytes).
         :param receipt: preserve mode only — return an
             `openpyxl.preserve.receipts.EditReceipt` comparing the
             saved file against the AS-LOADED source bytes. NOTE: after several saves from one session the receipt
