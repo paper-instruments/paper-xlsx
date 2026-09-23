@@ -19,13 +19,17 @@
 
 ## Installation
 
+Use an [activated virtual environment](https://docs.python.org/3/library/venv.html).
+
 ```bash
 python -m pip uninstall -y openpyxl paper-xlsx
 python -m pip install paper-xlsx
-paper-xlsx-doctor
+python -m paper_xlsx_doctor
 ```
 
 Both distributions provide the `openpyxl` import package. Do not install `openpyxl` and `paper-xlsx` in the same environment.
+
+To return to `openpyxl`, run the uninstall line above again, then `python -m pip install openpyxl`.
 
 ## Quick start
 
