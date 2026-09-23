@@ -9,11 +9,8 @@ from importlib.util import module_from_spec, spec_from_file_location
 from setuptools import setup, find_packages
 
 here = os.path.abspath(os.path.dirname(__file__))
-try:
-    with open(os.path.join(here, 'README.md')) as f:
-        README = f.read()
-except IOError:
-    README = ''
+with open(os.path.join(here, 'README.md'), encoding='utf-8') as f:
+    README = f.read()
 
 spec = spec_from_file_location(
     "constants", os.path.join(here, "openpyxl", "_constants.py"))

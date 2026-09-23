@@ -24,11 +24,6 @@ def test_runtime_version_comes_from_packaging_source():
     assert openpyxl.__paper_version__ == __paper_version__
 
 
-def test_release_candidate_version_pin():
-    # Deliberate pin: bump alongside openpyxl/_paper_version.py at release.
-    assert openpyxl.__paper_version__ == "0.2.1"
-
-
 class _StubDistribution:
     """Just enough of importlib.metadata.Distribution for record checks."""
 

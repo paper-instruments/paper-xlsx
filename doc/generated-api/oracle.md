@@ -1,6 +1,6 @@
-<!-- Generated from paper-xlsx 0.2.1 with griffe2md 1.5.0. Do not edit by hand. -->
+<!-- Generated from paper-xlsx 0.2.2 with griffe2md 1.5.0. Do not edit by hand. -->
 
-> Generated from the `openpyxl.oracle` docstrings in paper-xlsx 0.2.1.
+> Generated from the `openpyxl.oracle` docstrings in paper-xlsx 0.2.2.
 
 # `openpyxl.oracle`
 
