@@ -138,3 +138,16 @@ class TestDeliver:
         fh.seek(7)  # arbitrary position, as pandas may leave it
         zipio.deliver(b"NEW", fh)
         assert fh.getvalue() == b"NEW"  # truncated, not partially overwritten
+
+
+def test_timestamp_change_alone_keeps_path_identity(tmp_path, monkeypatch):
+    path = tmp_path / "book.xlsx"
+    path.write_bytes(_sample_zip_bytes())
+    hash_file = zipio._hash_file
+
+    def touch_then_hash(target):
+        os.utime(target, ns=(0, 0))
+        return hash_file(target)
+
+    monkeypatch.setattr(zipio, "_hash_file", touch_then_hash)
+    assert zipio.path_identity(path).digest
