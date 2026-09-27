@@ -69,7 +69,7 @@ def _stat_identity(value):
         return None
     return (
         value.st_dev, value.st_ino, stat.S_IFMT(value.st_mode),
-        value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+        value.st_size,
     )
 
 
@@ -165,17 +165,10 @@ def _identity_refusal(path, cause=None):
 
 
 def _same_occupant(left, right):
-    def stable(stat_key):
-        if stat_key is None:
-            return None
-        # Atomic exchange changes ctime even though the same inode and bytes
-        # were displaced. All precommit checks still compare full identities.
-        return stat_key[:5]
-
     return (
         left.exists == right.exists
         and left.digest == right.digest
-        and stable(left.occupant) == stable(right.occupant)
+        and left.occupant == right.occupant
     )
 
 
