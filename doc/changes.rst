@@ -1,6 +1,15 @@
 Unreleased
 ==========
 
+Bugfixes
+--------
+
+* Preserve mode saves a sheet appended to a workbook with external links. A
+  new sheet renumbered the links' relationship ids in the model render, and
+  every such save refused as a workbook-level change to
+  ``externalReferences``. Link edits and removals still refuse, and the file
+  keeps its own ids (`#43 <https://github.com/paper-instruments/paper-xlsx/issues/43>`_).
+
 
 paper-xlsx 0.2.1 (2026-08-21)
 ================================

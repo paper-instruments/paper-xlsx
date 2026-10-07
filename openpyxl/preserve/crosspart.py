@@ -352,6 +352,23 @@ def _escape_text(value):
             .encode("utf-8"))
 
 
+# openpyxl numbers workbook relationships in order, sheets first, so a new
+# sheet renumbers the r:id of every external reference and pivot cache in the
+# model render while the file keeps its own ids. What those ids point to is
+# guarded on its own (the external links snapshot in saver.py), and element
+# counts still compare, so only the renumbering is ignored. Only these
+# elements are relationship lists: definedNames holds formula text, which may
+# spell out r:id="..." and must still compare byte for byte.
+_RENUMBERED_ON_NEW_SHEET = frozenset({"externalReferences", "pivotCaches"})
+_RENDERED_REL_ID = re.compile(rb' r:id="[^"]*"')
+
+
+def _comparable(tag, renders):
+    if renders is None or tag not in _RENUMBERED_ON_NEW_SHEET:
+        return renders
+    return tuple(_RENDERED_REL_ID.sub(b"", render) for render in renders)
+
+
 def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
     """New workbook.xml bytes, or None if nothing changes.
 
@@ -365,7 +382,8 @@ def plan_workbook_xml(wb, led, original, new_sheet_entries, force_tags=()):
     snapshot = led.workbook_snapshot or {}
     changed = {}
     for tag in set(current) | set(snapshot):
-        if current.get(tag) != snapshot.get(tag):
+        if _comparable(tag, current.get(tag)) != \
+                _comparable(tag, snapshot.get(tag)):
             changed[tag] = current.get(tag)
     for tag in force_tags:
         if tag in WB_SPLICEABLE and tag not in changed:

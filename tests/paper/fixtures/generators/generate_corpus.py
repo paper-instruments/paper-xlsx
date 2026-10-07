@@ -39,6 +39,9 @@ from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, DataBarRule  # 
 from openpyxl.styles import Alignment, Font, NamedStyle, PatternFill  # noqa: E402
 from openpyxl.utils import get_column_letter  # noqa: E402
 from openpyxl.workbook.defined_name import DefinedName  # noqa: E402
+from openpyxl.packaging.relationship import Relationship  # noqa: E402
+from openpyxl.workbook.external_link.external import (  # noqa: E402
+    ExternalBook, ExternalLink, ExternalSheetNames)
 from openpyxl.worksheet.datavalidation import DataValidation  # noqa: E402
 from openpyxl.worksheet.formula import ArrayFormula  # noqa: E402
 from openpyxl.worksheet.table import Table, TableStyleInfo  # noqa: E402
@@ -268,6 +271,32 @@ def build_chart_image():
             ["chart", "image"],
             {"chart_count": 1, "image_count": 1, "formula_count": 0, "vba_present": False})
     return path
+
+
+def build_external_link():
+    """One external workbook link, as a Capital IQ-linked model carries
+    (paper-instruments/paper-xlsx#43)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Inputs"
+    ws["A1"] = "Linked revenue"
+    ws["B1"] = "='[1]Data'!A1"
+    wb.create_sheet("Model")["A1"] = 7
+    link = ExternalLink(externalBook=ExternalBook(
+        sheetNames=ExternalSheetNames(sheetName=["Data"]), id="rId1"))
+    link.file_link = Relationship(
+        type="externalLinkPath", Target="file:///C:/source.xlsx",
+        TargetMode="External")
+    wb._external_links.append(link)
+    path = out("features", "external_link.xlsx")
+    wb.save(path)
+    verify_loads(path)
+    sidecar("features/external_link.xlsx", "openpyxl 3.1.5 (this checkout)",
+            "one external workbook link; a formula on Inputs!B1 uses it",
+            ["external_link", "external_formula"],
+            {"sheets": ["Inputs", "Model"], "external_links": 1,
+             "external_formula": {"Inputs!B1": "='[1]Data'!A1"},
+             "vba_present": False})
 
 
 def build_defined_names():
@@ -771,6 +800,7 @@ def main():
     minimal = build_minimal_clean()
     chart_image = build_chart_image()
     build_defined_names()
+    build_external_link()
     build_tables()
     build_merged()
     build_datavalidation()

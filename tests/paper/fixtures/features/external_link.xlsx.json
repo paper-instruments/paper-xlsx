@@ -1,0 +1,25 @@
+{
+  "fixture": "external_link.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 (this checkout)",
+    "version": "",
+    "notes": "one external workbook link; a formula on Inputs!B1 uses it"
+  },
+  "features": [
+    "external_link",
+    "external_formula"
+  ],
+  "ground_truth": {
+    "sheets": [
+      "Inputs",
+      "Model"
+    ],
+    "external_links": 1,
+    "external_formula": {
+      "Inputs!B1": "='[1]Data'!A1"
+    },
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-10-07"
+}
