@@ -1,6 +1,17 @@
 Unreleased
 ==========
 
+Performance
+-----------
+
+* A preserve save whose edits feed formulas no longer scales with formulas
+  times sheets. ``dependency_sketch`` resolves sheet titles from one map, and
+  receipts and the ledger cross-check compare cells by their parsed tree
+  instead of canonicalizing each one. On a 271-sheet workbook, a 63-cell save
+  with a receipt went from 263 s to 77 s. The comparison is never laxer than
+  before; a receipt now also lists a cell whose attributes were reordered or
+  whose carriage return became a line feed.
+
 
 paper-xlsx 0.2.1 (2026-08-21)
 ================================

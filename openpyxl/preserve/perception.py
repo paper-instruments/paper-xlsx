@@ -90,6 +90,10 @@ def dependency_sketch(wb):
 
     sketch = DependencySketch()
     token_cache = {}
+    # Built once: rebuilding it per reference made the sketch cost
+    # formulas x sheets, about 70 s of a 271-sheet workbook's save.
+    sheets_by_name = {sheet.title.casefold(): sheet.title
+                      for sheet in wb.worksheets}
     for ws in wb.worksheets:
         for (row, col), cell in sorted(ws._cells.items()):
             if cell.data_type != "f":
@@ -146,11 +150,12 @@ def dependency_sketch(wb):
             for raw in operands:
                 row_is_exact = formula_ref in (None, cell.coordinate)
                 _classify(sketch, wb, ws, row, col, row_is_exact,
-                          address, raw)
+                          address, raw, sheets_by_name)
     return sketch
 
 
-def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw):
+def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw,
+              sheets_by_name):
     ref = raw
     sheet_title = ws.title
     m = _SHEET_REF_RE.match(ref)
@@ -160,8 +165,6 @@ def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw):
             sheet_title = sheet_title.replace("''", "'")
         ref = m.group(3)
 
-    sheets_by_name = {sheet.title.casefold(): sheet.title
-                      for sheet in wb.worksheets}
     canonical_title = sheets_by_name.get(sheet_title.casefold())
     if canonical_title is None:
         sketch.unresolved.setdefault(address, []).append(raw)

@@ -23,13 +23,44 @@ class LedgerCrossCheckError(RuntimeError):
     """The splice changed cells the ledger never recorded."""
 
 
+_XML_WHITESPACE = " \t\n\r"
+
+
+def _element_signature(el):
+    """The parsed tree in document order: each element's depth, qualified
+    tag, attributes as written, text, and tail. The root's own tail counts
+    only when it is not whitespace: C14N drops whitespace after the element
+    and raised on anything else.
+
+    Elements with equal signatures serialize identically up to whitespace
+    after the root, so their C14N forms are equal too: it never calls a
+    change "same" that canonicalizing did. It is
+    stricter in two ways: reordered attributes, and a carriage return written
+    as a character reference, which canonicalizing read as a line feed.
+    Reading the tree skips the serialize, reparse and canonicalize per cell
+    that took most of a receipt once every formula cache in a workbook
+    changed. The walk is iterative, so nesting depth is not bounded by the
+    recursion limit."""
+    signature = []
+    stack = [(el, 0)]
+    while stack:
+        node, depth = stack.pop()
+        tail = node.tail or ""
+        if not depth and not tail.strip(_XML_WHITESPACE):
+            tail = ""
+        signature.append((
+            depth, node.tag, tuple(node.attrib.items()), node.text or "",
+            tail))
+        stack.extend((child, depth + 1) for child in reversed(node))
+    return tuple(signature)
+
+
 def _cell_signature(el):
     """Canonical per-cell signature; s missing is equivalent to s='0'."""
     attrs = dict(el.attrib)
     attrs.pop("r", None)
     attrs.setdefault("s", "0")
-    body = ET.canonicalize(ET.tostring(el))
-    return (tuple(sorted(attrs.items())), body)
+    return (tuple(sorted(attrs.items())), _element_signature(el))
 
 
 def _sheet_cells(payload):
