@@ -396,12 +396,10 @@ class Workbook:
             raise ReadOnlyWorkbookException('Cannot create new sheet in a read-only workbook')
 
         ledger = getattr(self, "_paper_ledger", None)
-        snapshot = None
+        armed = ledger is not None and ledger.armed
         sheets = self._sheets
         sheet_values = list(sheets)
-        if ledger is not None and ledger.armed:
-            from openpyxl.preserve.structural import _capture_structural_state
-            snapshot = _capture_structural_state(self)
+        new_ws = None
         try:
             if self.write_only:
                 new_ws = WriteOnlyWorksheet(parent=self, title=title)
@@ -412,12 +410,14 @@ class Workbook:
             _ledger.mark_sheet_added(self, new_ws)
             return new_ws
         except BaseException:
-            if snapshot is not None:
-                from openpyxl.preserve.structural import \
-                    _restore_structural_state
-                _restore_structural_state(self, snapshot)
+            # Adding a sheet changes only the sheet list and the ledger's
+            # added set: titling a new sheet rewrites nothing. Undoing just
+            # those avoids snapshotting every cell in the workbook, which
+            # took seconds per sheet on a large model.
+            if armed:
                 self._sheets = sheets
                 sheets[:] = sheet_values
+                ledger.added_sheets.discard(new_ws)
             raise
 
 

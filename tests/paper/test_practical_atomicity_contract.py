@@ -236,6 +236,59 @@ def test_sheet_create_and_remove_failures_restore_workbook(monkeypatch):
     assert _ledger_state(workbook) == before_ledger
 
 
+def test_new_sheet_never_snapshots_the_workbook(monkeypatch):
+    # A snapshot copies every cell in the workbook; taking two per
+    # create_sheet cost about 6 s per sheet on a 271-sheet model.
+    from openpyxl.preserve import structural
+
+    workbook = _preserved_workbook()
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("snapshotted the workbook")
+
+    monkeypatch.setattr(structural, "_capture_structural_state", refuse)
+    sheet = workbook.create_sheet("New")
+    sheet.title = "Renamed"
+    saved = io.BytesIO()
+    workbook.save(saved)
+
+    reopened = load_workbook(io.BytesIO(saved.getvalue()))
+    assert reopened.sheetnames == ["Data", "Other", "Renamed"]
+
+
+def test_interrupted_loaded_sheet_rename_restores_formulas_and_ledger(
+        monkeypatch):
+    from openpyxl.preserve import references
+
+    workbook = Workbook()
+    workbook.active.title = "Data"
+    workbook.active["A1"] = 1
+    workbook.create_sheet("Other")["A1"] = "=Data!A1*2"
+    target = io.BytesIO()
+    workbook.save(target)
+    workbook = load_workbook(io.BytesIO(target.getvalue()), preserve=True)
+    before = io.BytesIO()
+    workbook.save(before)
+    before_ledger = _ledger_state(workbook)
+    real_apply = references.apply_rewrites
+
+    def interrupt_after_rewrite(*args, **kwargs):
+        real_apply(*args, **kwargs)
+        raise KeyboardInterrupt("injected")
+
+    monkeypatch.setattr(references, "apply_rewrites", interrupt_after_rewrite)
+    with pytest.raises(KeyboardInterrupt):
+        workbook["Data"].title = "Inputs"
+
+    assert _ledger_state(workbook) == before_ledger
+    after = io.BytesIO()
+    workbook.save(after)
+    assert after.getvalue() == before.getvalue()
+    reopened = load_workbook(io.BytesIO(after.getvalue()))
+    assert reopened.sheetnames == ["Data", "Other"]
+    assert reopened["Other"]["A1"].value == "=Data!A1*2"
+
+
 def test_table_append_invalid_value_happens_before_commit(tmp_path):
     from openpyxl.worksheet.table import Table
 

@@ -814,7 +814,8 @@ def record_rename(sheet_child, new_title):
     entry in workbook.xml gets a name patch keyed by the ORIGINAL title.
     Refuses (atomic, before any mutation): textual references the rewrite
     cannot see (the old title inside formula STRING literals — the
-    INDIRECT class), and pivot parts referencing the old name."""
+    INDIRECT class), and pivot parts referencing the old name. A failure
+    once the rewrite has started restores the workbook."""
     wb = getattr(sheet_child, "parent", None)
     if wb is None:
         return
@@ -828,6 +829,25 @@ def record_rename(sheet_child, new_title):
     if old_title not in led.loaded_sheet_titles:
         return
 
+    # Only a loaded sheet's rename changes the model, so only it pays for
+    # the snapshot. Every create_sheet titles its new sheet through here,
+    # and a snapshot copies every cell in the workbook: about 3 s per call
+    # on a 271-sheet valuation model.
+    from .structural import (
+        _capture_structural_state,
+        _restore_structural_state,
+    )
+
+    snapshot = _capture_structural_state(wb)
+    try:
+        _rename_loaded_sheet(wb, led, sheet_child, old_title, new_title)
+    except BaseException:
+        _restore_structural_state(wb, snapshot)
+        raise
+
+
+def _rename_loaded_sheet(wb, led, sheet_child, old_title, new_title):
+    """record_rename's refusals, then its rewrite."""
     from .rewrite import (
         rename_sheet_in_formula,
         title_in_string_literals,

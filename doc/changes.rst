@@ -1,6 +1,17 @@
 Unreleased
 ==========
 
+Performance
+-----------
+
+* ``create_sheet`` in preserve mode no longer copies every cell in the
+  workbook. It took two such snapshots for rollback, one of them when titling
+  the new sheet, though neither change touches existing content: about 6 s
+  per new sheet on a 271-sheet workbook. A failed ``create_sheet`` now undoes
+  the sheet list and the ledger's added sheets, and only renaming a loaded
+  sheet takes a snapshot, so renaming a sheet added in the session is cheap
+  too.
+
 
 paper-xlsx 0.2.1 (2026-08-21)
 ================================
