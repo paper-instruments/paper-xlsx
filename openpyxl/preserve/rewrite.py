@@ -293,6 +293,13 @@ def rename_sheets_in_formula(formula, mapping):
 
     if not formula.startswith("="):
         return formula, False
+    # A reference names its sheet in the formula text, as written or with
+    # its quotes doubled; a formula naming none of the sheets has nothing
+    # to rewrite, so it skips the tokenizer.
+    text = formula.casefold()
+    if not any(title in text or title.replace("'", "''") in text
+               for title in folded):
+        return formula, False
     try:
         tok = Tokenizer(formula)
     except Exception:
@@ -397,11 +404,15 @@ def title_in_string_literals(formula, title):
     textual (INDIRECT-style) references a rename cannot rewrite."""
     from openpyxl.formula import Tokenizer
 
+    folded = title.casefold()
+    # A literal is a substring of its formula: no title in the text, no
+    # title in any literal, and no need to tokenize.
+    if folded not in formula.casefold():
+        return False
     try:
         tokens = Tokenizer(formula).items
     except Exception:
-        return title.casefold() in formula.casefold()
-    folded = title.casefold()
+        return True
     for token in tokens:
         if token.type == "OPERAND" and token.subtype == "TEXT" \
                 and folded in token.value.casefold():

@@ -541,6 +541,7 @@ def shift_blockers(ws, operation, index, amount=1):
     axis = "rows" if "rows" in operation else "cols"
     is_delete = operation.startswith("delete")
     modeled_formula_types = {"array": 0, "dataTable": 0}
+    order = _sheet_order(wb)
     for other in wb.worksheets:
         for cell in other._cells.values():
             formula = cell._value
@@ -548,7 +549,7 @@ def shift_blockers(ws, operation, index, amount=1):
                             else getattr(formula, "text", None))
             if isinstance(formula_text, str) and \
                     _three_d_formula_references_sheet(
-                        wb, formula_text, ws.title):
+                        order, formula_text, ws.title):
                 blockers.append(
                     "3-D formula {0}!{1} spans the shifted sheet; one "
                     "3-D reference cannot represent a shift applied to "
@@ -861,20 +862,33 @@ def _comment_machinery_state(wb, title, axis, index):
         return kind, anchors_before
 
 
-def _three_d_formula_references_sheet(wb, formula, target_title):
-    """Whether a 3-D operand's sheet interval contains ``target_title``."""
+def _sheet_order(wb):
+    """Each worksheet's position by casefolded title, for
+    `_three_d_formula_references_sheet`. Callers build it once per pass:
+    rebuilding it per formula made a structural edit cost formulas x
+    sheets."""
+    return {sheet.title.casefold(): index
+            for index, sheet in enumerate(wb.worksheets)}
+
+
+def _three_d_formula_references_sheet(order, formula, target_title):
+    """Whether a 3-D operand's sheet interval contains ``target_title``.
+    ``order`` is `_sheet_order` of the workbook."""
     from openpyxl.formula import Tokenizer
     from openpyxl.formula.tokenizer import TokenizerError
     from .rewrite import _RENAME_PREFIX_RE
 
+    # A 3-D operand (Sheet1:Sheet3!A1) writes ':' before its '!', so a
+    # formula without that order has none and needs no tokenizing.
+    colon = formula.find(":")
+    if colon < 0 or colon > formula.rfind("!"):
+        return False
     try:
         tokens = Tokenizer(formula).items
     except (IndexError, TypeError, ValueError, TokenizerError):
         # The main formula-rewrite preflight owns malformed-token refusals;
         # this helper answers only the narrower 3-D-reference question.
         return False
-    order = {sheet.title.casefold(): index
-             for index, sheet in enumerate(wb.worksheets)}
     target = order.get(target_title.casefold())
     if target is None:
         return False

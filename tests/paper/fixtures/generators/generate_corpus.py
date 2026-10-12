@@ -320,6 +320,53 @@ def build_tables():
     return path
 
 
+def build_malformed_tables(tables_path):
+    """tables.xlsx by zip surgery: a plain formula and a structured one
+    beside the table, then the table's ref broken the two ways a damaged
+    producer can write it. Both load; resolving RegionTable[Amount] does
+    not, so the dependency sketch must call it unresolved."""
+    formulas = (
+        (b'<c r="B2" t="n"><v>20</v></c>',
+         b'<c r="B2" t="n"><v>20</v></c><c r="C2"><f>B2*2</f><v>40</v></c>'),
+        (b'<c r="B3" t="n"><v>30</v></c>',
+         b'<c r="B3" t="n"><v>30</v></c>'
+         b'<c r="C3"><f>SUM(RegionTable[Amount])</f><v>140</v></c>'),
+    )
+    variants = (
+        ("table_open_ended_ref.xlsx", b'ref="A:B"', False,
+         "table ref rewritten to the open-ended A:B"),
+        ("table_zero_row_ref.xlsx", b'ref="A0:B5"', True,
+         "table ref rewritten to A0:B5 and its tableColumns removed"),
+    )
+    paths = []
+    for name, ref, drop_columns, note in variants:
+        def transform(part, payload, ref=ref, drop_columns=drop_columns):
+            if part == "xl/worksheets/sheet1.xml":
+                for old, new in formulas:
+                    assert old in payload, old
+                    payload = payload.replace(old, new)
+            elif part == "xl/tables/table1.xml":
+                assert b'ref="A1:B5"' in payload
+                payload = payload.replace(b'ref="A1:B5"', ref)
+                if drop_columns:
+                    start = payload.index(b"<tableColumns")
+                    end = payload.index(b"</tableColumns>") + len(
+                        b"</tableColumns>")
+                    payload = payload[:start] + payload[end:]
+            return (part, payload) if part is not None else None
+        path = out("features", name)
+        rewrite_zip(tables_path, path, transform)
+        verify_loads(path, expect_lo=False)
+        sidecar("features/" + name, "zip surgery",
+                "tables.xlsx with Data!C2 =B2*2 and Data!C3 "
+                "=SUM(RegionTable[Amount]) spliced in (cached 40 and 140), "
+                + note, ["table", "formulas", "malformed_table"],
+                {"table_names": ["RegionTable"], "formula_count": 2,
+                 "vba_present": False})
+        paths.append(path)
+    return paths
+
+
 def build_merged():
     wb = Workbook()
     ws = wb.active
@@ -771,7 +818,8 @@ def main():
     minimal = build_minimal_clean()
     chart_image = build_chart_image()
     build_defined_names()
-    build_tables()
+    tables = build_tables()
+    build_malformed_tables(tables)
     build_merged()
     build_datavalidation()
     build_hidden()

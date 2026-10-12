@@ -86,9 +86,19 @@ _SHEET_REF_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([^'!]+))!(.+)$")
 def dependency_sketch(wb):
     """Build a `DependencySketch` from every formula in the model
     (tokenizer-based; — coarse is fine)."""
+    sketch = DependencySketch()
+    for _address in sketch_formulas(wb, sketch):
+        pass
+    return sketch
+
+
+def sketch_formulas(wb, sketch):
+    """Add every formula's references to ``sketch``, yielding each formula's
+    address once its entries are in. A caller with a yes-or-no question can
+    stop at the first formula that answers it instead of sketching a whole
+    large model."""
     from openpyxl.formula import Tokenizer
 
-    sketch = DependencySketch()
     token_cache = {}
     for ws in wb.worksheets:
         for (row, col), cell in sorted(ws._cells.items()):
@@ -105,6 +115,7 @@ def dependency_sketch(wb):
                 sketch.unresolved.setdefault(address, []).append(
                     "{0}:{1}".format(
                         getattr(cell._value, "t", "formula-object"), ref))
+                yield address
                 continue
             cached = token_cache.get(formula)
             if cached is None:
@@ -112,6 +123,7 @@ def dependency_sketch(wb):
                     tokens = Tokenizer(formula).items
                 except Exception:
                     sketch.unresolved.setdefault(address, []).append(formula)
+                    yield address
                     continue
                 operands = [t.value for t in tokens
                             if t.type == "OPERAND" and t.subtype == "RANGE"]
@@ -147,7 +159,7 @@ def dependency_sketch(wb):
                 row_is_exact = formula_ref in (None, cell.coordinate)
                 _classify(sketch, wb, ws, row, col, row_is_exact,
                           address, raw)
-    return sketch
+            yield address
 
 
 def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw):
@@ -169,9 +181,18 @@ def _classify(sketch, wb, ws, row, col, row_is_exact, address, raw):
     sheet_title = canonical_title
 
     if "[" in raw or "]" in raw:
-        ranges = _structured_reference_ranges(
-            wb, ws, row, col, row_is_exact, ref,
-            sheet_title if m else None)
+        try:
+            ranges = _structured_reference_ranges(
+                wb, ws, row, col, row_is_exact, ref,
+                sheet_title if m else None)
+        except (TypeError, ValueError):
+            # A malformed table (an open-ended or zero-row ref, no columns)
+            # cannot be resolved: its bounds raise TypeError or ValueError.
+            # Count the reference as unresolved, like any other, so one bad
+            # table does not fail the whole sketch and every early-exiting
+            # caller answers as a full one would. Any other exception is a
+            # bug and propagates.
+            ranges = None
         # a resolved structured reference is always a non-empty range
         # list; anything else stays unresolved (always-intersecting)
         if ranges:

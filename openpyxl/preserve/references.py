@@ -8,11 +8,26 @@ _DYNAMIC_REFERENCE = re.compile(
 _DYNAMIC_FUNCTIONS = {"INDIRECT(", "EVALUATE(", "OFFSET("}
 
 
+def _names_no_dynamic_function(probe):
+    """True when ``probe`` cannot call a dynamic-reference function, so a
+    rename or shift need not tokenize it. A function token is a substring of
+    its formula, and the tokenized check upper-cases it; a formula the
+    tokenizer rejects falls back to _DYNAMIC_REFERENCE. Neither test implies
+    the other (dotted İ matches the regex, the ﬀ ligature only upper-cases
+    to OFFSET), so both must find nothing."""
+    upper = probe.upper()
+    return not any(name in upper
+                   for name in ("INDIRECT", "EVALUATE", "OFFSET")) \
+        and not _DYNAMIC_REFERENCE.search(probe)
+
+
 def _has_dynamic_reference(value):
     """Return whether ``value`` calls a dynamic-reference function."""
     from openpyxl.formula import Tokenizer
 
     probe = value[1:] if value.startswith("#") else value
+    if _names_no_dynamic_function(probe):
+        return False
     formula = probe if probe.startswith("=") else "=" + probe
     try:
         tokens = Tokenizer(formula).items
@@ -106,6 +121,8 @@ def _dynamic_reference_affects_shift(value, context_sheet, target_sheet,
     from openpyxl.formula import Tokenizer
 
     probe = value[1:] if value.startswith("#") else value
+    if _names_no_dynamic_function(probe):
+        return False
     formula = probe if probe.startswith("=") else "=" + probe
     try:
         tokens = Tokenizer(formula).items
@@ -308,14 +325,15 @@ def plan_shift(wb, target_sheet, operation, index, amount):
     is_delete = operation.startswith("delete")
     _validate_table_shift(
         target_sheet, operation, axis, index, amount, is_delete)
+    from .structural import _sheet_order, _three_d_formula_references_sheet
+
     rewrites = []
+    order = _sheet_order(wb)
     for surface in formula_surfaces(wb):
         value = surface.value
-        from .structural import _three_d_formula_references_sheet
-
         probe = value if value.startswith("=") else "=" + value
         if _three_d_formula_references_sheet(
-                wb, probe, target_sheet.title):
+                order, probe, target_sheet.title):
             from openpyxl.errors import UnsupportedStructureError
 
             raise UnsupportedStructureError(

@@ -1,6 +1,33 @@
 Unreleased
 ==========
 
+Bugfixes
+--------
+
+* A table whose ref is malformed (open-ended such as ``A:B``, or starting at
+  row 0) no longer fails every save that edits a cell. Its structured
+  references count as unresolved, the dependency sketch's answer for any
+  reference it cannot resolve, so the save strips the formula caches and
+  asks Excel to recalculate. Any other exception while resolving a
+  structured reference still propagates.
+
+Performance
+-----------
+
+* A save with value edits stops checking formulas at the first one that
+  reads an edited cell or cannot be resolved, instead of sketching every
+  formula first. On a 240-sheet workbook, saving one input edit went from
+  27.2 s to 5.3 s. An edit no formula reads still checks every formula.
+* Inserting or deleting rows or columns no longer rebuilds the sheet list
+  and tokenizes every formula to look for 3-D references. The sheet order is
+  built once per pass, and a formula whose first ``:`` does not come before
+  its last ``!`` cannot hold one. On a 240-sheet workbook, ``insert_rows``
+  went from 35.5 s to 5.5 s.
+* Renaming a sheet tokenizes only the formulas whose text names it, and a
+  row or column shift tokenizes only those that name INDIRECT, EVALUATE or
+  OFFSET. Answers match the tokenizer exactly. On a 240-sheet workbook, a
+  rename went from 10.9 s to 2.0 s.
+
 
 paper-xlsx 0.2.1 (2026-08-21)
 ================================

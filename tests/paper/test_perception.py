@@ -262,3 +262,158 @@ class TestDependencySketch:
             "'Sheet'!C1", "'Sheet'!C2", "'Sheet'!C3", "'Sheet'!C4",
             "'Sheet'!C5",
         ]
+
+
+def _full_sketch_feeds(wb):
+    """Whether a value edit feeds a formula, from the whole sketch: the
+    answer the save gate gave before it learned to stop early."""
+    from openpyxl.preserve.perception import _intersects
+
+    sketch = dependency_sketch(wb)
+    if sketch.unresolved:
+        return True
+    for ws, dirty in wb._paper_ledger.value_overwrites.items():
+        for refs in sketch.references.values():
+            for ref_sheet, bounds, _raw in refs:
+                if ref_sheet.casefold() == ws.title.casefold() and any(
+                        _intersects(bounds, col, row, col, row)
+                        for row, col in dirty):
+                    return True
+    return False
+
+
+class TestDirtyFeedsFormulas:
+
+    import pytest
+
+    @pytest.mark.parametrize("formula, edit, feeds", [
+        ("=Data!A1*2", "Data!A1", True),
+        ("=Data!A1*2", "Data!B9", False),
+        ("=data!a1+1", "Data!A1", True),
+        ("=SUM(Data!A:A)", "Data!A4", True),
+        ("=SUM(Data!A:A)", "Data!C4", False),
+        ("=rate*2", "Data!A3", True),
+        ("=rate*2", "Data!A2", False),
+        ('=INDIRECT("Data!A1")', "Data!B9", True),
+        ("=A1+1", "Calc!A1", True),
+        ("=A1+1", "Data!A1", False),
+    ])
+    def test_stops_early_with_the_full_sketch_answer(
+            self, tmp_path, formula, edit, feeds):
+        from openpyxl.preserve.saver import _dirty_feeds_formulas
+        from openpyxl.workbook.defined_name import DefinedName
+
+        from .support.partdiff import part_payloads
+
+        wb = Workbook()
+        data = wb.active
+        data.title = "Data"
+        for row in range(1, 6):
+            data.cell(row, 1, row)
+        calc = wb.create_sheet("Calc")
+        calc["A1"] = 7
+        calc["B2"] = "=Data!A5"
+        calc["C3"] = formula
+        wb.defined_names["rate"] = DefinedName("rate", attr_text="Data!$A$3")
+        wb.calculation.fullCalcOnLoad = False
+        src = tmp_path / "src.xlsx"
+        wb.save(src)
+
+        wb = load_workbook(src, preserve=True)
+        sheet, coordinate = edit.split("!")
+        wb[sheet][coordinate] = 99
+        assert _dirty_feeds_formulas(wb, wb._paper_ledger) is feeds
+        assert _full_sketch_feeds(wb) is feeds
+
+        out = tmp_path / "out.xlsx"
+        wb.save(out)
+        reopened = load_workbook(out)
+        assert reopened[sheet][coordinate].value == 99
+        assert (b'fullCalcOnLoad="1"' in part_payloads(str(out))[
+            "xl/workbook.xml"]) is feeds
+
+    def test_titles_sharing_a_casefold_keep_both_sheets_edits(self, tmp_path):
+        from openpyxl.preserve.saver import _dirty_feeds_formulas
+
+        from .support.harness import assert_part_budget
+        from .support.partdiff import part_payloads
+
+        wb = Workbook()
+        wb.active.title = "ß"
+        wb.create_sheet("ss")
+        wb.create_sheet("Calc")["C1"] = "='ß'!A1"
+        wb.calculation.fullCalcOnLoad = False
+        src = tmp_path / "src.xlsx"
+        wb.save(src)
+
+        wb = load_workbook(src, preserve=True)
+        wb["ß"]["A1"] = 3
+        wb["ss"]["B9"] = 4
+        assert _dirty_feeds_formulas(wb, wb._paper_ledger) is True
+        assert _full_sketch_feeds(wb) is True
+
+        out = tmp_path / "out.xlsx"
+        wb.save(out)
+        reopened = load_workbook(out)
+        assert (reopened["ß"]["A1"].value, reopened["ss"]["B9"].value) == (
+            3, 4)
+        assert b'fullCalcOnLoad="1"' in part_payloads(str(out))[
+            "xl/workbook.xml"]
+        assert_part_budget(src, out, expect_changed={
+            "xl/workbook.xml", "xl/worksheets/sheet1.xml",
+            "xl/worksheets/sheet2.xml", "xl/worksheets/sheet3.xml"})
+
+    import pytest
+
+    def test_a_resolver_bug_is_not_read_as_an_unresolved_reference(
+            self, fixture_copy, monkeypatch):
+        # Only a malformed table's TypeError or ValueError means
+        # "unresolved"; any other exception is a bug and must surface.
+        import pytest
+
+        from openpyxl.preserve import perception
+
+        def broken(*_args, **_kwargs):
+            raise AttributeError("resolver bug")
+
+        wb = load_workbook(fixture_copy("features/tables.xlsx"),
+                           preserve=True)
+        wb["Data"]["C2"] = "=SUM(RegionTable[Amount])"
+        monkeypatch.setattr(
+            perception, "_structured_reference_ranges", broken)
+        with pytest.raises(AttributeError, match="resolver bug"):
+            dependency_sketch(wb)
+
+    @pytest.mark.parametrize("fixture", [
+        "features/table_open_ended_ref.xlsx",
+        "features/table_zero_row_ref.xlsx",
+    ])
+    def test_a_malformed_table_is_unresolved_not_a_crash(
+            self, fixture_copy, tmp_path, fixture):
+        # A damaged table ref made resolving RegionTable[Amount] raise, which
+        # failed every save; with the early exit it failed only when no
+        # earlier formula answered, so the answer depended on cell order.
+        from openpyxl.preserve.saver import _dirty_feeds_formulas
+
+        from .support.harness import assert_part_budget
+        from .support.partdiff import part_payloads
+
+        source = fixture_copy(fixture)
+        wb = load_workbook(source, preserve=True)
+        sketch = dependency_sketch(wb)
+        assert sketch.unresolved == {"'Data'!C3": ["RegionTable[Amount]"]}
+        wb["Data"]["B2"] = 21
+        assert _dirty_feeds_formulas(wb, wb._paper_ledger) is True
+        assert _full_sketch_feeds(wb) is True
+
+        out = tmp_path / "out.xlsx"
+        wb.save(out)
+        reopened = load_workbook(out)
+        assert reopened["Data"]["B2"].value == 21
+        assert reopened["Data"]["C3"].value == "=SUM(RegionTable[Amount])"
+        cached = load_workbook(out, data_only=True)["Data"]
+        assert (cached["C2"].value, cached["C3"].value) == (None, None)
+        assert b'fullCalcOnLoad="1"' in part_payloads(str(out))[
+            "xl/workbook.xml"]
+        assert_part_budget(source, out, expect_changed={
+            "xl/workbook.xml", "xl/worksheets/sheet1.xml"})

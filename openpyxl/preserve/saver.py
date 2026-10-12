@@ -1374,35 +1374,38 @@ def _dirty_feeds_formulas(workbook, led):
     makes: the saved file's caches for those formulas are
     stale, and the human opener must recompute. Structured/table and
     unresolvable references count as always-intersecting
-    (conservative)."""
-    if not any(led.value_overwrites.values()):
-        return False
-    from .perception import dependency_sketch
-
-    sketch = dependency_sketch(workbook)
-    if not sketch.references and not sketch.unresolved:
-        return False
-    if sketch.unresolved and any(led.value_overwrites.values()):
-        return True
+    (conservative). Stops at the first formula that answers: sketching a
+    whole large model took most of an edited save."""
+    # Excel sheet names: case-insensitive. Titles can still share a
+    # casefold (ß and ss), so their dirty cells merge under one key.
+    dirty_by_title = {}
     for ws, dirty in led.value_overwrites.items():
-        if not dirty:
-            continue
-        title = ws.title.casefold()      # Excel sheet names: case-insensitive
-        for refs in sketch.references.values():
-            for ref_sheet, bounds, _raw in refs:
-                if ref_sheet.casefold() != title:
+        if dirty:
+            dirty_by_title.setdefault(ws.title.casefold(), set()).update(
+                dirty)
+    if not dirty_by_title:
+        return False
+    from .perception import DependencySketch, sketch_formulas
+
+    sketch = DependencySketch()
+    for address in sketch_formulas(workbook, sketch):
+        if address in sketch.unresolved:
+            return True
+        for ref_sheet, bounds, _raw in sketch.references.get(address, ()):
+            dirty = dirty_by_title.get(ref_sheet.casefold())
+            if not dirty:
+                continue
+            min_col, min_row, max_col, max_row = bounds
+            if min_col is None:
+                min_col, max_col = 1, 1 << 20
+            if min_row is None:
+                min_row, max_row = 1, 1 << 22
+            for (row, col) in dirty:
+                if row is None or col is None:
                     continue
-                min_col, min_row, max_col, max_row = bounds
-                if min_col is None:
-                    min_col, max_col = 1, 1 << 20
-                if min_row is None:
-                    min_row, max_row = 1, 1 << 22
-                for (row, col) in dirty:
-                    if row is None or col is None:
-                        continue
-                    if min_row <= row <= max_row \
-                            and min_col <= col <= max_col:
-                        return True
+                if min_row <= row <= max_row \
+                        and min_col <= col <= max_col:
+                    return True
     return False
 
 

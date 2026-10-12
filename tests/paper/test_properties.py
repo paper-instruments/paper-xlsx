@@ -133,3 +133,93 @@ class TestRegionClaimsCrossCheck:
         with pytest.raises(LedgerCrossCheckError, match="row"):
             verify_splice(before, after,
                           {"xl/worksheets/sheet1.xml": set()})
+
+
+class TestTextPrefiltersMatchTheTokenizer:
+    """The rename and shift helpers skip the tokenizer when a name cannot
+    appear in a formula's text. For every formula and title here, each
+    helper must answer exactly as tokenizing gives."""
+
+    FORMULAS = [
+        "=Data!A1*2", "=data!a1+'Other Sheet'!B2", "='O''Brien'!C3",
+        "='o''brien'!C3+1", "=SUM(First:Last!A2)", "=SUM('Q1 Data:Q4'!A2)",
+        '=INDIRECT("Data!A1")', '=indirect("\'O\'\'Brien\'!A1")',
+        "=OFFSET(Data!A1,1,0)", "=_xlfn.EVALUATE(A1)", "=offset (A1,1,1)",
+        '="Data"&A1', '="indirect("&A1', "=SUM(A1:B2)*Inputs!B3",
+        "=rate*2", "=Straße!A1", "=STRASSE!A1", "=İnputs!A1", "=ınputs!A1",
+        "=1+(2", '="unterminated', "=A1+", "=Data!A1:Data!B2",
+        "=@Data!A1", "=Data!#REF!", "=[1]Data!A1", "Data!A1",
+        '=İNDİRECT("Data!A1")', '=İNDİRECT("Data!A1)', "=oﬀset(A1,1,0)",
+        "=oﬀset(A1,1,0", "=ındırect(A1)", "=ındırect(A1",
+    ]
+    TITLES = ["Data", "DATA", "O'Brien", "First", "Q1 Data", "Straße",
+              "STRASSE", "Inputs", "İnputs", "Missing"]
+
+    @staticmethod
+    def _tokens(formula):
+        from openpyxl.formula import Tokenizer
+
+        return Tokenizer(formula).items
+
+    def test_dynamic_reference_checks(self):
+        from openpyxl.preserve.references import (
+            _DYNAMIC_FUNCTIONS,
+            _DYNAMIC_REFERENCE,
+            _dynamic_reference_affects_shift,
+            _has_dynamic_reference,
+        )
+
+        for value in self.FORMULAS:
+            probe = value[1:] if value.startswith("#") else value
+            formula = probe if probe.startswith("=") else "=" + probe
+            try:
+                expected = any(
+                    t.type == "FUNC" and t.subtype == "OPEN"
+                    and t.value.upper() in _DYNAMIC_FUNCTIONS
+                    for t in self._tokens(formula))
+            except Exception:
+                expected = bool(_DYNAMIC_REFERENCE.search(probe))
+            assert _has_dynamic_reference(value) is expected, value
+            if not expected:
+                assert _dynamic_reference_affects_shift(
+                    value, "Data", "Data", "rows", 1, 1, False) is False
+
+    def test_rename_rewrites_and_literal_checks(self):
+        from openpyxl.preserve.rewrite import (
+            _RENAME_PREFIX_RE,
+            rename_sheets_in_formula,
+            title_in_string_literals,
+        )
+
+        for formula in self.FORMULAS:
+            for title in self.TITLES:
+                folded = title.casefold()
+                try:
+                    tokens = self._tokens(formula)
+                except Exception:
+                    tokens = None
+                in_literal = (folded in formula.casefold() if tokens is None
+                              else any(t.type == "OPERAND"
+                                       and t.subtype == "TEXT"
+                                       and folded in t.value.casefold()
+                                       for t in tokens))
+                assert title_in_string_literals(formula, title) is \
+                    in_literal, (formula, title)
+
+                names_title = False
+                if formula.startswith("=") and tokens is not None:
+                    for t in tokens:
+                        if t.type != "OPERAND" or t.subtype != "RANGE" \
+                                or "[" in t.value:
+                            continue
+                        m = _RENAME_PREFIX_RE.match(t.value.lstrip("@"))
+                        if m is None:
+                            continue
+                        sheet = (m.group(1).replace("''", "'")
+                                 if m.group(1) else m.group(2))
+                        if folded in (p.casefold()
+                                      for p in sheet.split(":")):
+                            names_title = True
+                _rewritten, changed = rename_sheets_in_formula(
+                    formula, {title: "Renamed"})
+                assert changed is names_title, (formula, title)
