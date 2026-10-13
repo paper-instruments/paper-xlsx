@@ -70,16 +70,90 @@ def _validated_names(archive):
     return names
 
 
+_MAX_ROW = 1048576
+_MAX_COL = 16384
+
+
 def _cell_formula_cache_state(payload):
-    out = {}
-    for match in re.finditer(
-            br"<c\b([^>]*)\br=(?:\"([A-Za-z]+\d+)\"|'([A-Za-z]+\d+)')"
-            br"([^>]*)>(.*?)</c>", payload, re.S):
-        ref = (match.group(2) or match.group(3)).decode("ascii")
-        body = match.group(5)
-        out[ref] = (bool(re.search(br"<(?:\w+:)?f\b", body)),
-                    bool(re.search(br"<(?:\w+:)?v\b", body)))
-    return out
+    """{ref: (has formula, has cached value)} for each cell, read as XML
+    like the rest of the receipt (a regex over "<c ...>body</c>" ran a
+    self-closing cell on into the next cell), and each array formula as
+    (anchor ref, (min_col, min_row, max_col, max_row)). An open ref such as
+    "D:D" runs to the sheet's edge."""
+    from openpyxl.utils.cell import range_boundaries
+
+    from .crosscheck import _iter_sheet_cells
+
+    states = {}
+    arrays = []
+    for ref, cell in _iter_sheet_cells(payload):
+        ns = cell.tag[:-1]
+        formula = cell.find(ns + "f")
+        states[ref] = (formula is not None, cell.find(ns + "v") is not None)
+        if formula is not None and formula.get("t") == "array":
+            try:
+                min_col, min_row, max_col, max_row = range_boundaries(
+                    formula.get("ref") or ref)
+            except (TypeError, ValueError):
+                continue
+            arrays.append((ref, (min_col or 1, min_row or 1,
+                                 max_col or _MAX_COL, max_row or _MAX_ROW)))
+    return states, arrays
+
+
+def _coordinate(ref):
+    """(row, col) of an A1 reference, or None when it is not one."""
+    from openpyxl.utils.cell import coordinate_to_tuple
+
+    try:
+        return coordinate_to_tuple(ref)
+    except (TypeError, ValueError):
+        return None
+
+
+# An array at most this many rows tall is found by its first row; taller
+# ones (a whole-column array) are few and checked directly.
+_SHORT_ARRAY_ROWS = 1024
+
+
+def _cleared_array_member(arrays, old, new):
+    """A test for whether a reference lies in an array formula's range whose
+    anchor lost its cached value in the same comparison. A save strips the
+    whole range at once; a value cleared under an anchor that kept its cache
+    was an edit, not a derived effect. Short arrays are kept sorted by first
+    row, so a reference checks only those starting within _SHORT_ARRAY_ROWS
+    rows above it, and memory stays one entry per array."""
+    from bisect import bisect_left, bisect_right
+
+    short = []
+    tall = []
+    for anchor, (min_col, min_row, max_col, max_row) in arrays:
+        if old.get(anchor) != (True, True) \
+                or new.get(anchor) != (True, False):
+            continue
+        bounds = (min_row, min_col, max_row, max_col)
+        if max_row - min_row < _SHORT_ARRAY_ROWS:
+            short.append(bounds)
+        else:
+            tall.append(bounds)
+    short.sort()
+    starts = [bounds[0] for bounds in short]
+
+    def member(ref):
+        coordinate = _coordinate(ref)
+        if coordinate is None:
+            return False
+        row, col = coordinate
+        first = bisect_left(starts, row - _SHORT_ARRAY_ROWS + 1)
+        last = bisect_right(starts, row)
+        for index in range(first, last):
+            _min_row, min_col, max_row, max_col = short[index]
+            if row <= max_row and min_col <= col <= max_col:
+                return True
+        return any(min_row <= row <= max_row and min_col <= col <= max_col
+                   for min_row, min_col, max_row, max_col in tall)
+
+    return member
 
 
 def _pivot_refresh_enabled(payload):
@@ -96,7 +170,7 @@ def _pivot_refresh_enabled(payload):
 
 
 def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
-                     workbook=None):
+                     workbook=None, invalidated=None):
     effects = []
     image_rels = {
         request["rels_part"]
@@ -132,10 +206,26 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
         if before == after:
             continue
         if name.startswith("xl/worksheets/") and name.endswith(".xml"):
-            old = _cell_formula_cache_state(before)
-            new = _cell_formula_cache_state(after)
+            old, arrays = _cell_formula_cache_state(before)
+            new, _arrays = _cell_formula_cache_state(after)
+            # (row, col) the save stripped; compared as coordinates, since
+            # a part may spell a reference d3 or D03
+            if invalidated is not None:
+                stripped = set(invalidated.get(name, ()))
+
+                def array_cache_cleared(ref):
+                    return _coordinate(ref) in stripped
+            else:
+                array_cache_cleared = _cleared_array_member(arrays, old, new)
             for ref in sorted(set(old) & set(new)):
-                if old[ref] == (True, True) and new[ref] == (True, False):
+                # An array formula's result spans its range, and the cells
+                # besides its anchor hold no formula. A save that strips
+                # caches names the cells it stripped; comparing two packages
+                # infers them from the anchor losing its cache too.
+                if (old[ref] == (True, True) and new[ref] == (True, False)) \
+                        or (old[ref] == (False, True)
+                            and new[ref] == (False, False)
+                            and array_cache_cleared(ref)):
                     effects.append({
                         "kind": "formula_cache_removed", "part": name,
                         "cell": ref, "cause": cause,
@@ -195,7 +285,8 @@ def _derived_effects(za, zb, names_a, names_b, *, ledger=None,
     return effects
 
 
-def receipt(before, after, *, recalc=None, _ledger=None, _workbook=None):
+def receipt(before, after, *, recalc=None, _ledger=None, _workbook=None,
+            _invalidated=None):
     """Build an `EditReceipt` from two package states (paths,
     bytes, or binary file-likes). ``recalc``: an oracle result
     (RecalcResult/CertificationResult/Evaluation) whose
@@ -240,7 +331,7 @@ def receipt(before, after, *, recalc=None, _ledger=None, _workbook=None):
                     cells_changed[name] = refs
         derived_effects = _derived_effects(
             za, zb, names_a, names_b, ledger=_ledger,
-            workbook=_workbook)
+            workbook=_workbook, invalidated=_invalidated)
 
     from .inventory import scan_archive
 

@@ -1154,6 +1154,252 @@ def test_receipt_reports_deterministic_derived_effects(
         payload["derived_effects"]
 
 
+def test_receipt_names_formula_caches_beside_self_closing_cells(
+        fixture_copy, tmp_path):
+    # Excel writes a style-only cell self-closing. Reading cells as
+    # "<c ...>body</c>" ran A12 on into B12: the receipt named the
+    # style-only A12 and left B12's removed cache unexplained.
+    from .support.harness import assert_part_budget
+
+    source = fixture_copy("features/self_closing_cells.xlsx")
+    workbook = load_workbook(source, preserve=True)
+    workbook["Schedule"]["B2"] = 250
+    out = tmp_path / "out.xlsx"
+    receipt = workbook.save(out, receipt=True).to_dict()
+
+    removed = {}
+    for effect in receipt["derived_effects"]:
+        if effect["kind"] == "formula_cache_removed":
+            removed.setdefault(effect["part"], set()).add(effect["cell"])
+    assert removed == {
+        "xl/worksheets/sheet1.xml": {"B12", "B13", "C10"},
+        "xl/worksheets/sheet2.xml": {"B1"},
+    }
+    changed = {part: set(cells) - {"B2"}
+               for part, cells in receipt["cells_changed"].items()}
+    assert changed == removed
+    reopened = load_workbook(out)
+    assert reopened["Schedule"]["B2"].value == 250
+    assert reopened["Schedule"]["B12"].value == "=SUM(B2:B11)"
+    assert_part_budget(source, out, expect_changed={
+        "xl/workbook.xml", "xl/worksheets/sheet1.xml",
+        "xl/worksheets/sheet2.xml"})
+
+
+def test_receipt_names_caches_removed_inside_an_array_range(
+        fixture_copy, tmp_path):
+    # D3 and D4 hold the D2:D4 array formula's cached results but no formula
+    # of their own. The save strips their caches with D2's; the receipt left
+    # them changed but unexplained.
+    from .support.harness import assert_part_budget
+
+    source = fixture_copy("features/array_cached.xlsx")
+    workbook = load_workbook(source, preserve=True)
+    workbook["Calc"]["A2"] = 25
+    out = tmp_path / "out.xlsx"
+    receipt = workbook.save(out, receipt=True).to_dict()
+
+    removed = {effect["cell"] for effect in receipt["derived_effects"]
+               if effect["kind"] == "formula_cache_removed"}
+    assert removed == {"B2", "B3", "B4", "B5", "B6", "D2", "D3", "D4"}
+    changed = set(receipt["cells_changed"]["xl/worksheets/sheet1.xml"])
+    assert changed - {"A2"} == removed
+    reopened = load_workbook(out)
+    assert reopened["Calc"]["A2"].value == 25
+    assert reopened["Calc"]["D2"].value.text == "=A2:A4*3"
+    assert_part_budget(source, out, expect_changed={
+        "xl/workbook.xml", "xl/worksheets/sheet1.xml"})
+
+
+@pytest.mark.parametrize("namespace", [
+    b"http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    b"http://purl.oclc.org/ooxml/spreadsheetml/main",
+])
+def test_receipt_cache_scan_reads_cells_as_xml(namespace):
+    # Shapes review found a regex over cell markup misreading: a quoted
+    # "/>" or a decoy r= inside an attribute value, markup inside a
+    # comment, a second sheetData block, and Strict OOXML.
+    from openpyxl.preserve.receipts import _cell_formula_cache_state
+
+    payload = (
+        b'<worksheet xmlns="' + namespace + b'" xmlns:x="urn:test">'
+        b'<sheetData><row r="2">'
+        b'<c r="A2" s="1"/>'
+        b'<c r="B2" foo="/>"><f>A1*2</f><v>10</v></c>'
+        b'<c foo=\'x r="D9" y\' x:r="E9" r="C2"><f>A1*3</f></c>'
+        b'<c r="D2"><!-- <f>x</f> --><v>3</v></c>'
+        b'</row></sheetData>'
+        b'<sheetData><row r="5"><c r="A5"><f>1/0</f><v>1</v></c></row>'
+        b'</sheetData></worksheet>')
+    states, arrays = _cell_formula_cache_state(payload)
+    assert states == {"A2": (False, False), "B2": (True, True),
+                      "C2": (True, False), "D2": (False, True),
+                      "A5": (True, True)}
+    assert arrays == []
+
+
+def _rewrite_part(source, target, part, old, new):
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(target, "w") as zout:
+        for info in zin.infolist():
+            payload = zin.read(info.filename)
+            if info.filename == part:
+                assert payload.count(old) == 1
+                payload = payload.replace(old, new)
+            zout.writestr(info, payload)
+
+
+def test_receipt_does_not_explain_a_value_cleared_under_a_cached_anchor(
+        fixture_copy, tmp_path):
+    # Only a save that strips the whole array range clears its cells'
+    # caches; a member cleared while the anchor kept its cache is an edit.
+    from openpyxl.preserve.receipts import receipt
+
+    source = fixture_copy("features/array_cached.xlsx")
+    cleared = tmp_path / "cleared.xlsx"
+    _rewrite_part(source, cleared, "xl/worksheets/sheet1.xml",
+                  b'<c r="D3"><v>90</v></c>', b'<c r="D3"/>')
+
+    payload = receipt(source, cleared).to_dict()
+    assert payload["cells_changed"] == {
+        "xl/worksheets/sheet1.xml": {"D3": "changed"}}
+    assert not [effect for effect in payload["derived_effects"]
+                if effect["kind"] == "formula_cache_removed"]
+
+
+def test_receipt_save_handles_a_whole_column_array_ref(
+        fixture_copy, tmp_path):
+    from .support.harness import assert_part_budget
+
+    source = tmp_path / "column-array.xlsx"
+    _rewrite_part(fixture_copy("features/array_cached.xlsx"), source,
+                  "xl/worksheets/sheet1.xml",
+                  b'ref="D2:D4"', b'ref="D:D"')
+    workbook = load_workbook(source, preserve=True)
+    workbook["Calc"]["A2"] = 25
+    out = tmp_path / "out.xlsx"
+    receipt = workbook.save(out, receipt=True).to_dict()
+
+    removed = {effect["cell"] for effect in receipt["derived_effects"]
+               if effect["kind"] == "formula_cache_removed"}
+    assert {"D2", "D3", "D4"} <= removed
+    assert load_workbook(out)["Calc"]["A2"].value == 25
+    assert_part_budget(source, out, expect_changed={
+        "xl/workbook.xml", "xl/worksheets/sheet1.xml"})
+
+
+@pytest.mark.parametrize("old, new, edit", [
+    # the anchor holds no cached value of its own
+    (b'A2:A4*3</f><v>60</v>', b"A2:A4*3</f>", ("A2", 25)),
+    # the anchor sits outside its ref and is overwritten with a literal
+    (b'ref="D2:D4"', b'ref="D3:D4"', ("D2", 25)),
+])
+def test_save_receipt_names_every_array_cache_it_strips(
+        fixture_copy, tmp_path, old, new, edit):
+    # A comparison of two packages can only infer a member's stripped cache
+    # from its anchor's; the save knows which cells it stripped.
+    source = tmp_path / "source.xlsx"
+    _rewrite_part(fixture_copy("features/array_cached.xlsx"), source,
+                  "xl/worksheets/sheet1.xml", old, new)
+    workbook = load_workbook(source, preserve=True)
+    workbook["Calc"][edit[0]] = edit[1]
+    out = tmp_path / "out.xlsx"
+    receipt = workbook.save(out, receipt=True).to_dict()
+
+    removed = {effect["cell"] for effect in receipt["derived_effects"]
+               if effect["kind"] == "formula_cache_removed"}
+    changed = set(receipt["cells_changed"]["xl/worksheets/sheet1.xml"])
+    assert {"D3", "D4"} <= removed
+    assert changed - {edit[0]} == removed
+    assert load_workbook(out)["Calc"][edit[0]].value == edit[1]
+
+
+@pytest.mark.parametrize("spelling", [b"d3", b"D03"])
+def test_save_receipt_matches_stripped_cells_by_coordinate(
+        fixture_copy, tmp_path, monkeypatch, spelling):
+    # A part may spell a reference d3 or D03; the save records (row, col).
+    # The debug ledger cross-check compares canonical references and would
+    # flag the respelled cell, so it is off here, as in test_splice.
+    monkeypatch.setenv("PAPER_LEDGER_CROSSCHECK", "0")
+    source = tmp_path / "source.xlsx"
+    _rewrite_part(fixture_copy("features/array_cached.xlsx"), source,
+                  "xl/worksheets/sheet1.xml",
+                  b'<c r="D3">', b'<c r="' + spelling + b'">')
+    workbook = load_workbook(source, preserve=True)
+    workbook["Calc"]["A2"] = 25
+    receipt = workbook.save(tmp_path / "out.xlsx", receipt=True).to_dict()
+
+    removed = {effect["cell"] for effect in receipt["derived_effects"]
+               if effect["kind"] == "formula_cache_removed"}
+    assert spelling.decode() in removed
+    changed = set(receipt["cells_changed"]["xl/worksheets/sheet1.xml"])
+    assert changed - {"A2"} == removed
+
+
+def test_only_a_receipt_save_records_the_caches_it_strips(
+        fixture_copy, tmp_path):
+    # The record can name every formula cell in the workbook, so a direct
+    # save_workbook call must not leave it on a long-lived workbook.
+    from openpyxl.writer.excel import save_workbook
+
+    workbook = load_workbook(
+        fixture_copy("features/array_cached.xlsx"), preserve=True)
+    workbook["Calc"]["A2"] = 25
+    save_workbook(workbook, tmp_path / "direct.xlsx")
+    assert workbook._paper_cache_invalidations is None
+
+    receipt = workbook.save(tmp_path / "out.xlsx", receipt=True).to_dict()
+    removed = {effect["cell"] for effect in receipt["derived_effects"]
+               if effect["kind"] == "formula_cache_removed"}
+    assert {"D3", "D4"} <= removed
+    assert workbook._paper_cache_invalidations is None
+
+
+def test_a_receipt_save_inside_another_save_keeps_the_outer_record(
+        fixture_copy, tmp_path):
+    # A cell value's isoformat() runs during the outer save's write, so it
+    # can save with a receipt too. With D2's cache already gone, only the
+    # outer save's own record explains the D3 and D4 caches it strips.
+    import datetime
+
+    source = tmp_path / "source.xlsx"
+    _rewrite_part(fixture_copy("features/array_cached.xlsx"), source,
+                  "xl/worksheets/sheet1.xml",
+                  b'A2:A4*3</f><v>60</v>', b'A2:A4*3</f>')
+    workbook = load_workbook(source, preserve=True)
+    workbook.iso_dates = True
+    nested = []
+
+    class SavesOnFormat(datetime.datetime):
+        def isoformat(self, *args, **kwargs):
+            if not nested:
+                nested.append(True)
+                workbook.save(io.BytesIO(), receipt=True)
+            return super().isoformat(*args, **kwargs)
+
+    workbook["Calc"]["A2"] = 25
+    workbook["Calc"]["F9"] = SavesOnFormat(2026, 1, 2)
+    receipt = workbook.save(tmp_path / "out.xlsx", receipt=True).to_dict()
+
+    assert nested
+    removed = {effect["cell"] for effect in receipt["derived_effects"]
+               if effect["kind"] == "formula_cache_removed"}
+    assert {"D3", "D4"} <= removed
+
+
+@pytest.mark.lo_smoke
+@pytest.mark.parametrize("fixture, sheet, cell, value", [
+    ("features/self_closing_cells.xlsx", "Schedule", "B2", 250),
+    ("features/array_cached.xlsx", "Calc", "A2", 25),
+])
+def test_receipt_fix_outputs_load_in_libreoffice(
+        fixture_copy, tmp_path, lo, fixture, sheet, cell, value):
+    workbook = load_workbook(fixture_copy(fixture), preserve=True)
+    workbook[sheet][cell] = value
+    out = str(tmp_path / "out.xlsx")
+    workbook.save(out, receipt=True)
+    assert lo.lo_loads(out)
+
+
 def test_receipt_does_not_report_unchanged_calc_properties(
         fixture_copy, tmp_path):
     workbook = load_workbook(

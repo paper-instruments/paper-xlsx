@@ -160,6 +160,9 @@ class Workbook:
     _paper_source_identity = None   # content-bound source path identity
     _paper_content_type = None      # source workbook type under preserve
     _paper_ledger = None            # the dirty ledger; armed after load
+    # per part, the caches a preserve save stripped. A receipt save sets it
+    # to {} to ask for the record and takes it back; other saves keep none.
+    _paper_cache_invalidations = None
     # distinguishes stock-loaded workbooks from new in-memory workbooks
     _paper_loaded_from_package = False
     # protection awareness: True turns writes to locked
@@ -664,12 +667,21 @@ class Workbook:
             zipio.validate_target(filename)
             expected_identity = _expected_delivery_identity(self, filename)
             staged = BytesIO()
-            save_workbook(
-                self, staged, allow_formula_loss=allow_formula_loss)
+            # The staging save's record of the caches it stripped belongs to
+            # this receipt alone; nothing keeps it once read. A receipt save
+            # nested in another save's write hands back the outer request.
+            outer = self._paper_cache_invalidations
+            self._paper_cache_invalidations = {}
+            try:
+                save_workbook(
+                    self, staged, allow_formula_loss=allow_formula_loss)
+                invalidated = self._paper_cache_invalidations
+            finally:
+                self._paper_cache_invalidations = outer
             data = staged.getvalue()
             result = _receipt(
                 self._paper_source, data, _ledger=self._paper_ledger,
-                _workbook=self)
+                _workbook=self, _invalidated=invalidated)
 
             def validate_source():
                 if self._paper_source_identity is not None:

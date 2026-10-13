@@ -2,6 +2,7 @@
 
 """Report cached error values and broken formula references."""
 
+import codecs
 import re
 
 from openpyxl.formula.tokenizer import (
@@ -13,9 +14,27 @@ from openpyxl.formula.tokenizer import (
 
 ERROR_TOKENS = frozenset(EXCEL_ERROR_CODES)
 
-_ERROR_CELL_RE = re.compile(
-    br"<c\b([^>]*)\bt=(?:\"e\"|'e')([^>]*)>(.*?)</c>", re.S)
-_R_ATTR_RE = re.compile(br"\br=(?:\"([A-Za-z]+\d+)\"|'([A-Za-z]+\d+)')")
+# t="e", or a t value holding a character reference, which could spell "e".
+# An attribute value cannot hold "<", so the scan stops at the tag's end.
+_ERROR_TYPE = re.compile(
+    br"""\bt\s*=\s*(?:"(?:e"|[^"<]*&#)|'(?:e'|[^'<]*&#))""")
+
+
+def _may_hold_error_cells(payload):
+    """Whether a worksheet part could hold a cell whose ``t`` is ``e``.
+
+    Most sheets hold none, and skipping their parse is most of the scan's
+    time. The byte patterns hold only in an ASCII-compatible encoding, so a
+    part that does not open with "<" (after a UTF-8 BOM), such as UTF-16, is
+    always parsed. A DTD can declare an entity that spells ``e``, so a part
+    with one is always parsed too; the guarded parser refuses it where it
+    can.
+    """
+    start = len(codecs.BOM_UTF8) if payload.startswith(codecs.BOM_UTF8) else 0
+    if payload[start:start + 1] != b"<" \
+            or b"\x00" in payload[start:start + 4]:
+        return True
+    return _ERROR_TYPE.search(payload) is not None or b"<!DOCTYPE" in payload
 
 
 def current_titles_by_part(wb, zin):
@@ -98,24 +117,29 @@ def scan_errors(wb):
     import io
     import zipfile
 
+    from .crosscheck import _iter_sheet_cells
+
     with zipfile.ZipFile(io.BytesIO(source)) as zin:
         title_by_part = current_titles_by_part(wb, zin)
         names = set(zin.namelist())
         for part, title in sorted(title_by_part.items()):
             if part not in names:
                 continue
-            for match in _ERROR_CELL_RE.finditer(zin.read(part)):
-                ref_match = _R_ATTR_RE.search(match.group(1) + match.group(2))
-                value_match = re.search(br"<v[^>]*>([^<]*)</v>", match.group(3))
-                if ref_match is None or value_match is None:
+            payload = zin.read(part)
+            if not _may_hold_error_cells(payload):
+                continue
+            for ref, cell in _iter_sheet_cells(payload):
+                if cell.get("t") != "e":
                     continue
-                ref = (ref_match.group(1) or ref_match.group(2)).decode("ascii")
+                cached = cell.find(cell.tag[:-1] + "v")
+                if cached is None:
+                    continue
                 address = "{0}!{1}".format(title, ref)
                 if address in seen:
                     continue
                 results.append({
                     "address": address,
-                    "value": value_match.group(1).decode("utf-8", "replace"),
+                    "value": cached.text or "",
                     "source": "cache",
                 })
                 seen.add(address)

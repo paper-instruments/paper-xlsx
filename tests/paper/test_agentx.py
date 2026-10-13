@@ -52,6 +52,69 @@ class TestSearchAndScan:
         sources = {r["source"] for r in results}
         assert {"cache", "formula"} <= sources
 
+    def test_scan_errors_reads_a_self_closing_error_cell_as_empty(
+            self, fixture_copy):
+        # A10 is written <c r="A10" s="0" t="e"/>. Reading cells as
+        # "<c ...>body</c>" ran it on into B10 and reported B10's 1000 as
+        # a cached error at A10.
+        from openpyxl.preserve import scan_errors
+
+        wb = load_workbook(
+            fixture_copy("features/self_closing_cells.xlsx"), preserve=True)
+        cached = [r for r in scan_errors(wb) if r["source"] == "cache"]
+        assert cached == [{"address": "Schedule!C10", "value": "#DIV/0!",
+                           "source": "cache"}]
+
+    def test_scan_errors_parses_only_parts_whose_t_value_can_be_e(self):
+        # A character reference inside a t value can spell "e" and forces a
+        # parse; one in a cell's text, such as an escaped carriage return,
+        # does not.
+        from openpyxl.preserve.crosscheck import _iter_sheet_cells
+        from openpyxl.preserve.hygiene import _may_hold_error_cells
+
+        cells = {
+            b'<c r="A1" t="e"><v>#N/A</v></c>': True,
+            b"<c r='A1' t = 'e'><v>#N/A</v></c>": True,
+            b'<c r="A1" t="&#101;"><v>#N/A</v></c>': True,
+            b"<c r='A1' t='&#x65;'><v>#N/A</v></c>": True,
+            b'<c r="A1" t="inlineStr"><is><t>a&#13;b</t></is></c>': False,
+            b'<c r="A1" t="str"><f>CHAR(13)</f><v>&#13;</v></c>': False,
+        }
+        for cell, holds_error in cells.items():
+            payload = (b'<worksheet xmlns="http://schemas.openxmlformats.org/'
+                       b'spreadsheetml/2006/main"><sheetData><row r="1">'
+                       + cell + b'</row></sheetData></worksheet>')
+            types = [c.get("t") for _, c in _iter_sheet_cells(payload)]
+            assert (types == ["e"]) == holds_error
+            assert _may_hold_error_cells(payload) == holds_error
+        # Under the stdlib parser a DTD entity can spell t="&err;" as "e".
+        assert _may_hold_error_cells(
+            b'<!DOCTYPE worksheet [<!ENTITY err "e">]><worksheet>'
+            b'<sheetData><row r="1"><c r="A1" t="&err;"><v>#N/A</v></c>'
+            b'</row></sheetData></worksheet>')
+
+    def test_scan_errors_reads_a_utf16_sheet(self, fixture_copy, tmp_path):
+        # The t-value prefilter matches bytes, which UTF-16 spells
+        # differently; such a sheet must still be read.
+        from openpyxl.preserve import scan_errors
+
+        source = fixture_copy("features/self_closing_cells.xlsx")
+        target = tmp_path / "utf16.xlsx"
+        with zipfile.ZipFile(source) as zin, \
+                zipfile.ZipFile(target, "w") as zout:
+            for info in zin.infolist():
+                payload = zin.read(info.filename)
+                if info.filename == "xl/worksheets/sheet1.xml":
+                    payload = payload.decode("utf-8").replace(
+                        'encoding="UTF-8"', 'encoding="UTF-16"', 1
+                    ).encode("utf-16")
+                zout.writestr(info, payload)
+
+        wb = load_workbook(target, preserve=True)
+        cached = [r for r in scan_errors(wb) if r["source"] == "cache"]
+        assert cached == [{"address": "Schedule!C10", "value": "#DIV/0!",
+                           "source": "cache"}]
+
     def test_scan_errors_uses_formula_operands_not_string_substrings(self):
         from openpyxl.preserve import scan_errors
 

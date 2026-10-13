@@ -146,6 +146,9 @@ class _PreservePlan:
     baselines: object = field(repr=False, compare=False)
     region_claims: object = field(repr=False, compare=False)
     row_claims: object = field(repr=False, compare=False)
+    # Per part, the cells whose cached values the save strips: the receipt
+    # names exactly these as formula_cache_removed.
+    invalidated_by_part: object = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -213,6 +216,7 @@ class _SheetEdits:
 class _LoadedSheetsPlan:
     parts: object = field(repr=False, compare=False)
     dirty_by_part: object = field(repr=False, compare=False)
+    invalidated_by_part: object = field(repr=False, compare=False)
     region_claims: object = field(repr=False, compare=False)
     row_claims: object = field(repr=False, compare=False)
     baselines: object = field(repr=False, compare=False)
@@ -291,6 +295,8 @@ def save_preserved(workbook, target, *, allow_formula_loss=False):
             expected_identity=expected_identity,
             target_is_source=target_is_source)
         committed_identity = _commit_preserve_plan(save_plan, target)
+        if workbook._paper_cache_invalidations is not None:
+            workbook._paper_cache_invalidations = save_plan.invalidated_by_part
         if source_identity is not None and expected_identity is not None \
                 and (expected_identity.requested == source_identity.requested
                      or zipio._same_occupant(
@@ -992,7 +998,8 @@ def _plan_sheet_hyperlinks(context, sheet, source, changes,
 
 def _write_loaded_sheet_plan(context, sheet, source, changes, edits,
                              cf_replacement, hyperlink_replacement, parts,
-                             dirty_by_part, region_claims, row_claims):
+                             dirty_by_part, invalidated_by_part,
+                             region_claims, row_claims):
     if not (edits.dirty or edits.regions or edits.rows or changes.shifts
             or cf_replacement is not None
             or hyperlink_replacement is not None
@@ -1022,6 +1029,7 @@ def _write_loaded_sheet_plan(context, sheet, source, changes, edits,
         payload, sheet, source.scan, edits.dirty)
     dirty_by_part[source.part] = edits.dirty \
         | set(changes.cache_writes) | set(edits.cache_invalidations)
+    invalidated_by_part[source.part] = set(edits.cache_invalidations)
     claims = set(edits.regions)
     if cf_replacement is not None:
         claims.add("conditionalFormatting")
@@ -1035,8 +1043,8 @@ def _write_loaded_sheet_plan(context, sheet, source, changes, edits,
 
 
 def _plan_loaded_sheet(context, sheet, force_calcpr, parts, dirty_by_part,
-                       region_claims, row_claims, baselines,
-                       sheet_rels_updates):
+                       invalidated_by_part, region_claims, row_claims,
+                       baselines, sheet_rels_updates):
     object_plan = _plan_sheet_objects(context, sheet, parts)
     changes = _inspect_sheet_changes(context, sheet, object_plan)
     if not (changes.changed or force_calcpr):
@@ -1062,12 +1070,13 @@ def _plan_loaded_sheet(context, sheet, force_calcpr, parts, dirty_by_part,
         context, sheet, source, changes, sheet_rels_updates)
     return _write_loaded_sheet_plan(
         context, sheet, source, changes, edits, cf_replacement,
-        hyperlink_replacement, parts, dirty_by_part, region_claims,
-        row_claims)
+        hyperlink_replacement, parts, dirty_by_part, invalidated_by_part,
+        region_claims, row_claims)
 
 
 def _plan_loaded_sheets(context, force_calcpr, parts):
     dirty_by_part = {}
+    invalidated_by_part = {}
     region_claims = {}
     row_claims = {}
     baselines = {}
@@ -1078,11 +1087,12 @@ def _plan_loaded_sheets(context, force_calcpr, parts):
             continue
         need_styles_part = _plan_loaded_sheet(
             context, sheet, force_calcpr, parts, dirty_by_part,
-            region_claims, row_claims, baselines,
+            invalidated_by_part, region_claims, row_claims, baselines,
             sheet_rels_updates) or need_styles_part
     return _LoadedSheetsPlan(
         parts=parts,
         dirty_by_part=dirty_by_part,
+        invalidated_by_part=invalidated_by_part,
         region_claims=region_claims,
         row_claims=row_claims,
         baselines=baselines,
@@ -1242,6 +1252,8 @@ def _make_preserve_plan(context, added, loaded, workbook_parts,
             loaded.region_claims, set_values=True),
         row_claims=_frozen_mapping(
             loaded.row_claims, set_values=True),
+        invalidated_by_part=_frozen_mapping(
+            loaded.invalidated_by_part, set_values=True),
     )
 
 

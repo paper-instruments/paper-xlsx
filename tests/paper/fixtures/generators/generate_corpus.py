@@ -433,6 +433,39 @@ def build_schedule_calc(schedule_path):
     return path
 
 
+def build_self_closing_cells(schedule_calc_path):
+    """schedule_calc.xlsx by zip surgery: cells written self-closing, as
+    Excel writes a style-only cell, right before cells with cached values.
+    A12 becomes style-only beside B12's cached SUM; A10 becomes an empty
+    error-typed cell beside B10, with a cached #DIV/0! formula in C10."""
+    edits = (
+        (b'<c r="A12" s="0" t="s"><v>12</v></c>', b'<c r="A12" s="0"/>'),
+        (b'<c r="A10" s="0" t="s"><v>10</v></c>', b'<c r="A10" s="0" t="e"/>'),
+        (b'<c r="B10" s="0" t="n"><v>1000</v></c>',
+         b'<c r="B10" s="0" t="n"><v>1000</v></c>'
+         b'<c r="C10" s="0" t="e"><f aca="false">1/0</f><v>#DIV/0!</v></c>'),
+    )
+
+    def transform(part, payload):
+        if part == "xl/worksheets/sheet1.xml":
+            for old, new in edits:
+                assert payload.count(old) == 1, old
+                payload = payload.replace(old, new)
+        return (part, payload) if part is not None else None
+
+    path = out("features", "self_closing_cells.xlsx")
+    rewrite_zip(schedule_calc_path, path, transform)
+    verify_loads(path, expect_lo=False)
+    sidecar("features/self_closing_cells.xlsx", "zip surgery",
+            "schedule_calc.xlsx (LibreOffice-recalculated) with A12 made a "
+            "self-closing style-only cell beside B12's cached SUM, A10 an "
+            "empty self-closing t=\"e\" cell, and C10 =1/0 cached as #DIV/0!",
+            ["formulas", "cached_values", "self_closing_cells", "lo_producer"],
+            {"formula_count": 4, "cached_error_cells": ["Schedule!C10"],
+             "vba_present": False})
+    return path
+
+
 def build_macro_stub(schedule_path):
     vba_stub = (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
                 + b"PAPER-XLSX-SYNTHETIC-VBA-STUB" + b"\x00" * 4096)
@@ -515,6 +548,48 @@ def build_shared_formulas():
             {"shared_groups": [{"si": 0, "ref": "B2:B6", "host": "B2"}],
              "array_formulas": [{"ref": "D2:D4"}],
              "formula_count": 6, "vba_present": False})
+    return path
+
+
+def build_array_cached(shared_formulas_path):
+    """shared_formulas.xlsx by zip surgery: every formula holds a cached
+    value, and the array formula D2:D4 also caches its results in D3 and
+    D4, which hold no formula of their own (how Excel writes a filled
+    array). A save that strips caches clears all of them."""
+    edits = (
+        (b'<f t="array" ref="D2:D4">A2:A4*3</f><v></v></c>',
+         b'<f t="array" ref="D2:D4">A2:A4*3</f><v>60</v></c>'),
+        (b'<f t="shared" ref="B2:B6" si="0">A2*2</f><v></v></c>',
+         b'<f t="shared" ref="B2:B6" si="0">A2*2</f><v>40</v></c>'),
+        (b'<c r="B3"><f t="shared" si="0"/><v></v></c>',
+         b'<c r="B3"><f t="shared" si="0"/><v>60</v></c>'
+         b'<c r="D3"><v>90</v></c>'),
+        (b'<c r="B4"><f t="shared" si="0"/><v></v></c>',
+         b'<c r="B4"><f t="shared" si="0"/><v>80</v></c>'
+         b'<c r="D4"><v>120</v></c>'),
+        (b'<c r="B5"><f t="shared" si="0"/><v></v></c>',
+         b'<c r="B5"><f t="shared" si="0"/><v>100</v></c>'),
+        (b'<c r="B6"><f t="shared" si="0"/><v></v></c>',
+         b'<c r="B6"><f t="shared" si="0"/><v>120</v></c>'),
+    )
+
+    def transform(part, payload):
+        if part == "xl/worksheets/sheet1.xml":
+            for old, new in edits:
+                assert payload.count(old) == 1, old
+                payload = payload.replace(old, new)
+        return (part, payload) if part is not None else None
+
+    path = out("features", "array_cached.xlsx")
+    rewrite_zip(shared_formulas_path, path, transform)
+    verify_loads(path, expect_lo=False)
+    sidecar("features/array_cached.xlsx", "openpyxl 3.1.5 + zip surgery",
+            "shared_formulas.xlsx with cached values written into B2:B6 and "
+            "the D2 array anchor, and array member cells D3 and D4 added "
+            "with cached results and no formula",
+            ["shared_formulas", "array_formula", "formulas", "cached_values"],
+            {"array_ranges": ["D2:D4"], "array_member_cells": ["D3", "D4"],
+             "vba_present": False})
     return path
 
 
@@ -776,9 +851,11 @@ def main():
     build_datavalidation()
     build_hidden()
     schedule = build_schedule()
-    build_schedule_calc(schedule)
+    schedule_calc = build_schedule_calc(schedule)
+    build_self_closing_cells(schedule_calc)
     build_macro_stub(schedule)
-    build_shared_formulas()
+    shared = build_shared_formulas()
+    build_array_cached(shared)
     build_gauntlet()
     build_lo_authored(chart_image)
     build_corrupt(minimal)

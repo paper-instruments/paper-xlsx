@@ -1,0 +1,26 @@
+{
+  "fixture": "array_cached.xlsx",
+  "provenance": {
+    "app": "openpyxl 3.1.5 + zip surgery",
+    "version": "",
+    "notes": "shared_formulas.xlsx with cached values written into B2:B6 and the D2 array anchor, and array member cells D3 and D4 added with cached results and no formula"
+  },
+  "features": [
+    "shared_formulas",
+    "array_formula",
+    "formulas",
+    "cached_values"
+  ],
+  "ground_truth": {
+    "array_ranges": [
+      "D2:D4"
+    ],
+    "array_member_cells": [
+      "D3",
+      "D4"
+    ],
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-10-11"
+}

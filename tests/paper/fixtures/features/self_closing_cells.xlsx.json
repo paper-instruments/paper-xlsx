@@ -1,0 +1,23 @@
+{
+  "fixture": "self_closing_cells.xlsx",
+  "provenance": {
+    "app": "zip surgery",
+    "version": "",
+    "notes": "schedule_calc.xlsx (LibreOffice-recalculated) with A12 made a self-closing style-only cell beside B12's cached SUM, A10 an empty self-closing t=\"e\" cell, and C10 =1/0 cached as #DIV/0!"
+  },
+  "features": [
+    "formulas",
+    "cached_values",
+    "self_closing_cells",
+    "lo_producer"
+  ],
+  "ground_truth": {
+    "formula_count": 4,
+    "cached_error_cells": [
+      "Schedule!C10"
+    ],
+    "vba_present": false
+  },
+  "verified_by": "programmatic (generator assertions only; no human verification yet)",
+  "date": "2026-10-11"
+}

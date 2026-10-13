@@ -32,6 +32,29 @@ def _cell_signature(el):
     return (tuple(sorted(attrs.items())), body)
 
 
+def _iter_sheet_cells(payload):
+    """(ref, element) for each cell with an r attribute in every sheetData
+    block of a worksheet part, in whatever namespace the part's root
+    declares (Transitional or Strict). The receipt's derived effects and
+    scan_errors read cells this way: as XML, so a self-closing cell
+    (<c r="A2" s="1"/>) cannot run on into the next one, and as broadly as
+    the regexes they replace, which matched any block in any namespace. A
+    cell's children share its namespace: ``cell.tag[:-1] + "f"``. Parses
+    with the package's guarded parser, as the loader does: no DTD, no
+    entity expansion."""
+    from openpyxl.xml.functions import fromstring
+
+    root = fromstring(payload)
+    ns = root.tag[:root.tag.index("}") + 1] if root.tag.startswith("{") \
+        else ""
+    for sheetdata in root.iter(ns + "sheetData"):
+        for row in sheetdata.findall(ns + "row"):
+            for cell in row.findall(ns + "c"):
+                ref = cell.get("r")
+                if ref:
+                    yield ref, cell
+
+
 def _sheet_cells(payload):
     root = ET.fromstring(payload)
     cells = {}
