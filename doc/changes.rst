@@ -1,6 +1,11 @@
 Unreleased
 ==========
 
+* Clarify that oracle ``timeout`` limits each LibreOffice subprocess wait,
+  not Python-side preparation, scans, candidate construction or delivery.
+  Applications need a separate owning-process budget for untrusted workbooks;
+  no whole-call deadline is introduced by this documentation change.
+
 
 paper-xlsx 0.2.1 (2026-08-21)
 ================================
