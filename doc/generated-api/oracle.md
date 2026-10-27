@@ -4,7 +4,7 @@
 
 # `openpyxl.oracle`
 
-Bounded recalculation and certification via headless LibreOffice.
+Recalculation and certification via time-limited headless LibreOffice.
 
 This library never calculates — a partial engine is a silent-wrongness
 machine. Instead it routes to a real implementation of
@@ -23,8 +23,13 @@ Driver rules, all measured:
 the caller's file is NEVER handed to LibreOffice (temp copies only — tested
 invariant); every invocation gets its own `-env:UserInstallation` profile
 (shared profiles fail nondeterministically); success is `returncode == 0 AND the output file exists` (soffice exits 0 on unloadable input); stderr
-is never parsed (successful runs emit noise); timeouts kill the whole
-process group. Custody never depends on this module: everything
+is never parsed (successful runs emit noise); a LibreOffice timeout kills its
+process group. `timeout` limits each LibreOffice subprocess wait, not the
+whole Python call. Source reading, package validation, workbook scans, candidate
+construction and output delivery are outside that limit. For untrusted inputs,
+the owning application must enforce its job budget in a killable process or
+sandbox; cancelling a waiting thread does not stop its Python work.
+Custody never depends on this module: everything
 preservation-related works with no LibreOffice installed.
 
 
@@ -187,6 +192,9 @@ The divergence check: does LibreOffice reproduce the file's own
 cached values? Pre-flights on an untouched temp copy; the caller's file
 is never modified. Returns measurements, never judgments.
 
+`timeout` limits each LibreOffice subprocess, not Python-side reading,
+validation or comparison. It is not a whole-call deadline.
+
 
 ## `openpyxl.oracle.evaluate`
 
@@ -201,6 +209,9 @@ caller file stay untouched. One LibreOffice run serves both the
 outputs and the certification (original caches vs computed, with
 inputs' downstream cells excluded as `input_excluded`).
 
+`timeout` limits each LibreOffice subprocess, not source preparation,
+scanning or comparison. It is not a whole-call deadline.
+
 
 ## `openpyxl.oracle.evaluate_many`
 
@@ -212,6 +223,9 @@ evaluate_many(source, cases, read, *, pool_size = 2, timeout = 120.0)
 profiles across cases (the pool is an implementation
 detail — `pool_size` per-thread-isolated profiles, created lazily,
 crash-replaced once, destroyed before return).
+
+`timeout` applies separately to each LibreOffice subprocess. It does not
+bound Python preparation/scanning or the total duration of all cases.
 
 
 ## `openpyxl.oracle.find_soffice`
@@ -239,3 +253,8 @@ pivot source, the candidate requests refresh-on-open and
 `RecalcResult.pivot_refreshes` reports the Excel refresh requirement.
 LibreOffice's rewritten package is never delivered, and the result makes
 no claim of Excel equivalence or financial correctness.
+
+`timeout` is a per-LibreOffice-subprocess limit in seconds, not an
+end-to-end deadline. Python-side reading, validation, scans, candidate
+construction and delivery may take longer. Enforce a separate process/job
+deadline and resource budget when processing untrusted workbooks.

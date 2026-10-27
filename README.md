@@ -57,6 +57,20 @@ Preserve mode keeps untouched package content and refuses edits it cannot save s
 
 Read the [paper-xlsx documentation](https://docs.paperinstruments.com/).
 
+### Oracle resource limits
+
+The oracle's `timeout` parameter limits each LibreOffice subprocess wait. It is
+not a wall-clock deadline for `recalc`, `certify`, `evaluate` or `evaluate_many`.
+Python source reading, archive validation, cell scans, cache splicing and output
+delivery can continue beyond it; multiple cases have separate subprocess limits.
+
+Applications processing untrusted workbooks must set their own process or sandbox
+deadline and memory/CPU budget. A thread timeout does not interrupt this work.
+Keep source files separate from candidate outputs, and treat a killed job's
+output as unconfirmed until inspected; termination can interrupt file delivery.
+This clarification does not add an overall deadline or remove the processing
+cost of a large workbook.
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](https://github.com/paper-instruments/paper-xlsx/blob/main/CONTRIBUTING.md).

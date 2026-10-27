@@ -1,6 +1,6 @@
 # paper-xlsx: the LibreOffice oracle
 
-"""Bounded recalculation and certification via headless LibreOffice.
+"""Recalculation and certification via time-limited headless LibreOffice.
 
 This library never calculates — a partial engine is a silent-wrongness
 machine. Instead it routes to a real implementation of
@@ -20,8 +20,13 @@ the caller's file is NEVER handed to LibreOffice (temp copies only — tested
 invariant); every invocation gets its own ``-env:UserInstallation`` profile
 (shared profiles fail nondeterministically); success is ``returncode == 0
 AND the output file exists`` (soffice exits 0 on unloadable input); stderr
-is never parsed (successful runs emit noise); timeouts kill the whole
-process group. Custody never depends on this module: everything
+is never parsed (successful runs emit noise); a LibreOffice timeout kills its
+process group. ``timeout`` limits each LibreOffice subprocess wait, not the
+whole Python call. Source reading, package validation, workbook scans, candidate
+construction and output delivery are outside that limit. For untrusted inputs,
+the owning application must enforce its job budget in a killable process or
+sandbox; cancelling a waiting thread does not stop its Python work.
+Custody never depends on this module: everything
 preservation-related works with no LibreOffice installed.
 """
 
@@ -596,6 +601,11 @@ def recalc(source, *, output_path=None, timeout=120.0):
     ``RecalcResult.pivot_refreshes`` reports the Excel refresh requirement.
     LibreOffice's rewritten package is never delivered, and the result makes
     no claim of Excel equivalence or financial correctness.
+
+    ``timeout`` is a per-LibreOffice-subprocess limit in seconds, not an
+    end-to-end deadline. Python-side reading, validation, scans, candidate
+    construction and delivery may take longer. Enforce a separate process/job
+    deadline and resource budget when processing untrusted workbooks.
     """
     if output_path is not None:
         _assert_separate_output(source, output_path)
@@ -942,7 +952,11 @@ def _formula_result_cells(wb_formulas, wb_cached):
 def certify(source, *, timeout=120.0):
     """The divergence check: does LibreOffice reproduce the file's own
     cached values? Pre-flights on an untouched temp copy; the caller's file
-    is never modified. Returns measurements, never judgments."""
+    is never modified. Returns measurements, never judgments.
+
+    ``timeout`` limits each LibreOffice subprocess, not Python-side reading,
+    validation or comparison. It is not a whole-call deadline.
+    """
     result, _recalculated = _certify_impl(_read_source(source), timeout)
     return result
 
@@ -1444,7 +1458,11 @@ def evaluate(source, set, read, *, timeout=120.0):
     with LibreOffice, harvest ``read`` outputs. The source and every
     caller file stay untouched. One LibreOffice run serves both the
     outputs and the certification (original caches vs computed, with
-    inputs' downstream cells excluded as ``input_excluded``)."""
+    inputs' downstream cells excluded as ``input_excluded``).
+
+    ``timeout`` limits each LibreOffice subprocess, not source preparation,
+    scanning or comparison. It is not a whole-call deadline.
+    """
     from openpyxl.reader.excel import load_workbook
 
     data = _read_source(source)
@@ -1477,7 +1495,11 @@ def evaluate_many(source, cases, read, *, pool_size=2, timeout=120.0):
     """``evaluate`` for a list of input dicts, sharing warm LibreOffice
     profiles across cases (the pool is an implementation
     detail — ``pool_size`` per-thread-isolated profiles, created lazily,
-    crash-replaced once, destroyed before return)."""
+    crash-replaced once, destroyed before return).
+
+    ``timeout`` applies separately to each LibreOffice subprocess. It does not
+    bound Python preparation/scanning or the total duration of all cases.
+    """
     import shutil as _shutil
     import tempfile as _tempfile
     import threading
